@@ -1,0 +1,21 @@
+[project]
+name = "tinyic"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "tinytroupe",
+    "python-dotenv",
+]
+
+[tool.uv.sources]
+tinytroupe = { workspace = true }
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["tinyic", "tinyic.personas", "tinyic.personas.configs", "tinyic.data", "tinyic.debate", "tinyic.ui"]
+
+[tool.setuptools.package-dir]
+tinyic = "."

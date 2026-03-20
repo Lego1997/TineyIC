@@ -1,0 +1,19 @@
+[project]
+name = "tinyic-workspace"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["src/tinytroupe", "src/tinyic"]
+
+[tool.uv.sources]
+tinytroupe = { workspace = true }
+tinyic = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "live_api: tests that require a live OpenAI API key",
+]
+timeout = 120

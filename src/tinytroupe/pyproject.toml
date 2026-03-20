@@ -1,0 +1,70 @@
+[project]
+name = "tinytroupe"
+version = "0.6.0"
+requires-python = ">=3.12"
+dependencies = [
+    "pandas",
+    "pytest",
+    "pytest-cov",
+    "pytest-timeout",
+    "pytest-html",
+    "openai>=1.65",
+    "httpx",
+    "tiktoken",
+    "msal",
+    "rich",
+    "requests",
+    "chevron",
+    "llama-index",
+    "llama-index-embeddings-huggingface",
+    "llama-index-readers-web",
+    "llama-index-embeddings-azure-openai",
+    "pypandoc",
+    "docx",
+    "markdown",
+    "matplotlib",
+    "pydantic>=2.5.0",
+    "textdistance",
+    "scipy",
+    "python-dotenv",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = [
+    "tinytroupe",
+    "tinytroupe.agent",
+    "tinytroupe.clients",
+    "tinytroupe.enrichment",
+    "tinytroupe.environment",
+    "tinytroupe.examples",
+    "tinytroupe.experimentation",
+    "tinytroupe.extraction",
+    "tinytroupe.factory",
+    "tinytroupe.steering",
+    "tinytroupe.tools",
+    "tinytroupe.ui",
+    "tinytroupe.utils",
+    "tinytroupe.validation",
+]
+
+[tool.setuptools.package-dir]
+tinytroupe = "."
+
+[tool.setuptools.package-data]
+tinytroupe = [
+    "config.ini",
+    "agent/prompts/*.mustache",
+    "enrichment/prompts/*.mustache",
+    "extraction/prompts/*.mustache",
+    "factory/prompts/*.mustache",
+    "factory/prompts/*.md",
+    "steering/prompts/*.mustache",
+    "utils/prompts/*.md",
+    "validation/prompts/*.mustache",
+    "examples/agents/*.json",
+    "examples/fragments/*.json",
+]

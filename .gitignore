@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.env
+.venv/
+venv/
+uv.lock
+.pytest_cache/
+.mypy_cache/
+openai_api_cache.pickle
+*.pickle
+tinytroupe.*.log
