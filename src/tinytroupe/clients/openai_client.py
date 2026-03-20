@@ -368,10 +368,9 @@ class OpenAIClient:
             del chat_api_params["frequency_penalty"]
             del chat_api_params["presence_penalty"]
 
-            chat_api_params["max_completion_tokens"] = chat_api_params[
-                "max_completion_tokens"
-            ]
-            del chat_api_params["max_completion_tokens"]
+            # PATCH(tinyIC): Keep max_completion_tokens for reasoning models (GPT-5.2 needs it).
+            # Original code deleted it after self-assignment, which was a no-op then delete.
+            # max_completion_tokens is already set from config, just leave it.
 
             chat_api_params["reasoning_effort"] = config_manager.get("reasoning_effort")
 
@@ -411,7 +410,10 @@ class OpenAIClient:
             return self.client.chat.completions.create(**chat_api_params)
 
     def _is_reasoning_model(self, model):
-        return "o1" in model or "o3" in model
+        # PATCH(tinyIC): Include gpt-5 models as reasoning models so that
+        # reasoning_effort is passed and incompatible params (temperature,
+        # stream, top_p, etc.) are removed for gpt-5.2 with reasoning.
+        return "o1" in model or "o3" in model or "gpt-5" in model
 
     def _raw_model_response_extractor(self, response):
         """

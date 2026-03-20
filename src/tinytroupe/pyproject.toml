@@ -27,6 +27,7 @@ dependencies = [
     "textdistance",
     "scipy",
     "python-dotenv",
+    "ipython",
 ]
 
 [build-system]
