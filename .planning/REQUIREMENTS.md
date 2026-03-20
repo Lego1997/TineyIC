@@ -1,7 +1,7 @@
 # Requirements: openIC
 
 **Defined:** 2026-03-20
-**Core Value:** Investor personas must be convincingly distinct and philosophically accurate — each argues from their real-world framework, producing genuinely differentiated perspectives.
+**Core Value:** Investor personas must be convincingly distinct and philosophically accurate -- each argues from their real-world framework, producing genuinely differentiated perspectives.
 
 ## v1 Requirements
 
@@ -86,13 +86,13 @@ Deferred to future release. Tracked but not in current roadmap.
 
 | Feature | Reason |
 |---------|--------|
-| RAG pipeline over investor writings | v1 uses curated prompts — simpler, more controllable |
+| RAG pipeline over investor writings | v1 uses curated prompts -- simpler, more controllable |
 | Real-time market data streaming | Batch fetch at debate start is sufficient |
 | Paid financial data APIs | Free sources (yfinance, EDGAR, xAI) only for v1 |
 | Mobile app | Web-first via Streamlit |
 | User accounts / authentication | Single-user tool for v1 |
 | Portfolio tracking / trade execution | Analysis tool only, no trading |
-| Backtesting | Not a prediction tool — debate quality is the value |
+| Backtesting | Not a prediction tool -- debate quality is the value |
 | Custom persona creation | Fixed roster of 6 famous investors for v1 |
 | Multi-company comparison | One company per debate session |
 
@@ -102,37 +102,37 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FOUND-01 | — | Pending |
-| FOUND-02 | — | Pending |
-| FOUND-03 | — | Pending |
-| FOUND-04 | — | Pending |
-| PERS-01 | — | Pending |
-| PERS-02 | — | Pending |
-| PERS-03 | — | Pending |
-| PERS-04 | — | Pending |
-| PERS-05 | — | Pending |
-| PERS-06 | — | Pending |
-| PERS-07 | — | Pending |
-| DATA-01 | — | Pending |
-| DATA-02 | — | Pending |
-| DATA-03 | — | Pending |
-| DATA-04 | — | Pending |
-| DATA-05 | — | Pending |
-| DEBT-01 | — | Pending |
-| DEBT-02 | — | Pending |
-| DEBT-03 | — | Pending |
-| OUTP-01 | — | Pending |
-| OUTP-02 | — | Pending |
-| UI-01 | — | Pending |
-| UI-02 | — | Pending |
-| UI-03 | — | Pending |
-| UI-04 | — | Pending |
+| FOUND-01 | Phase 1: Foundation and TinyTroupe Integration | Pending |
+| FOUND-02 | Phase 1: Foundation and TinyTroupe Integration | Pending |
+| FOUND-03 | Phase 1: Foundation and TinyTroupe Integration | Pending |
+| FOUND-04 | Phase 1: Foundation and TinyTroupe Integration | Pending |
+| PERS-01 | Phase 2: Persona Engineering | Pending |
+| PERS-02 | Phase 2: Persona Engineering | Pending |
+| PERS-03 | Phase 2: Persona Engineering | Pending |
+| PERS-04 | Phase 2: Persona Engineering | Pending |
+| PERS-05 | Phase 2: Persona Engineering | Pending |
+| PERS-06 | Phase 2: Persona Engineering | Pending |
+| PERS-07 | Phase 4: Debate Engine and Verdict Extraction | Pending |
+| DATA-01 | Phase 3: Financial Data Pipeline | Pending |
+| DATA-02 | Phase 3: Financial Data Pipeline | Pending |
+| DATA-03 | Phase 3: Financial Data Pipeline | Pending |
+| DATA-04 | Phase 3: Financial Data Pipeline | Pending |
+| DATA-05 | Phase 3: Financial Data Pipeline | Pending |
+| DEBT-01 | Phase 4: Debate Engine and Verdict Extraction | Pending |
+| DEBT-02 | Phase 4: Debate Engine and Verdict Extraction | Pending |
+| DEBT-03 | Phase 4: Debate Engine and Verdict Extraction | Pending |
+| OUTP-01 | Phase 4: Debate Engine and Verdict Extraction | Pending |
+| OUTP-02 | Phase 4: Debate Engine and Verdict Extraction | Pending |
+| UI-01 | Phase 5: Streamlit UI | Pending |
+| UI-02 | Phase 5: Streamlit UI | Pending |
+| UI-03 | Phase 5: Streamlit UI | Pending |
+| UI-04 | Phase 5: Streamlit UI | Pending |
 
 **Coverage:**
 - v1 requirements: 25 total
-- Mapped to phases: 0
-- Unmapped: 25
+- Mapped to phases: 25
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-20*
-*Last updated: 2026-03-20 after initial definition*
+*Last updated: 2026-03-20 after roadmap creation*
