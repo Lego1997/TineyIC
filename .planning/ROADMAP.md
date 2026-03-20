@@ -20,11 +20,15 @@
 **Depends on**: Nothing (first phase)
 **Requirements**: FOUND-01, FOUND-02, FOUND-03, FOUND-04
 **Success Criteria** (what must be TRUE):
-  1. Running `uv run python -c "from openic.personas.base import InvestorPersona"` succeeds -- the project structure, dependencies, and TinyTroupe fork are importable
+  1. Running `uv run python -c "from tinyic.personas.base import InvestorPersona"` succeeds -- the project structure, dependencies, and TinyTroupe fork are importable
   2. A minimal InvestorPersona (TinyPerson subclass) can receive a `listen()` message and produce an `act()` response using GPT-5.2 with reasoning_effort=xhigh
   3. The TinyTroupe fork works with openai SDK v2.x without errors -- if patching was needed, the patches are isolated and documented
   4. The project runs with `uv` and Python 3.12, with a lockfile and proper dependency resolution
-**Plans**: TBD
+**Plans:** 2 plans
+
+Plans:
+- [ ] 01-01-PLAN.md -- Scaffold uv workspace, clone TinyTroupe v0.6.0 fork, create InvestorPersona base class and test infrastructure
+- [ ] 01-02-PLAN.md -- Validate GPT-5.2 compatibility with live API smoke test, patch openai_client.py if needed
 
 ### Phase 2: Persona Engineering
 **Goal**: Six investor personas that produce demonstrably different analyses of the same company -- each grounded in their real-world investment philosophy
@@ -76,7 +80,7 @@
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation and TinyTroupe Integration | 0/? | Not started | - |
+| 1. Foundation and TinyTroupe Integration | 0/2 | Planned | - |
 | 2. Persona Engineering | 0/? | Not started | - |
 | 3. Financial Data Pipeline | 0/? | Not started | - |
 | 4. Debate Engine and Verdict Extraction | 0/? | Not started | - |
