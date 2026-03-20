@@ -125,8 +125,10 @@ class OpenAIClient:
         )
 
         # we set max_retries to 0 because we do our own retrying with customized exponential backoff
+        base_url = config_manager.get("base_url")
         self.client = OpenAI(
-            api_key=os.getenv("OPENAI_API_KEY"), max_retries=0, http_client=httpx_client
+            api_key=os.getenv("OPENAI_API_KEY"), max_retries=0, http_client=httpx_client,
+            **({"base_url": base_url} if base_url else {})
         )
 
     @config_manager.config_defaults(
@@ -359,14 +361,14 @@ class OpenAIClient:
         Calls the OpenAI API with the given parameters. Subclasses should
         override this method to implement their own API calls.
         """
+        # PATCH(tinyIC): Force stream=True — required by proxy gateway
+        chat_api_params["stream"] = True
+
         # adjust parameters depending on the model
         if self._is_reasoning_model(model):
             # Reasoning models have slightly different parameters
-            del chat_api_params["stream"]
-            del chat_api_params["temperature"]
-            del chat_api_params["top_p"]
-            del chat_api_params["frequency_penalty"]
-            del chat_api_params["presence_penalty"]
+            for key in ("temperature", "top_p", "frequency_penalty", "presence_penalty"):
+                chat_api_params.pop(key, None)
 
             # PATCH(tinyIC): Keep max_completion_tokens for reasoning models (GPT-5.2 needs it).
             # Original code deleted it after self-assignment, which was a no-op then delete.
@@ -386,28 +388,76 @@ class OpenAIClient:
         logged_params = {k: v for k, v in chat_api_params.items() if k != "messages"}
 
         if "response_format" in chat_api_params:
-            # to enforce the response format via pydantic, we need to use a different method
-
-            if "stream" in chat_api_params:
-                del chat_api_params["stream"]
+            # PATCH(tinyIC): proxy requires stream=True, but .parse() doesn't support streaming.
+            # Use regular .create() with streaming and let caller handle response_format.
+            chat_api_params.pop("response_format", None)
 
             logger.debug(
-                f"Calling LLM model (using .parse too) with these parameters: {logged_params}. Not showing 'messages' parameter."
+                f"Calling LLM model with these parameters: {logged_params}. Not showing 'messages' parameter."
             )
-            # complete message
             logger.debug(
                 f"   --> Complete messages sent to LLM: {chat_api_params['messages']}"
             )
 
-            result_message = self.client.beta.chat.completions.parse(**chat_api_params)
-
-            return result_message
+            response = self.client.chat.completions.create(**chat_api_params)
+            if chat_api_params.get("stream"):
+                return self._collect_stream(response)
+            return response
 
         else:
             logger.debug(
                 f"Calling LLM model with these parameters: {logged_params}. Not showing 'messages' parameter."
             )
-            return self.client.chat.completions.create(**chat_api_params)
+            response = self.client.chat.completions.create(**chat_api_params)
+
+            # PATCH(tinyIC): Handle streaming responses — collect chunks into a
+            # ChatCompletion-like object so downstream extractors work unchanged.
+            if chat_api_params.get("stream"):
+                return self._collect_stream(response)
+
+            return response
+
+    def _collect_stream(self, stream):
+        """PATCH(tinyIC): Collect a streaming response into a single ChatCompletion."""
+        from openai.types.chat import ChatCompletion, ChatCompletionMessage
+        from openai.types.chat.chat_completion import Choice
+        from openai.types import CompletionUsage
+
+        content_parts = []
+        finish_reason = None
+        model_name = None
+        completion_id = None
+        usage = None
+
+        for chunk in stream:
+            if not model_name and chunk.model:
+                model_name = chunk.model
+            if not completion_id and chunk.id:
+                completion_id = chunk.id
+            if chunk.usage:
+                usage = chunk.usage
+            if chunk.choices:
+                delta = chunk.choices[0].delta
+                if delta and delta.content:
+                    content_parts.append(delta.content)
+                if chunk.choices[0].finish_reason:
+                    finish_reason = chunk.choices[0].finish_reason
+
+        return ChatCompletion(
+            id=completion_id or "stream",
+            model=model_name or "unknown",
+            object="chat.completion",
+            created=0,
+            choices=[Choice(
+                index=0,
+                message=ChatCompletionMessage(
+                    role="assistant",
+                    content="".join(content_parts),
+                ),
+                finish_reason=finish_reason or "stop",
+            )],
+            usage=usage,
+        )
 
     def _is_reasoning_model(self, model):
         # PATCH(tinyIC): Include gpt-5 models as reasoning models so that

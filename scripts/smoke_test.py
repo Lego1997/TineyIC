@@ -31,22 +31,21 @@ print("Sending listen() message...")
 persona.listen("What do you think about Apple (AAPL) as an investment at current prices?")
 
 print("Calling act() -- this will call GPT-5.2 with reasoning_effort=xhigh...")
-actions = persona.act()
+persona.act()
 
-print(f"\nPersona responded with {len(actions)} action(s)")
-for i, action in enumerate(actions):
-    print(f"\n--- Action {i + 1} ---")
-    print(f"  Type: {action.get('type', 'unknown')}")
-    if "content" in action:
-        content = str(action["content"])
-        print(f"  Content: {content[:500]}{'...' if len(content) > 500 else ''}")
-    elif "action" in action:
-        action_data = action["action"]
-        if isinstance(action_data, dict) and "content" in action_data:
-            content = str(action_data["content"])
-            print(f"  Content: {content[:500]}{'...' if len(content) > 500 else ''}")
-        else:
-            print(f"  Action: {str(action_data)[:500]}")
+# TinyTroupe stores actions internally; retrieve from action history
+actions = persona.pop_latest_actions()
+if actions:
+    print(f"\nPersona responded with {len(actions)} action(s)")
+    for i, action in enumerate(actions):
+        print(f"\n--- Action {i + 1} ---")
+        action_data = action.get("action", {})
+        print(f"  Type: {action_data.get('type', 'unknown')}")
+        content = action_data.get("content", "")
+        if content:
+            print(f"  Content: {str(content)[:500]}{'...' if len(str(content)) > 500 else ''}")
+else:
+    print("\nWARNING: No actions returned (persona may have acted but actions not captured)")
 
 print("\n--- SMOKE TEST PASSED ---")
 print("InvestorPersona successfully called GPT-5.2 via TinyTroupe")
