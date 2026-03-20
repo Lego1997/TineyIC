@@ -12,11 +12,11 @@ The investor personas must be convincingly distinct and philosophically accurate
 
 ### Validated
 
-(None yet — ship to validate)
+- [x] Fork and extend TinyTroupe as the multi-agent simulation foundation — *Validated in Phase 1: Foundation*
+- [x] OpenAI API integration (GPT 5.2 extra high / Codex 5.3 extra high) — *Validated in Phase 1: Foundation*
 
 ### Active
 
-- [ ] Fork and extend TinyTroupe as the multi-agent simulation foundation
 - [ ] Create 6 investor personas: Warren Buffett, Charlie Munger, Benjamin Graham, Peter Lynch, Howard Marks, Li Lu
 - [ ] Distill each investor's philosophy from public writings (books, shareholder letters, interviews, speeches) into persona prompts
 - [ ] Auto-fetch company financials and data via yfinance, SEC EDGAR, and free news APIs
@@ -25,7 +25,6 @@ The investor personas must be convincingly distinct and philosophically accurate
 - [ ] Generate a scorecard with each persona's buy/hold/sell vote and reasoning
 - [ ] Generate an investment memo summarizing thesis, risks, valuation, and final verdict
 - [ ] Streamlit web UI for the debate view, company input, and output display
-- [ ] OpenAI API integration (GPT 5.2 extra high / Codex 5.3 extra high)
 
 ### Out of Scope
 
@@ -54,12 +53,12 @@ The investor personas must be convincingly distinct and philosophically accurate
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Fork TinyTroupe (not dependency) | Need deep customization of persona/environment system for investment-specific debate flow | — Pending |
+| Fork TinyTroupe (not dependency) | Need deep customization of persona/environment system for investment-specific debate flow | ✓ Done (Phase 1) |
 | 6 investor personas for v1 | Covers major value investing schools without overscoping | — Pending |
 | Curated prompts over RAG | Simpler for v1, more controllable persona accuracy, avoids vector DB complexity | — Pending |
 | yfinance + free APIs for data | No cost barrier, sufficient for v1 analysis quality | — Pending |
 | Streamlit for UI | Matches TinyTroupe's existing pattern, fast to build, Python-native | — Pending |
-| OpenAI GPT 5.2/Codex 5.3 | User's preferred models for high-quality financial reasoning | — Pending |
+| OpenAI GPT 5.2/Codex 5.3 | User's preferred models for high-quality financial reasoning | ✓ Done (Phase 1) |
 
 ---
-*Last updated: 2026-03-19 after initialization*
+*Last updated: 2026-03-20 after Phase 1 completion*
