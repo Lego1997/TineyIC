@@ -27,7 +27,7 @@ created: 2026-03-20
 
 ## Sampling Rate
 
-- **After every task commit:** Run `uv run python -c "from openic.personas.base import InvestorPersona"` (fast, no API call)
+- **After every task commit:** Run `uv run python -c "from tinyic.personas.base import InvestorPersona"` (fast, no API call)
 - **After every plan wave:** Run `uv run pytest tests/ -v --timeout=120`
 - **Before `/gsd:verify-work`:** Full suite must be green
 - **Max feedback latency:** 30 seconds
@@ -38,7 +38,7 @@ created: 2026-03-20
 
 | Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|-----------|-------------------|-------------|--------|
-| 01-01-01 | 01 | 1 | FOUND-01 | smoke | `uv run python -c "from openic.personas.base import InvestorPersona"` | ❌ W0 | ⬜ pending |
+| 01-01-01 | 01 | 1 | FOUND-01 | smoke | `uv run python -c "from tinyic.personas.base import InvestorPersona"` | ❌ W0 | ⬜ pending |
 | 01-01-02 | 01 | 1 | FOUND-02 | smoke | `uv run python -c "from tinytroupe.agent import TinyPerson"` | ❌ W0 | ⬜ pending |
 | 01-02-01 | 02 | 2 | FOUND-03 | integration (live API) | `uv run pytest tests/test_investor_persona.py::test_listen_act_gpt52 -x` | ❌ W0 | ⬜ pending |
 | 01-02-02 | 02 | 2 | FOUND-04 | integration (live API) | `uv run pytest tests/test_investor_persona.py::test_sdk_v2_compatibility -x` | ❌ W0 | ⬜ pending |

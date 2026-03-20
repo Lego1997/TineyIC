@@ -25,7 +25,7 @@ Establish the project skeleton for tinyIC (renamed from openIC) and validate tha
 - Permanent diverging fork -- no intent to contribute patches upstream, free to modify aggressively
 
 ### SDK Compatibility Approach
-- Patch TinyTroupe's `openai_utils.py` directly for OpenAI SDK v2.x (no adapter/shim layer)
+- Patch TinyTroupe's `clients/openai_client.py` directly for OpenAI SDK v2.x (no adapter/shim layer) — v0.6.0 moved `openai_utils.py` to `clients/openai_client.py`
 - Global default `reasoning_effort=xhigh`, with per-call override capability for future phases
 - API key via `OPENAI_API_KEY` environment variable (TinyTroupe's existing convention)
 - Validate compatibility with a live API smoke test (actual GPT-5.2 call, not mocks)
@@ -49,7 +49,7 @@ Establish the project skeleton for tinyIC (renamed from openIC) and validate tha
 - Validates full chain: TinyPerson subclass -> listen() -> GPT-5.2 with reasoning_effort=xhigh -> act() response
 
 ### Claude's Discretion
-- Exact patching approach for openai_utils.py (depends on what TinyTroupe v0.6.0 actually does)
+- Exact patching approach for clients/openai_client.py (depends on what TinyTroupe v0.6.0 actually does)
 - Test file organization and naming conventions
 - .gitignore setup and dev tooling (linting, formatting)
 - pyproject.toml structure and dependency specification details
@@ -62,7 +62,7 @@ Establish the project skeleton for tinyIC (renamed from openIC) and validate tha
 **Downstream agents MUST read these before planning or implementing.**
 
 ### TinyTroupe Framework
-- TinyTroupe v0.6.0 source code (to be cloned during implementation) -- core architecture: agent.py, environment.py, openai_utils.py, extraction.py
+- TinyTroupe v0.6.0 source code (to be cloned during implementation) -- core architecture: agent.py, environment.py, clients/openai_client.py, extraction.py
 - TinyTroupe's existing `.agent.json` config pattern -- persona config file format to follow
 
 ### Project Requirements
@@ -71,7 +71,7 @@ Establish the project skeleton for tinyIC (renamed from openIC) and validate tha
 - `.planning/PROJECT.md` -- Constraints and key decisions (tech stack, LLM provider, data sources)
 
 ### OpenAI SDK
-- OpenAI Python SDK v2.x migration guide -- breaking changes from v1.x that affect TinyTroupe's openai_utils.py
+- OpenAI Python SDK v2.x migration guide -- breaking changes from v1.x that affect TinyTroupe's clients/openai_client.py
 
 </canonical_refs>
 
@@ -88,7 +88,7 @@ Establish the project skeleton for tinyIC (renamed from openIC) and validate tha
 ### Integration Points
 - `src/tinytroupe/` is the fork; `src/tinyic/` imports from it
 - `tinyic.personas.base.InvestorPersona` subclasses `tinytroupe.agent.TinyPerson`
-- OpenAI API calls flow through patched `tinytroupe.openai_utils`
+- OpenAI API calls flow through patched `tinytroupe.clients.openai_client`
 
 </code_context>
 
