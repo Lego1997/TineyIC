@@ -7,7 +7,7 @@
 
 ## Phases
 
-- [ ] **Phase 1: Foundation and TinyTroupe Integration** - Fork TinyTroupe, validate GPT-5.2 compatibility, establish project skeleton
+- [x] **Phase 1: Foundation and TinyTroupe Integration** - Fork TinyTroupe, validate GPT-5.2 compatibility, establish project skeleton
 - [ ] **Phase 2: Persona Engineering** - Distill 6 investor philosophies into differentiated persona configs
 - [ ] **Phase 3: Financial Data Pipeline** - Build data fetching and normalization for company analysis
 - [ ] **Phase 4: Debate Engine and Verdict Extraction** - Orchestrate structured multi-agent debate and extract structured votes
@@ -27,8 +27,8 @@
 **Plans:** 2 plans
 
 Plans:
-- [ ] 01-01-PLAN.md -- Scaffold uv workspace, clone TinyTroupe v0.6.0 fork, create InvestorPersona base class and test infrastructure
-- [ ] 01-02-PLAN.md -- Validate GPT-5.2 compatibility with live API smoke test, patch openai_client.py if needed
+- [x] 01-01-PLAN.md -- Scaffold uv workspace, clone TinyTroupe v0.6.0 fork, create InvestorPersona base class and test infrastructure
+- [x] 01-02-PLAN.md -- Validate GPT-5.2 compatibility with live API smoke test, patch openai_client.py if needed
 
 ### Phase 2: Persona Engineering
 **Goal**: Six investor personas that produce demonstrably different analyses of the same company -- each grounded in their real-world investment philosophy
@@ -80,7 +80,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation and TinyTroupe Integration | 0/2 | Planned | - |
+| 1. Foundation and TinyTroupe Integration | 2/2 | Complete | 2026-03-20 |
 | 2. Persona Engineering | 0/? | Not started | - |
 | 3. Financial Data Pipeline | 0/? | Not started | - |
 | 4. Debate Engine and Verdict Extraction | 0/? | Not started | - |

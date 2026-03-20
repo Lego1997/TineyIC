@@ -11,8 +11,8 @@ Requirements for initial release. Each maps to roadmap phases.
 
 - [x] **FOUND-01**: Project uses Python 3.12 with uv package manager and proper directory structure
 - [x] **FOUND-02**: TinyTroupe v0.6.0 is forked and integrated as a local package in monorepo
-- [ ] **FOUND-03**: OpenAI GPT-5.2 integration works through TinyTroupe with reasoning_effort=xhigh
-- [ ] **FOUND-04**: OpenAI SDK v2.x compatibility with TinyTroupe fork is validated
+- [x] **FOUND-03**: OpenAI GPT-5.2 integration works through TinyTroupe with reasoning_effort=xhigh
+- [x] **FOUND-04**: OpenAI SDK v2.x compatibility with TinyTroupe fork is validated
 
 ### Personas
 
@@ -104,8 +104,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 |-------------|-------|--------|
 | FOUND-01 | Phase 1: Foundation and TinyTroupe Integration | Complete |
 | FOUND-02 | Phase 1: Foundation and TinyTroupe Integration | Complete |
-| FOUND-03 | Phase 1: Foundation and TinyTroupe Integration | Pending |
-| FOUND-04 | Phase 1: Foundation and TinyTroupe Integration | Pending |
+| FOUND-03 | Phase 1: Foundation and TinyTroupe Integration | Complete |
+| FOUND-04 | Phase 1: Foundation and TinyTroupe Integration | Complete |
 | PERS-01 | Phase 2: Persona Engineering | Pending |
 | PERS-02 | Phase 2: Persona Engineering | Pending |
 | PERS-03 | Phase 2: Persona Engineering | Pending |
