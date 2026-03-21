@@ -55,7 +55,11 @@ Plans:
   3. The system fetches recent X/Twitter posts and sentiment about the company via the xAI API
   4. All fetched data is bundled into a single DataPackage object that can be serialized and injected into persona context
   5. When a data source fails or returns incomplete data, the system logs a warning and continues with available data rather than crashing
-**Plans**: TBD
+**Plans:** 2 plans
+
+Plans:
+- [ ] 03-01-PLAN.md -- Pydantic data models, ticker resolver, yfinance fetchers (financials + news), and unit tests with mocked yfinance
+- [ ] 03-02-PLAN.md -- edgartools filings fetcher, xAI social sentiment fetcher, pipeline orchestrator (build_data_package), and live API integration test
 
 ### Phase 4: Debate Engine and Verdict Extraction
 **Goal**: Personas can conduct a structured investment debate about a company and produce individual buy/hold/sell votes with reasoning
@@ -86,7 +90,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. Foundation and TinyTroupe Integration | 2/2 | Complete | 2026-03-20 |
 | 2. Persona Engineering | 0/2 | Planned | - |
-| 3. Financial Data Pipeline | 0/? | Not started | - |
+| 3. Financial Data Pipeline | 0/2 | Planned | - |
 | 4. Debate Engine and Verdict Extraction | 0/? | Not started | - |
 | 5. Streamlit UI | 0/? | Not started | - |
 
