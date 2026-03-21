@@ -25,11 +25,15 @@ def fetch_news(ticker: str, count: int = 8) -> Optional[NewsSummary]:
 
         articles = []
         for item in news_items[:count]:
+            # yfinance 1.2.x nests data under "content" key
+            content = item.get("content", item)
+            provider = content.get("provider", {})
+            canonical_url = content.get("canonicalUrl", {})
             articles.append({
-                "title": item.get("title", ""),
-                "publisher": item.get("publisher", ""),
-                "link": item.get("link", ""),
-                "publish_time": str(item.get("providerPublishTime", "")),
+                "title": content.get("title", ""),
+                "publisher": provider.get("displayName", "") if isinstance(provider, dict) else str(provider),
+                "link": canonical_url.get("url", "") if isinstance(canonical_url, dict) else str(canonical_url),
+                "publish_time": content.get("pubDate", ""),
             })
 
         return NewsSummary(articles=articles)

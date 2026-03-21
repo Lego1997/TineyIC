@@ -295,16 +295,20 @@ class TestFetchNews:
         mock_instance = MagicMock()
         mock_instance.get_news.return_value = [
             {
-                "title": "Apple Reports Record Q4 Revenue",
-                "publisher": "Reuters",
-                "link": "https://example.com/1",
-                "providerPublishTime": 1700000000,
+                "content": {
+                    "title": "Apple Reports Record Q4 Revenue",
+                    "provider": {"displayName": "Reuters"},
+                    "canonicalUrl": {"url": "https://example.com/1"},
+                    "pubDate": "2026-01-15T10:00:00Z",
+                }
             },
             {
-                "title": "Apple Vision Pro Sales Surge",
-                "publisher": "Bloomberg",
-                "link": "https://example.com/2",
-                "providerPublishTime": 1700100000,
+                "content": {
+                    "title": "Apple Vision Pro Sales Surge",
+                    "provider": {"displayName": "Bloomberg"},
+                    "canonicalUrl": {"url": "https://example.com/2"},
+                    "pubDate": "2026-01-15T12:00:00Z",
+                }
             },
         ]
         mock_ticker_cls.return_value = mock_instance
@@ -339,7 +343,14 @@ class TestFetchNews:
         """Count parameter limits articles."""
         mock_instance = MagicMock()
         mock_instance.get_news.return_value = [
-            {"title": f"Article {i}", "publisher": "Test", "link": f"https://example.com/{i}"}
+            {
+                "content": {
+                    "title": f"Article {i}",
+                    "provider": {"displayName": "Test"},
+                    "canonicalUrl": {"url": f"https://example.com/{i}"},
+                    "pubDate": "2026-01-15T10:00:00Z",
+                }
+            }
             for i in range(10)
         ]
         mock_ticker_cls.return_value = mock_instance
