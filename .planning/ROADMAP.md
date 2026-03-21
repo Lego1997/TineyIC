@@ -39,7 +39,11 @@ Plans:
   2. A human reader can identify which persona wrote a given analysis without seeing the name attached -- the voice, vocabulary, and reasoning style are distinct
   3. Each persona's philosophy is stored as a JSON config file following TinyTroupe's `.agent.json` pattern, not hardcoded in Python
   4. Each persona config includes attributable source references (specific books, letters, speeches) for the philosophy distilled into the prompt
-**Plans**: TBD
+**Plans:** 2 plans
+
+Plans:
+- [ ] 02-01-PLAN.md -- Create classic-value persona cluster (Graham, Buffett, Munger) with registry module and unit tests
+- [ ] 02-02-PLAN.md -- Create modern/diverse persona cluster (Lynch, Marks, Li Lu) with analyze_company/format_vote implementation and live API differentiation validation
 
 ### Phase 3: Financial Data Pipeline
 **Goal**: The system can take a stock ticker and produce a complete, normalized data package ready for persona consumption
@@ -81,7 +85,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation and TinyTroupe Integration | 2/2 | Complete | 2026-03-20 |
-| 2. Persona Engineering | 0/? | Not started | - |
+| 2. Persona Engineering | 0/2 | Planned | - |
 | 3. Financial Data Pipeline | 0/? | Not started | - |
 | 4. Debate Engine and Verdict Extraction | 0/? | Not started | - |
 | 5. Streamlit UI | 0/? | Not started | - |
@@ -133,4 +137,4 @@ Orphaned: 0
 
 ---
 *Roadmap created: 2026-03-20*
-*Last updated: 2026-03-20*
+*Last updated: 2026-03-21*
