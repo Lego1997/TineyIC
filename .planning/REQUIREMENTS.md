@@ -26,10 +26,10 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Financial Data
 
-- [ ] **DATA-01**: User can enter a stock ticker and system resolves it to a valid company
-- [ ] **DATA-02**: System fetches financial fundamentals (income statement, balance sheet, key ratios) via yfinance
+- [x] **DATA-01**: User can enter a stock ticker and system resolves it to a valid company
+- [x] **DATA-02**: System fetches financial fundamentals (income statement, balance sheet, key ratios) via yfinance
 - [ ] **DATA-03**: System fetches SEC filings (10-K, 10-Q) via edgartools
-- [ ] **DATA-04**: System fetches recent company news via yfinance Ticker.news
+- [x] **DATA-04**: System fetches recent company news via yfinance Ticker.news
 - [ ] **DATA-05**: System fetches views and contrarian views from X/Twitter via xAI API
 
 ### Debate
@@ -113,10 +113,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PERS-05 | Phase 2: Persona Engineering | Pending |
 | PERS-06 | Phase 2: Persona Engineering | Pending |
 | PERS-07 | Phase 4: Debate Engine and Verdict Extraction | Pending |
-| DATA-01 | Phase 3: Financial Data Pipeline | Pending |
-| DATA-02 | Phase 3: Financial Data Pipeline | Pending |
+| DATA-01 | Phase 3: Financial Data Pipeline | Complete |
+| DATA-02 | Phase 3: Financial Data Pipeline | Complete |
 | DATA-03 | Phase 3: Financial Data Pipeline | Pending |
-| DATA-04 | Phase 3: Financial Data Pipeline | Pending |
+| DATA-04 | Phase 3: Financial Data Pipeline | Complete |
 | DATA-05 | Phase 3: Financial Data Pipeline | Pending |
 | DEBT-01 | Phase 4: Debate Engine and Verdict Extraction | Pending |
 | DEBT-02 | Phase 4: Debate Engine and Verdict Extraction | Pending |
@@ -135,4 +135,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-03-20*
-*Last updated: 2026-03-20 after roadmap creation*
+*Last updated: 2026-03-22 after Plan 03-01 completion*

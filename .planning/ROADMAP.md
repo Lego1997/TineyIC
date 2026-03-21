@@ -58,7 +58,7 @@ Plans:
 **Plans:** 2 plans
 
 Plans:
-- [ ] 03-01-PLAN.md -- Pydantic data models, ticker resolver, yfinance fetchers (financials + news), and unit tests with mocked yfinance
+- [x] 03-01-PLAN.md -- Pydantic data models, ticker resolver, yfinance fetchers (financials + news), and unit tests with mocked yfinance
 - [ ] 03-02-PLAN.md -- edgartools filings fetcher, xAI social sentiment fetcher, pipeline orchestrator (build_data_package), and live API integration test
 
 ### Phase 4: Debate Engine and Verdict Extraction
@@ -90,7 +90,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. Foundation and TinyTroupe Integration | 2/2 | Complete | 2026-03-20 |
 | 2. Persona Engineering | 0/2 | Planned | - |
-| 3. Financial Data Pipeline | 0/2 | Planned | - |
+| 3. Financial Data Pipeline | 1/2 | In Progress | - |
 | 4. Debate Engine and Verdict Extraction | 0/? | Not started | - |
 | 5. Streamlit UI | 0/? | Not started | - |
 
@@ -141,4 +141,4 @@ Orphaned: 0
 
 ---
 *Roadmap created: 2026-03-20*
-*Last updated: 2026-03-21*
+*Last updated: 2026-03-22*
