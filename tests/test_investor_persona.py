@@ -35,17 +35,17 @@ class TestInvestorPersonaUnit:
         """InvestorPersona extends TinyPerson."""
         assert issubclass(InvestorPersona, TinyPerson)
 
-    def test_analyze_company_raises_not_implemented(self):
-        """Stub method raises NotImplementedError."""
-        persona = InvestorPersona(name="AnalyzeTest")
-        with pytest.raises(NotImplementedError, match="Phase 2"):
-            persona.analyze_company({})
+    def test_analyze_company_is_implemented(self):
+        """analyze_company() is no longer a stub."""
+        import inspect
+        src = inspect.getsource(InvestorPersona.analyze_company)
+        assert "NotImplementedError" not in src
 
-    def test_format_vote_raises_not_implemented(self):
-        """Stub method raises NotImplementedError."""
-        persona = InvestorPersona(name="VoteTest")
-        with pytest.raises(NotImplementedError, match="Phase 2"):
-            persona.format_vote()
+    def test_format_vote_is_implemented(self):
+        """format_vote() is no longer a stub."""
+        import inspect
+        src = inspect.getsource(InvestorPersona.format_vote)
+        assert "NotImplementedError" not in src
 
     def test_load_philosophy_config(self):
         """InvestorPersona can load a .agent.json config."""

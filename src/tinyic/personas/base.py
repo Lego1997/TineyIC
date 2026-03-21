@@ -53,26 +53,71 @@ class InvestorPersona(TinyPerson):
     def analyze_company(self, data_package: dict) -> dict:
         """Analyze a company from this investor's perspective.
 
-        Implemented in Phase 2 with actual persona logic.
+        Constructs a prompt from the data_package, sends it through
+        TinyTroupe's listen/act pipeline, and returns structured analysis.
 
         Args:
-            data_package: Financial data package for a company.
+            data_package: Dict with keys like company_name, ticker,
+                description, financials.
 
         Returns:
-            Analysis dict with thesis, risks, and reasoning.
+            Dict with investor, company, analysis, and raw_actions.
         """
-        raise NotImplementedError(
-            "analyze_company() will be implemented in Phase 2"
+        company = data_package.get(
+            "company_name", data_package.get("ticker", "Unknown Company")
         )
+
+        prompt = f"Analyze {company} as a potential investment. "
+        if "description" in data_package:
+            prompt += f"Company description: {data_package['description']}. "
+        if "financials" in data_package:
+            prompt += f"Key financials: {data_package['financials']}. "
+        prompt += (
+            "Provide your investment analysis based on your investment philosophy. "
+            "Include your assessment of the business quality, valuation, "
+            "key risks, and whether you would invest."
+        )
+
+        self.listen(prompt)
+        self.act()
+        actions = self.pop_latest_actions()
+
+        analysis_text = ""
+        for action in actions:
+            if action.get("type") == "TALK" and action.get("content"):
+                analysis_text += action["content"] + "\n"
+
+        return {
+            "investor": self.name,
+            "company": company,
+            "analysis": analysis_text.strip(),
+            "raw_actions": actions,
+        }
 
     def format_vote(self) -> dict:
         """Format this investor's buy/hold/sell vote with reasoning.
 
-        Implemented in Phase 2 with structured output.
+        Should be called after analyze_company() so the persona has context.
+        Asks the persona to distill their analysis into a structured vote.
 
         Returns:
-            Vote dict with decision and key_reasoning fields.
+            Dict with investor, vote_text, and raw_actions.
         """
-        raise NotImplementedError(
-            "format_vote() will be implemented in Phase 2"
+        self.listen(
+            "Based on your analysis, provide your final investment verdict. "
+            "State clearly: BUY, HOLD, or SELL. "
+            "Then give your top 3 reasons for this verdict, each in one sentence."
         )
+        self.act()
+        actions = self.pop_latest_actions()
+
+        vote_text = ""
+        for action in actions:
+            if action.get("type") == "TALK" and action.get("content"):
+                vote_text += action["content"] + "\n"
+
+        return {
+            "investor": self.name,
+            "vote_text": vote_text.strip(),
+            "raw_actions": actions,
+        }
