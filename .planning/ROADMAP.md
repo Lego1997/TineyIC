@@ -8,8 +8,8 @@
 ## Phases
 
 - [x] **Phase 1: Foundation and TinyTroupe Integration** - Fork TinyTroupe, validate GPT-5.2 compatibility, establish project skeleton
-- [ ] **Phase 2: Persona Engineering** - Distill 6 investor philosophies into differentiated persona configs
-- [ ] **Phase 3: Financial Data Pipeline** - Build data fetching and normalization for company analysis
+- [x] **Phase 2: Persona Engineering** - Distill 6 investor philosophies into differentiated persona configs
+- [x] **Phase 3: Financial Data Pipeline** - Build data fetching and normalization for company analysis
 - [ ] **Phase 4: Debate Engine and Verdict Extraction** - Orchestrate structured multi-agent debate and extract structured votes
 - [ ] **Phase 5: Streamlit UI** - Complete user interface from ticker input to debate display to scorecard
 
@@ -42,8 +42,8 @@ Plans:
 **Plans:** 2 plans
 
 Plans:
-- [ ] 02-01-PLAN.md -- Create classic-value persona cluster (Graham, Buffett, Munger) with registry module and unit tests
-- [ ] 02-02-PLAN.md -- Create modern/diverse persona cluster (Lynch, Marks, Li Lu) with analyze_company/format_vote implementation and live API differentiation validation
+- [x] 02-01-PLAN.md -- Create classic-value persona cluster (Graham, Buffett, Munger) with registry module and unit tests
+- [x] 02-02-PLAN.md -- Create modern/diverse persona cluster (Lynch, Marks, Li Lu) with analyze_company/format_vote implementation and live API differentiation validation
 
 ### Phase 3: Financial Data Pipeline
 **Goal**: The system can take a stock ticker and produce a complete, normalized data package ready for persona consumption
@@ -59,7 +59,7 @@ Plans:
 
 Plans:
 - [x] 03-01-PLAN.md -- Pydantic data models, ticker resolver, yfinance fetchers (financials + news), and unit tests with mocked yfinance
-- [ ] 03-02-PLAN.md -- edgartools filings fetcher, xAI social sentiment fetcher, pipeline orchestrator (build_data_package), and live API integration test
+- [x] 03-02-PLAN.md -- edgartools filings fetcher, xAI social sentiment fetcher, pipeline orchestrator (build_data_package), and live API integration test
 
 ### Phase 4: Debate Engine and Verdict Extraction
 **Goal**: Personas can conduct a structured investment debate about a company and produce individual buy/hold/sell votes with reasoning
@@ -89,8 +89,8 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation and TinyTroupe Integration | 2/2 | Complete | 2026-03-20 |
-| 2. Persona Engineering | 0/2 | Planned | - |
-| 3. Financial Data Pipeline | 1/2 | In Progress | - |
+| 2. Persona Engineering | 2/2 | Complete | 2026-03-22 |
+| 3. Financial Data Pipeline | 2/2 | Complete | 2026-03-22 |
 | 4. Debate Engine and Verdict Extraction | 0/? | Not started | - |
 | 5. Streamlit UI | 0/? | Not started | - |
 
@@ -141,4 +141,4 @@ Orphaned: 0
 
 ---
 *Roadmap created: 2026-03-20*
-*Last updated: 2026-03-22*
+*Last updated: 2026-03-22 (Phase 3 complete)*

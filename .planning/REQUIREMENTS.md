@@ -16,21 +16,21 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Personas
 
-- [ ] **PERS-01**: Warren Buffett persona with philosophy distilled from shareholder letters, interviews, and public writings
-- [ ] **PERS-02**: Charlie Munger persona with philosophy distilled from speeches, Poor Charlie's Almanack, and public writings
-- [ ] **PERS-03**: Benjamin Graham persona with philosophy distilled from The Intelligent Investor, Security Analysis, and public writings
-- [ ] **PERS-04**: Peter Lynch persona with philosophy distilled from One Up on Wall Street, Beating the Street, and public writings
-- [ ] **PERS-05**: Howard Marks persona with philosophy distilled from investor memos, The Most Important Thing, and public writings
-- [ ] **PERS-06**: Li Lu persona with philosophy distilled from Columbia lectures, shareholder letters, and public writings
+- [x] **PERS-01**: Warren Buffett persona with philosophy distilled from shareholder letters, interviews, and public writings
+- [x] **PERS-02**: Charlie Munger persona with philosophy distilled from speeches, Poor Charlie's Almanack, and public writings
+- [x] **PERS-03**: Benjamin Graham persona with philosophy distilled from The Intelligent Investor, Security Analysis, and public writings
+- [x] **PERS-04**: Peter Lynch persona with philosophy distilled from One Up on Wall Street, Beating the Street, and public writings
+- [x] **PERS-05**: Howard Marks persona with philosophy distilled from investor memos, The Most Important Thing, and public writings
+- [x] **PERS-06**: Li Lu persona with philosophy distilled from Columbia lectures, shareholder letters, and public writings
 - [ ] **PERS-07**: User can select which personas participate in a given debate
 
 ### Financial Data
 
 - [x] **DATA-01**: User can enter a stock ticker and system resolves it to a valid company
 - [x] **DATA-02**: System fetches financial fundamentals (income statement, balance sheet, key ratios) via yfinance
-- [ ] **DATA-03**: System fetches SEC filings (10-K, 10-Q) via edgartools
+- [x] **DATA-03**: System fetches SEC filings (10-K, 10-Q) via edgartools
 - [x] **DATA-04**: System fetches recent company news via yfinance Ticker.news
-- [ ] **DATA-05**: System fetches views and contrarian views from X/Twitter via xAI API
+- [x] **DATA-05**: System fetches views and contrarian views from X/Twitter via xAI API
 
 ### Debate
 
@@ -106,18 +106,18 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FOUND-02 | Phase 1: Foundation and TinyTroupe Integration | Complete |
 | FOUND-03 | Phase 1: Foundation and TinyTroupe Integration | Complete |
 | FOUND-04 | Phase 1: Foundation and TinyTroupe Integration | Complete |
-| PERS-01 | Phase 2: Persona Engineering | Pending |
-| PERS-02 | Phase 2: Persona Engineering | Pending |
-| PERS-03 | Phase 2: Persona Engineering | Pending |
-| PERS-04 | Phase 2: Persona Engineering | Pending |
-| PERS-05 | Phase 2: Persona Engineering | Pending |
-| PERS-06 | Phase 2: Persona Engineering | Pending |
+| PERS-01 | Phase 2: Persona Engineering | Complete |
+| PERS-02 | Phase 2: Persona Engineering | Complete |
+| PERS-03 | Phase 2: Persona Engineering | Complete |
+| PERS-04 | Phase 2: Persona Engineering | Complete |
+| PERS-05 | Phase 2: Persona Engineering | Complete |
+| PERS-06 | Phase 2: Persona Engineering | Complete |
 | PERS-07 | Phase 4: Debate Engine and Verdict Extraction | Pending |
 | DATA-01 | Phase 3: Financial Data Pipeline | Complete |
 | DATA-02 | Phase 3: Financial Data Pipeline | Complete |
-| DATA-03 | Phase 3: Financial Data Pipeline | Pending |
+| DATA-03 | Phase 3: Financial Data Pipeline | Complete |
 | DATA-04 | Phase 3: Financial Data Pipeline | Complete |
-| DATA-05 | Phase 3: Financial Data Pipeline | Pending |
+| DATA-05 | Phase 3: Financial Data Pipeline | Complete |
 | DEBT-01 | Phase 4: Debate Engine and Verdict Extraction | Pending |
 | DEBT-02 | Phase 4: Debate Engine and Verdict Extraction | Pending |
 | DEBT-03 | Phase 4: Debate Engine and Verdict Extraction | Pending |
@@ -135,4 +135,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-03-20*
-*Last updated: 2026-03-22 after Plan 03-01 completion*
+*Last updated: 2026-03-22 after Plan 03-02 completion (Phase 3 complete)*
