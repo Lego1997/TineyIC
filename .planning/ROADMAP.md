@@ -71,7 +71,11 @@ Plans:
   3. The user can select a subset of the 6 personas to participate in a given debate (minimum 2)
   4. After the debate completes, the system extracts a structured buy/hold/sell vote from each persona via ResultsExtractor, with key reasoning attached
   5. A scorecard is generated showing all persona votes and their core reasoning in a structured comparison format
-**Plans**: TBD
+**Plans:** 2 plans
+
+Plans:
+- [ ] 04-01-PLAN.md -- Data models (DebatePhase, Vote, Scorecard), prompt templates, DebateOrchestrator (TinyWorld subclass), and unit tests with mocked agents
+- [ ] 04-02-PLAN.md -- Vote extraction via ResultsExtractor, scorecard builder, run_debate() convenience function, and live API integration test
 
 ### Phase 5: Streamlit UI
 **Goal**: A complete user journey from entering a ticker to watching a live debate to reviewing the final scorecard
@@ -91,7 +95,7 @@ Plans:
 | 1. Foundation and TinyTroupe Integration | 2/2 | Complete | 2026-03-20 |
 | 2. Persona Engineering | 2/2 | Complete | 2026-03-22 |
 | 3. Financial Data Pipeline | 2/2 | Complete | 2026-03-22 |
-| 4. Debate Engine and Verdict Extraction | 0/? | Not started | - |
+| 4. Debate Engine and Verdict Extraction | 0/2 | Planned | - |
 | 5. Streamlit UI | 0/? | Not started | - |
 
 ## Dependency Graph
@@ -141,4 +145,4 @@ Orphaned: 0
 
 ---
 *Roadmap created: 2026-03-20*
-*Last updated: 2026-03-22 (Phase 3 complete)*
+*Last updated: 2026-03-22 (Phase 4 planned)*
