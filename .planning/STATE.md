@@ -5,7 +5,7 @@ milestone_name: "Output Quality + Debate Robustness + Polish"
 status: planning
 last_updated: "2026-03-22T12:00:00.000Z"
 progress:
-  total_phases: 4
+  total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -39,6 +39,7 @@ v1 milestone passed audit on 2026-03-22:
 | 8 | Debate Quality Controls | Pending | Phase 7 |
 | 9 | Memo & Disagreement Engine | Pending | Phase 7, 8 |
 | 10 | UI Delivery | Pending | Phase 7, 9 |
+| 11 | Model Selection | Pending | Phase 7 |
 
 ## Performance Metrics
 
@@ -56,8 +57,8 @@ v1 milestone passed audit on 2026-03-22:
 | Metric | Value |
 |--------|-------|
 | Plans completed | 0/TBD |
-| Phases completed | 0/4 |
-| Requirements completed | 0/13 |
+| Phases completed | 0/5 |
+| Requirements completed | 0/16 |
 | Total tests | 154 (baseline) |
 
 ## Accumulated Context
@@ -89,6 +90,7 @@ v1 milestone passed audit on 2026-03-22:
 - [ ] Plan Phase 8: Debate Quality Controls
 - [ ] Plan Phase 9: Memo & Disagreement Engine
 - [ ] Plan Phase 10: UI Delivery
+- [ ] Plan Phase 11: Model Selection
 
 ### Blockers
 
@@ -96,9 +98,9 @@ None currently.
 
 ## Session Continuity
 
-**Last action:** v1.1 milestone initialized with 4 phases, 13 requirements. Roadmap, requirements, and project files updated.
+**Last action:** v1.1 milestone initialized with 5 phases, 16 requirements. Added Phase 11 (Model Selection) for runtime LLM model switching.
 **Next action:** `/gsd:plan-phase 7` to create the hardening plan.
-**Context to preserve:** Codex review identified that persona re-injection already happens via TinyPerson.reset_prompt(); OpenAIClient.get_cost_stats() already exists; ArtifactExporter + pandoc 3.8.3 are available for DOCX export. Phase 7 is a hard gate before feature phases.
+**Context to preserve:** Codex review identified that persona re-injection already happens via TinyPerson.reset_prompt(); OpenAIClient.get_cost_stats() already exists; ArtifactExporter + pandoc 3.8.3 are available for DOCX export. Phase 7 is a hard gate before feature phases. Model is currently hardcoded via config.ini MODEL field → config_manager.get("model") in openai_client.py; Phase 11 needs to override this at runtime.
 
 ---
 *State initialized: 2026-03-20*

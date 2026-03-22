@@ -2,8 +2,8 @@
 
 **Created:** 2026-03-20
 **Granularity:** Standard
-**Phases:** 10 (v1: 6 complete, v1.1: 4 pending)
-**Coverage:** 28/28 v1 requirements complete + 13 v1.1 requirements mapped
+**Phases:** 11 (v1: 6 complete, v1.1: 5 pending)
+**Coverage:** 28/28 v1 requirements complete + 16 v1.1 requirements mapped
 
 ## Phases
 
@@ -20,6 +20,7 @@
 - [ ] **Phase 8: Debate Quality Controls** - Anti-convergence controls, rotating devil's advocate, differentiation regression tests
 - [ ] **Phase 9: Memo & Disagreement Engine** - Full narrative investment memo, cross-persona disagreement extraction, Markdown/DOCX export
 - [ ] **Phase 10: UI Delivery** - Company data sidebar, memo/disagreement views, download buttons, per-debate cost display
+- [ ] **Phase 11: Model Selection** - Runtime LLM model selection via UI dropdown, config override per debate session
 
 ## Phase Details
 
@@ -161,6 +162,18 @@ Plans:
   5. All new UI components work correctly with the existing debate flow (real-time display, steering, phase pauses)
 **Plans:** TBD
 
+### Phase 11: Model Selection
+**Goal**: Users can choose which LLM model powers the debate, with the selection applied at runtime without editing config files
+**Depends on**: Phase 7 (clean baseline)
+**Requirements**: CONFIG-01, CONFIG-02, CONFIG-03
+**Success Criteria** (what must be TRUE):
+  1. The Streamlit sidebar contains a model dropdown populated from a configurable model list (default includes GPT-5.2 and Codex 5.3)
+  2. Selecting a model overrides the `config.ini` MODEL setting at runtime for that debate session -- all `TinyPerson.act()` calls during the debate use the selected model
+  3. Each model option displays a brief description of its strengths to help users choose (e.g., reasoning depth, speed, cost)
+  4. The default selection matches the current `config.ini` MODEL value so existing behavior is preserved when no change is made
+  5. Model selection is locked during an active debate (consistent with existing sidebar lock behavior) and only takes effect on the next debate
+**Plans:** TBD
+
 ## Progress
 
 ### v1
@@ -182,6 +195,7 @@ Plans:
 | 8. Debate Quality Controls | 0/TBD | Pending | — |
 | 9. Memo & Disagreement Engine | 0/TBD | Pending | — |
 | 10. UI Delivery | 0/TBD | Pending | — |
+| 11. Model Selection | 0/TBD | Pending | — |
 
 ## Dependency Graph
 
@@ -200,13 +214,17 @@ Phase 7: Release Hardening (gate)
    |
    +---> Phase 8: Debate Quality Controls ---> Phase 9: Memo & Disagreement Engine ---> Phase 10: UI Delivery
    |                                                                                        ^
+   +---> Phase 11: Model Selection (parallel) --------------------------------------------------+
+   |                                                                                        |
    +----------------------------------------------------------------------------------------+
                                           (Phase 7 cost stats hook feeds Phase 10)
 ```
 
 Phase 7 is a hard gate — all v1.1 feature phases depend on it.
+Phase 8 depends on Phase 7 only.
 Phase 9 depends on Phase 8 (better debate quality → better memo source material).
 Phase 10 depends on Phase 9 (needs memo/export artifacts) and Phase 7 (needs cost stats).
+Phase 11 depends on Phase 7 only — can run in parallel with Phases 8-9.
 
 ## Coverage Map
 
@@ -254,12 +272,15 @@ OUTP-04  -> Phase 9   [pending]
 OUTP-05  -> Phase 9   [pending]
 UI-05    -> Phase 10  [pending]
 UI-07    -> Phase 10  [pending]
-OPS-01   -> Phase 10  [pending]
+OPS-01    -> Phase 10  [pending]
+CONFIG-01 -> Phase 11  [pending]
+CONFIG-02 -> Phase 11  [pending]
+CONFIG-03 -> Phase 11  [pending]
 
-Mapped: 41/41
+Mapped: 44/44
 Orphaned: 0
 ```
 
 ---
 *Roadmap created: 2026-03-20*
-*Last updated: 2026-03-22 — v1.1 milestone initialized (4 new phases)*
+*Last updated: 2026-03-22 — v1.1 milestone initialized (5 new phases)*

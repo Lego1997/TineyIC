@@ -85,6 +85,12 @@ Output quality, debate robustness, and polish. Makes the output worth reading an
 - [ ] **UI-07**: Download buttons for memo, scorecard, and transcript in Markdown and DOCX formats
 - [ ] **OPS-01**: Per-debate token usage and estimated cost displayed in UI after debate completes
 
+### Model Selection
+
+- [ ] **CONFIG-01**: User can select the LLM model for a debate from a dropdown in the Streamlit sidebar, with available models populated from a configurable list (default: GPT-5.2, Codex 5.3)
+- [ ] **CONFIG-02**: Selected model overrides `config.ini` at runtime and is passed through `DebateOrchestrator` to all `TinyPerson.act()` calls for that debate session
+- [ ] **CONFIG-03**: Model selection includes a brief description of each model's strengths (e.g., "GPT-5.2: deep reasoning", "Codex 5.3: fast, code-oriented") to help users choose
+
 ## v2 Requirements
 
 Deferred to future release. Tracked but not in current roadmap.
@@ -171,11 +177,14 @@ Which phases cover which requirements. Updated during roadmap creation.
 | UI-05 | Phase 10: UI Delivery | Pending |
 | UI-07 | Phase 10: UI Delivery | Pending |
 | OPS-01 | Phase 10: UI Delivery | Pending |
+| CONFIG-01 | Phase 11: Model Selection | Pending |
+| CONFIG-02 | Phase 11: Model Selection | Pending |
+| CONFIG-03 | Phase 11: Model Selection | Pending |
 
 **Coverage:**
 - v1 requirements: 28 total, 28 complete
-- v1.1 requirements: 13 total, 0 complete
-- Mapped to phases: 41/41
+- v1.1 requirements: 16 total, 0 complete
+- Mapped to phases: 44/44
 - Unmapped: 0
 
 ---
