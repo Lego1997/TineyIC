@@ -1,14 +1,14 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.6
-milestone_name: milestone
-status: complete
-last_updated: "2026-03-22T08:15:00.000Z"
+milestone: v1.1
+milestone_name: "Output Quality + Debate Robustness + Polish"
+status: planning
+last_updated: "2026-03-22T12:00:00.000Z"
 progress:
-  total_phases: 6
-  completed_phases: 6
-  total_plans: 11
-  completed_plans: 11
+  total_phases: 4
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
 ---
 
 # State: openIC
@@ -17,98 +17,78 @@ progress:
 
 **Core Value:** Investor personas must be convincingly distinct and philosophically accurate -- each argues from their real-world framework, producing genuinely differentiated perspectives.
 
-**Current Focus:** All phases complete. Project at v0.6 milestone.
+**Current Focus:** v1.1 milestone -- output quality, debate robustness, and polish. Makes the output worth reading and the debate worth watching.
 
 ## Current Position
 
-Phase: 06 (enhanced-ticker-resolution) -- COMPLETE
-Plan: 1 of 1 complete
+Phase: 07 (release-hardening) -- PENDING
+Plan: 0 of TBD
+
+## v1 Completion Summary
+
+v1 milestone passed audit on 2026-03-22:
+- 6 phases, 11 plans, 154 tests passing, 28/28 requirements complete
+- 14/14 cross-phase integration connections verified
+- End-to-end flow (ticker → resolve → fetch → debate → scorecard) complete
+
+## v1.1 Phase Overview
+
+| Phase | Name | Status | Depends On |
+|-------|------|--------|------------|
+| 7 | Release Hardening | Pending | — (gate) |
+| 8 | Debate Quality Controls | Pending | Phase 7 |
+| 9 | Memo & Disagreement Engine | Pending | Phase 7, 8 |
+| 10 | UI Delivery | Pending | Phase 7, 9 |
 
 ## Performance Metrics
 
+### v1 (archived)
+
 | Metric | Value |
 |--------|-------|
-| Plans completed | 11 |
-| Plans total | 11 (Phase 1: 2, Phase 2: 2, Phase 3: 2, Phase 4: 2, Phase 5: 2, Phase 6: 1) |
+| Plans completed | 11/11 |
 | Phases completed | 6/6 |
 | Requirements completed | 28/28 |
-| Estimated cost/debate | $3-8 (from research) |
-| Phase 01 P01 | 66min | 2 tasks | 112 files |
-| Phase 01 P02 | 21min | 2 tasks | 3 files |
-| Phase 03 P01 | 4min | 2 tasks | 8 files |
-| Phase 03 P02 | 4min | 2 tasks | 5 files |
-| Phase 04 P01 | 11min | 2 tasks | 5 files |
-| Phase 04 P02 | 3min | 2 tasks | 4 files |
-| Phase 05 P01 | ~8min | 2 tasks | 4 files |
-| Phase 05 P02 | ~9min | 2 tasks | 3 files |
-| Phase 06 P01 | 4min | 2 tasks | 4 files |
 | Total tests | 154 (+ 7 live API) |
+
+### v1.1
+
+| Metric | Value |
+|--------|-------|
+| Plans completed | 0/TBD |
+| Phases completed | 0/4 |
+| Requirements completed | 0/13 |
+| Total tests | 154 (baseline) |
 
 ## Accumulated Context
 
-### Key Decisions
+### Key Decisions (v1.1)
 
 | Decision | Rationale | Phase |
 |----------|-----------|-------|
-| Fork TinyTroupe as local package (not submodule) | Need deep customization, avoid submodule complexity | Phase 1 |
-| Personas before debate engine | Research unambiguous: validate differentiation in isolation before multi-agent | Phase 2 before 4 |
-| Curated prompts over RAG | Simpler, more controllable persona accuracy for v1 | Phase 2 |
-| Free data sources only | No cost barrier for v1 (yfinance, edgartools, xAI API) | Phase 3 |
-| Lazy imports in fetchers | yfinance imported inside function body to avoid import-time side effects | Phase 3 |
-| Real pandas DataFrames in tests | Mock yfinance Ticker but use real DataFrames for .empty/.iloc/.index | Phase 3 |
-| GPT-5.2 (not Codex 5.3) | Codex is coding-specialized, not suited for financial analysis | Phase 1 |
-| Phases 2+3 parallelizable | Data pipeline has no dependency on persona work | Phases 2-3 |
-| GPT-5 models treated as reasoning models | Patched _is_reasoning_model() to include "gpt-5" so reasoning_effort is passed | Phase 1 |
-| llama-index deferred (wrapped in try/except) | Version incompatibility; semantic memory not needed for v1 | Phase 1 |
-| InvestorPersona uses include_persona_definitions() | load_specification() is a factory method; merge JSON into existing instance instead | Phase 1 |
-| Proxy gateway requires stream=True | API proxy rejects non-streaming; added _collect_stream() to reassemble chunks | Phase 1 |
-| base_url from config.ini for proxy routing | Configurable endpoint rather than hardcoded; supports proxy and direct OpenAI | Phase 1 |
-| Safe .pop() for reasoning model param cleanup | Prevents KeyError when params already filtered by None-removal | Phase 1 |
-| pop_latest_actions() for TinyTroupe action retrieval | TinyTroupe stores actions internally; act() return value is unreliable | Phase 1 |
-| 4-layer anti-convergence architecture | Style + contrastive beliefs + signature vocabulary + negative constraints | Phase 2 |
-| _sources field outside persona dict | Attribution tracking without polluting TinyTroupe prompt injection | Phase 2 |
-| Style field encodes reasoning STRUCTURE not just tone | TinyTroupe over-emphasizes style; each persona starts analysis with different first question | Phase 2 |
-| analyze_company/format_vote are simple wrappers for v1 | Phase 4 debate engine will enhance with structured extraction and JSON-formatted votes | Phase 2 |
-| Override _step() entirely in DebateOrchestrator | Avoids TinyWorld's parallelization and randomization -- debate needs sequential, stable agent order | Phase 4 |
-| Fuzzy vote validator using string containment | Handles ResultsExtractor returning "STRONG BUY" or "CONDITIONAL SELL" robustly | Phase 4 |
-| MagicMock without spec for agent mocks | TinyWorld.add_agent dynamically sets agent.environment; spec would block this | Phase 4 |
-| Strict majority consensus (> 50%) | Ties produce consensus=None; avoids false consensus on split votes | Phase 4 |
-| Lazy imports in run_debate() | load_persona and build_data_package imported inside function body to avoid circular deps | Phase 4 |
-| Fallback HOLD/LOW votes on extraction failure | Never crash; always return usable scorecard even if LLM extraction fails | Phase 4 |
-| queue.Queue for thread-safe UI communication | Background thread never writes to st.session_state; all events go through queue | Phase 5 |
-| st.fragment(run_every=2) for debate polling | Independent fragment rerun avoids blocking main thread; stops polling when debate ends | Phase 5 |
-| _TESTING guard for pytest imports | st.set_page_config fails in test context; guard enables importing helper functions | Phase 5 |
-| phase_gate (threading.Event) for inter-phase pausing | Debate blocks between phases until user clicks Continue or sends a message | Phase 5 |
-| @mention name_map for persona targeting | Maps short names (Buffett, Warren) to full display names for message routing | Phase 5 |
-| Mixed-case heuristic for ticker vs name | Title case "Apple" = company name; pure upper "AAPL" / pure lower "aapl" = ticker | Phase 6 |
-| 4-layer fallback chain for resolver | .info -> fast_info -> Search API -> invalid; never depends on single yfinance code path | Phase 6 |
-| 3-tuple return from resolve_ticker | (is_valid, ticker_symbol, company_name) -- callers need resolved symbol for name inputs | Phase 6 |
+| Hardening before features | Fix deprecations and test flakiness before adding new capabilities; prevents cascading breakage | Phase 7 |
+| Persona re-injection already exists | TinyPerson.reset_prompt() runs every act() call; DEBT-04 needs structural anti-convergence, not re-injection | Phase 8 |
+| Rotating devil's advocate over forced bears | Confine dissent to cross-exam mechanics; keep final votes unconstrained for authenticity | Phase 8 |
+| Merge memo + export into one phase | No reason to split backend artifact generation from export wiring | Phase 9 |
+| Pull PERS-08-lite and OPS-01-lite into v1.1 | High value, low implementation cost in current codebase | Phase 8, 10 |
+| Keep fact-checking (DEBT-06) in v2 | Transformational scope that would destabilize v1.1 timeline | v2 |
 
-### Key Risks
+### Key Risks (v1.1)
 
 | Risk | Severity | Mitigation | Phase |
 |------|----------|------------|-------|
-| OpenAI SDK v2.x incompatibility with TinyTroupe | RESOLVED | Patched _is_reasoning_model() and fixed max_completion_tokens; imports work | 1 |
-| Persona convergence (all sound the same) | MITIGATED | 4-layer anti-convergence (style/beliefs/vocabulary/constraints); 57 unit tests + human checkpoint passed | 2 |
-| Persona drift over multi-turn debate | HIGH | System prompt re-injection, 3-4 round limit | 4 |
-| API cost explosion (6 agents x multiple rounds) | MODERATE | Token budgets, prompt caching, round summaries | 4 |
-| Streamlit rerun vs long-running debate | RESOLVED | Background thread + queue.Queue + st.fragment polling | 5 |
+| Structural dissent damages persona authenticity | MODERATE | Confine to cross-exam role; keep final vote unconstrained | 8 |
+| Memo generation may hallucinate unsupported claims | MODERATE | Require section-level grounding to scorecard/data-package evidence | 9 |
+| Export reliability varies by runtime toolchain | LOW | Markdown as guaranteed fallback; DOCX gated on pandoc availability | 9 |
+| Scope creep pushes v1.1 toward transformative | MODERATE | Use phase gates; defer fact-checking and data-validation to v2 | All |
+| Persona drift over multi-turn debate | HIGH (from v1) | Anti-convergence controls + differentiation regression tests | 8 |
 
 ### Todos
 
-- [x] Begin Phase 1 planning after roadmap approval
-- [x] Execute Plan 01-01: Scaffold uv workspace and InvestorPersona base class
-- [x] Execute Plan 01-02: Validate GPT-5.2 compatibility with live API smoke test
-- [x] Begin Phase 2 planning: Persona Engineering
-- [x] Execute Plan 02-01: Classic value cluster (Graham, Buffett, Munger) + registry + tests
-- [x] Execute Plan 02-02: Modern cluster (Lynch, Marks, Li Lu) + analyze_company/format_vote + live API validation
-- [x] Execute Plan 03-01: Pydantic data models, ticker resolver, yfinance fetchers, and 21 unit tests
-- [x] Execute Plan 03-02: SEC filings, xAI social sentiment, pipeline orchestrator, and 14 new tests
-- [x] Execute Plan 04-01: DebateOrchestrator, models, prompts, and 15 unit tests
-- [x] Execute Plan 04-02: Vote extraction, scorecard builder, run_debate(), and 9 new unit tests + 1 live API test
-- [x] Execute Plan 05-01: Orchestrator streaming callbacks + Streamlit UI app (8 new tests)
-- [x] Execute Plan 05-02: Mid-debate steering, @mention targeting, phase pauses (12 new tests)
-- [x] Execute Plan 06-01: Enhanced ticker resolver with name search, international support, fallback chain (20 new/updated tests)
+- [ ] Plan Phase 7: Release Hardening
+- [ ] Plan Phase 8: Debate Quality Controls
+- [ ] Plan Phase 9: Memo & Disagreement Engine
+- [ ] Plan Phase 10: UI Delivery
 
 ### Blockers
 
@@ -116,10 +96,10 @@ None currently.
 
 ## Session Continuity
 
-**Last action:** Completed Plan 06-01 (enhanced ticker resolution). All 6 phases and 11 plans complete.
-**Next action:** Project at v0.6 milestone. All requirements fulfilled.
-**Context to preserve:** Ticker resolver now supports company names ("Apple" -> AAPL), international tickers (0700.HK, 7203.T, SAP.DE), and has a 4-layer fallback chain. Returns 3-tuple (is_valid, ticker_symbol, company_name). UI accepts both company names and tickers without auto-uppercasing. 154 unit tests + 7 live API tests.
+**Last action:** v1.1 milestone initialized with 4 phases, 13 requirements. Roadmap, requirements, and project files updated.
+**Next action:** `/gsd:plan-phase 7` to create the hardening plan.
+**Context to preserve:** Codex review identified that persona re-injection already happens via TinyPerson.reset_prompt(); OpenAIClient.get_cost_stats() already exists; ArtifactExporter + pandoc 3.8.3 are available for DOCX export. Phase 7 is a hard gate before feature phases.
 
 ---
 *State initialized: 2026-03-20*
-*Last updated: 2026-03-22 after Plan 06-01 completion (Phase 6 complete, all phases done)*
+*Last updated: 2026-03-22 — v1.1 milestone initialized*

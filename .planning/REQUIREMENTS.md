@@ -56,36 +56,53 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **RESOLVE-02**: International tickers work (e.g., 0700.HK, 7203.T, SAP.DE, MC.PA) -- the resolver accepts exchange-suffixed symbols
 - [x] **RESOLVE-03**: The resolver is robust against yfinance `.info` failures -- uses multiple fallback strategies (fast_info, Search API) before returning invalid
 
+## v1.1 Requirements
+
+Output quality, debate robustness, and polish. Makes the output worth reading and the debate worth watching.
+
+### Release Hardening
+
+- [ ] **HARD-01**: Migrate edgartools usage from deprecated `edgar.files.html` / `edgar.files.htmltools` to `edgar.documents.HTMLParser` before v6.0 removal
+- [ ] **HARD-02**: Stabilize live API test path -- all 7 currently-deselected `live_api` tests either pass reliably or are removed with documented rationale
+- [ ] **HARD-03**: Fix Pydantic v1-style `class Config` deprecation in TinyTroupe fork's `SimulationValidator` (use `ConfigDict` instead)
+- [ ] **HARD-04**: Expose per-debate token/call cost statistics retrieval point from `OpenAIClient.get_cost_stats()` to application layer
+
+### Debate Quality
+
+- [ ] **DEBT-04**: Anti-convergence controls that prevent persona opinions from collapsing to consensus over multi-round debates (note: system prompt re-injection already happens via `TinyPerson.reset_prompt()` each `act()` call -- this requires additional structural controls)
+- [ ] **DEBT-05**: Rotating devil's advocate role during cross-examination phase -- one persona argues the strongest counter-position, with final votes remaining unconstrained
+- [ ] **PERS-08**: Lightweight automated differentiation regression tests that detect convergence on fixed company fixtures (PERS-08-lite scope -- not full differentiation suite)
+
+### Memo & Disagreement
+
+- [ ] **OUTP-03**: Full narrative investment memo with structured sections (thesis, risks, valuation, verdict) synthesized from debate transcript, scorecard, and data package via LLM
+- [ ] **OUTP-04**: Cross-persona disagreement extraction identifying key dimensions where personas diverge most, with evidence from debate transcript
+- [ ] **OUTP-05**: Export investment memo and scorecard as Markdown and DOCX via ArtifactExporter with pandoc
+
+### UI Delivery
+
+- [ ] **UI-05**: Company data sidebar panel showing key financials, price chart, data freshness indicators, and source warnings -- visible during debate
+- [ ] **UI-07**: Download buttons for memo, scorecard, and transcript in Markdown and DOCX formats
+- [ ] **OPS-01**: Per-debate token usage and estimated cost displayed in UI after debate completes
+
 ## v2 Requirements
 
 Deferred to future release. Tracked but not in current roadmap.
 
 ### Persona Quality
 
-- **PERS-08**: Automated persona differentiation test suite ensuring distinct analyses
 - **PERS-09**: Contrastive prompting with anti-persona instructions to prevent convergence
 
 ### Debate Enhancements
 
-- **DEBT-04**: Persona drift mitigation via system prompt re-injection each round
-- **DEBT-05**: Structural dissent requiring at least 1-2 personas to argue the bear case
 - **DEBT-06**: Fact-checking layer verifying numerical claims against source DataPackage
-
-### Output Enhancements
-
-- **OUTP-03**: Full investment memo (thesis, risks, valuation, verdict) via ResultsReporter
-- **OUTP-04**: Cross-persona disagreement highlighting
-- **OUTP-05**: Export scorecard and memo as Markdown/DOCX via ArtifactExporter
 
 ### UI Enhancements
 
-- **UI-05**: Company data sidebar panel with key financials and price chart
 - **UI-06**: Configurable debate parameters (number of rounds, temperature)
-- **UI-07**: Download buttons for scorecard and memo
 
 ### Operational
 
-- **OPS-01**: Per-debate cost tracking and display
 - **OPS-02**: Data validation layer with completeness checks and fallback handling
 
 ## Out of Scope
@@ -137,11 +154,30 @@ Which phases cover which requirements. Updated during roadmap creation.
 | RESOLVE-02 | Phase 6: Enhanced Ticker Resolution | Complete |
 | RESOLVE-03 | Phase 6: Enhanced Ticker Resolution | Complete |
 
+### v1.1 Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| HARD-01 | Phase 7: Release Hardening | Pending |
+| HARD-02 | Phase 7: Release Hardening | Pending |
+| HARD-03 | Phase 7: Release Hardening | Pending |
+| HARD-04 | Phase 7: Release Hardening | Pending |
+| DEBT-04 | Phase 8: Debate Quality Controls | Pending |
+| DEBT-05 | Phase 8: Debate Quality Controls | Pending |
+| PERS-08 | Phase 8: Debate Quality Controls | Pending |
+| OUTP-03 | Phase 9: Memo & Disagreement Engine | Pending |
+| OUTP-04 | Phase 9: Memo & Disagreement Engine | Pending |
+| OUTP-05 | Phase 9: Memo & Disagreement Engine | Pending |
+| UI-05 | Phase 10: UI Delivery | Pending |
+| UI-07 | Phase 10: UI Delivery | Pending |
+| OPS-01 | Phase 10: UI Delivery | Pending |
+
 **Coverage:**
-- v1 requirements: 28 total
-- Mapped to phases: 28
+- v1 requirements: 28 total, 28 complete
+- v1.1 requirements: 13 total, 0 complete
+- Mapped to phases: 41/41
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-20*
-*Last updated: 2026-03-22 after Plan 06-01 completion (Phase 6 complete)*
+*Last updated: 2026-03-22 — v1.1 milestone initialized*

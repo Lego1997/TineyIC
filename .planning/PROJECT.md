@@ -15,16 +15,26 @@ The investor personas must be convincingly distinct and philosophically accurate
 - [x] Fork and extend TinyTroupe as the multi-agent simulation foundation — *Validated in Phase 1: Foundation*
 - [x] OpenAI API integration (GPT 5.2 extra high / Codex 5.3 extra high) — *Validated in Phase 1: Foundation*
 
-### Active
+### Validated (v1)
 
-- [ ] Create 6 investor personas: Warren Buffett, Charlie Munger, Benjamin Graham, Peter Lynch, Howard Marks, Li Lu
-- [ ] Distill each investor's philosophy from public writings (books, shareholder letters, interviews, speeches) into persona prompts
-- [ ] Auto-fetch company financials and data via yfinance, SEC EDGAR, and free news APIs
-- [ ] Simulate a structured investment debate where personas discuss a user-provided company
-- [ ] User can observe the debate in real-time and occasionally steer the conversation
-- [ ] Generate a scorecard with each persona's buy/hold/sell vote and reasoning
-- [ ] Generate an investment memo summarizing thesis, risks, valuation, and final verdict
-- [ ] Streamlit web UI for the debate view, company input, and output display
+- [x] Create 6 investor personas: Warren Buffett, Charlie Munger, Benjamin Graham, Peter Lynch, Howard Marks, Li Lu — *Validated in Phase 2: Persona Engineering*
+- [x] Distill each investor's philosophy from public writings (books, shareholder letters, interviews, speeches) into persona prompts — *Validated in Phase 2: Persona Engineering*
+- [x] Auto-fetch company financials and data via yfinance, SEC EDGAR, and free news APIs — *Validated in Phase 3: Financial Data Pipeline*
+- [x] Simulate a structured investment debate where personas discuss a user-provided company — *Validated in Phase 4: Debate Engine*
+- [x] User can observe the debate in real-time and occasionally steer the conversation — *Validated in Phase 5: Streamlit UI*
+- [x] Generate a scorecard with each persona's buy/hold/sell vote and reasoning — *Validated in Phase 4: Debate Engine*
+- [x] Generate an investment memo summarizing thesis, risks, valuation, and final verdict — *Validated in Phase 4: Debate Engine (scorecard with votes, reasoning, and consensus; narrative memo deferred to v1.1)*
+- [x] Streamlit web UI for the debate view, company input, and output display — *Validated in Phase 5: Streamlit UI*
+
+### v1.1 (Active)
+
+- [ ] Migrate deprecated edgartools and Pydantic APIs, fix test flakiness, expose cost stats
+- [ ] Anti-convergence controls and rotating devil's advocate in cross-examination
+- [ ] Full narrative investment memo with thesis, risks, valuation, verdict sections
+- [ ] Cross-persona disagreement extraction and analysis
+- [ ] Markdown/DOCX export for memo, scorecard, and transcript
+- [ ] Company data sidebar visible during debate
+- [ ] Per-debate cost display
 
 ### Out of Scope
 
@@ -54,11 +64,14 @@ The investor personas must be convincingly distinct and philosophically accurate
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
 | Fork TinyTroupe (not dependency) | Need deep customization of persona/environment system for investment-specific debate flow | ✓ Done (Phase 1) |
-| 6 investor personas for v1 | Covers major value investing schools without overscoping | — Pending |
-| Curated prompts over RAG | Simpler for v1, more controllable persona accuracy, avoids vector DB complexity | — Pending |
-| yfinance + free APIs for data | No cost barrier, sufficient for v1 analysis quality | — Pending |
-| Streamlit for UI | Matches TinyTroupe's existing pattern, fast to build, Python-native | — Pending |
+| 6 investor personas for v1 | Covers major value investing schools without overscoping | ✓ Done (Phase 2) |
+| Curated prompts over RAG | Simpler for v1, more controllable persona accuracy, avoids vector DB complexity | ✓ Done (Phase 2) |
+| yfinance + free APIs for data | No cost barrier, sufficient for v1 analysis quality | ✓ Done (Phase 3) |
+| Streamlit for UI | Matches TinyTroupe's existing pattern, fast to build, Python-native | ✓ Done (Phase 5) |
+| Hardening before features in v1.1 | Fix deprecations and test flakiness before adding new capabilities | — v1.1 Phase 7 |
+| Rotating devil's advocate over forced bears | Better realism — constrain dissent to cross-exam, keep final votes unconstrained | — v1.1 Phase 8 |
+| Merge memo + export into one phase | No reason to split backend artifact generation from export wiring | — v1.1 Phase 9 |
 | OpenAI GPT 5.2/Codex 5.3 | User's preferred models for high-quality financial reasoning | ✓ Done (Phase 1) |
 
 ---
-*Last updated: 2026-03-20 after Phase 1 completion*
+*Last updated: 2026-03-22 — v1 milestone audit passed, all requirements validated*

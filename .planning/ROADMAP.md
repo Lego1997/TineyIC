@@ -2,17 +2,24 @@
 
 **Created:** 2026-03-20
 **Granularity:** Standard
-**Phases:** 6
-**Coverage:** 25/25 v1 requirements mapped + 3 v1.1 enhancements
+**Phases:** 10 (v1: 6 complete, v1.1: 4 pending)
+**Coverage:** 28/28 v1 requirements complete + 13 v1.1 requirements mapped
 
 ## Phases
 
+### v1 (Complete)
 - [x] **Phase 1: Foundation and TinyTroupe Integration** - Fork TinyTroupe, validate GPT-5.2 compatibility, establish project skeleton
 - [x] **Phase 2: Persona Engineering** - Distill 6 investor philosophies into differentiated persona configs
 - [x] **Phase 3: Financial Data Pipeline** - Build data fetching and normalization for company analysis
 - [x] **Phase 4: Debate Engine and Verdict Extraction** - Orchestrate structured multi-agent debate and extract structured votes
 - [x] **Phase 5: Streamlit UI** - Complete user interface from ticker input to debate display to scorecard
 - [x] **Phase 6: Enhanced Ticker Resolution** - Support company name search, international exchanges, and robust resolver fallbacks
+
+### v1.1 (Active)
+- [ ] **Phase 7: Release Hardening** - Migrate deprecated APIs, fix test flakiness, eliminate warnings, expose cost stats
+- [ ] **Phase 8: Debate Quality Controls** - Anti-convergence controls, rotating devil's advocate, differentiation regression tests
+- [ ] **Phase 9: Memo & Disagreement Engine** - Full narrative investment memo, cross-persona disagreement extraction, Markdown/DOCX export
+- [ ] **Phase 10: UI Delivery** - Company data sidebar, memo/disagreement views, download buttons, per-debate cost display
 
 ## Phase Details
 
@@ -106,7 +113,57 @@ Plans:
 Plans:
 - [x] 06-01-PLAN.md -- Enhanced ticker resolver with name search, international support, and robust fallbacks; updated UI input handling and tests
 
+### Phase 7: Release Hardening
+**Goal**: Zero deprecation warnings, zero deselected tests, and a cost stats hook ready for UI consumption
+**Depends on**: Nothing (first v1.1 phase, independent gate)
+**Requirements**: HARD-01, HARD-02, HARD-03, HARD-04
+**Success Criteria** (what must be TRUE):
+  1. `uv run pytest tests/ -x -m "not live_api"` produces 0 deprecation warnings from edgartools or Pydantic in project-owned code
+  2. edgartools usage in `src/tinyic/data/filings.py` uses `edgar.documents.HTMLParser` (or equivalent non-deprecated API) instead of `edgar.files.html` / `edgar.files.htmltools`
+  3. All 7 previously-deselected `live_api` tests either pass when API keys are present, or are removed with a documented rationale in the test file
+  4. `SimulationValidator` in TinyTroupe fork uses `model_config = ConfigDict(...)` instead of `class Config`
+  5. A function `get_debate_cost_stats()` exists that returns token counts and estimated cost from `OpenAIClient`, callable after a debate completes
+**Plans:** TBD
+
+### Phase 8: Debate Quality Controls
+**Goal**: Personas maintain distinct positions throughout multi-round debates, with at least one structurally dissenting voice during cross-examination
+**Depends on**: Phase 7 (clean test baseline required)
+**Requirements**: DEBT-04, DEBT-05, PERS-08
+**Success Criteria** (what must be TRUE):
+  1. Anti-convergence controls are active during debate: the orchestrator applies a mechanism (e.g., persona-specific reinforcement prompts, contrastive framing) that prevents opinions from collapsing to unanimous agreement
+  2. During the cross-examination phase, one persona is assigned a rotating devil's advocate role that argues the strongest counter-position to the emerging consensus
+  3. The devil's advocate assignment rotates and does not constrain final votes -- personas vote independently in the verdict phase
+  4. An automated differentiation regression test exists that runs a debate on a fixed company fixture and asserts that persona analyses remain distinct (e.g., no two personas share >70% vocabulary overlap in key reasoning)
+  5. The convergence detection test can be run as part of the standard `pytest` suite without API keys (using mocked responses or recorded fixtures)
+**Plans:** TBD
+
+### Phase 9: Memo & Disagreement Engine
+**Goal**: The system produces a publishable investment memo and a structured disagreement analysis from every completed debate
+**Depends on**: Phase 7 (hardening), Phase 8 (debate quality -- better debates produce better memos)
+**Requirements**: OUTP-03, OUTP-04, OUTP-05
+**Success Criteria** (what must be TRUE):
+  1. After a debate completes, the system generates an `InvestmentMemo` with structured sections: Executive Summary, Investment Thesis, Key Risks, Valuation Discussion, Final Verdict -- each synthesized from debate transcript + scorecard + data package
+  2. The memo includes section-level grounding: each section references which personas contributed the underlying arguments and which data points support the claims
+  3. A `DisagreementAnalysis` object identifies the top 3 dimensions where personas diverged most (e.g., valuation methodology, risk assessment, growth outlook) with evidence quotes from the transcript
+  4. Both memo and scorecard can be exported as Markdown files (guaranteed) and DOCX files (when pandoc is available, with graceful fallback to Markdown-only)
+  5. Unit tests verify memo structure, disagreement extraction, and export formats without API calls
+**Plans:** TBD
+
+### Phase 10: UI Delivery
+**Goal**: Users see company data alongside the debate, can download all outputs, and see what the debate cost
+**Depends on**: Phase 7 (cost stats hook), Phase 9 (memo and export artifacts)
+**Requirements**: UI-05, UI-07, OPS-01
+**Success Criteria** (what must be TRUE):
+  1. A sidebar panel shows key financials (P/E, market cap, revenue, margins), a price chart, data freshness timestamp, and any data source warnings -- visible before and during the debate
+  2. After debate completes, download buttons are available for: investment memo (Markdown/DOCX), scorecard (Markdown), and full transcript (Markdown)
+  3. Per-debate token usage (input/output tokens) and estimated cost are displayed in the UI after the debate completes
+  4. The data sidebar updates immediately after data fetching (before debate rounds begin), not after the debate ends
+  5. All new UI components work correctly with the existing debate flow (real-time display, steering, phase pauses)
+**Plans:** TBD
+
 ## Progress
+
+### v1
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -117,8 +174,18 @@ Plans:
 | 5. Streamlit UI | 2/2 | Complete | 2026-03-22 |
 | 6. Enhanced Ticker Resolution | 1/1 | Complete | 2026-03-22 |
 
+### v1.1
+
+| Phase | Plans Complete | Status | Completed |
+|-------|----------------|--------|-----------|
+| 7. Release Hardening | 0/TBD | Pending | — |
+| 8. Debate Quality Controls | 0/TBD | Pending | — |
+| 9. Memo & Disagreement Engine | 0/TBD | Pending | — |
+| 10. UI Delivery | 0/TBD | Pending | — |
+
 ## Dependency Graph
 
+### v1 (Complete)
 ```
 Phase 1: Foundation
    |
@@ -127,44 +194,72 @@ Phase 1: Foundation
    +---> Phase 3: Financial Data Pipeline +---> Phase 4: Debate Engine ---> Phase 5: UI ---> Phase 6: Enhanced Resolver
 ```
 
-Phases 2 and 3 can execute in parallel after Phase 1 completes.
+### v1.1
+```
+Phase 7: Release Hardening (gate)
+   |
+   +---> Phase 8: Debate Quality Controls ---> Phase 9: Memo & Disagreement Engine ---> Phase 10: UI Delivery
+   |                                                                                        ^
+   +----------------------------------------------------------------------------------------+
+                                          (Phase 7 cost stats hook feeds Phase 10)
+```
+
+Phase 7 is a hard gate — all v1.1 feature phases depend on it.
+Phase 9 depends on Phase 8 (better debate quality → better memo source material).
+Phase 10 depends on Phase 9 (needs memo/export artifacts) and Phase 7 (needs cost stats).
 
 ## Coverage Map
 
 ```
-FOUND-01 -> Phase 1
-FOUND-02 -> Phase 1
-FOUND-03 -> Phase 1
-FOUND-04 -> Phase 1
-PERS-01  -> Phase 2
-PERS-02  -> Phase 2
-PERS-03  -> Phase 2
-PERS-04  -> Phase 2
-PERS-05  -> Phase 2
-PERS-06  -> Phase 2
-PERS-07  -> Phase 4
-DATA-01  -> Phase 3
-DATA-02  -> Phase 3
-DATA-03  -> Phase 3
-DATA-04  -> Phase 3
-DATA-05  -> Phase 3
-DEBT-01  -> Phase 4
-DEBT-02  -> Phase 4
-DEBT-03  -> Phase 4
-OUTP-01  -> Phase 4
-OUTP-02  -> Phase 4
-UI-01    -> Phase 5
-UI-02    -> Phase 5
-UI-03    -> Phase 5
-UI-04    -> Phase 5
-RESOLVE-01 -> Phase 6
-RESOLVE-02 -> Phase 6
-RESOLVE-03 -> Phase 6
+# v1 (28/28 complete)
+FOUND-01   -> Phase 1  [complete]
+FOUND-02   -> Phase 1  [complete]
+FOUND-03   -> Phase 1  [complete]
+FOUND-04   -> Phase 1  [complete]
+PERS-01    -> Phase 2  [complete]
+PERS-02    -> Phase 2  [complete]
+PERS-03    -> Phase 2  [complete]
+PERS-04    -> Phase 2  [complete]
+PERS-05    -> Phase 2  [complete]
+PERS-06    -> Phase 2  [complete]
+PERS-07    -> Phase 4  [complete]
+DATA-01    -> Phase 3  [complete]
+DATA-02    -> Phase 3  [complete]
+DATA-03    -> Phase 3  [complete]
+DATA-04    -> Phase 3  [complete]
+DATA-05    -> Phase 3  [complete]
+DEBT-01    -> Phase 4  [complete]
+DEBT-02    -> Phase 4  [complete]
+DEBT-03    -> Phase 4  [complete]
+OUTP-01    -> Phase 4  [complete]
+OUTP-02    -> Phase 4  [complete]
+UI-01      -> Phase 5  [complete]
+UI-02      -> Phase 5  [complete]
+UI-03      -> Phase 5  [complete]
+UI-04      -> Phase 5  [complete]
+RESOLVE-01 -> Phase 6  [complete]
+RESOLVE-02 -> Phase 6  [complete]
+RESOLVE-03 -> Phase 6  [complete]
 
-Mapped: 28/28
+# v1.1 (13/13 mapped, 0 complete)
+HARD-01  -> Phase 7   [pending]
+HARD-02  -> Phase 7   [pending]
+HARD-03  -> Phase 7   [pending]
+HARD-04  -> Phase 7   [pending]
+DEBT-04  -> Phase 8   [pending]
+DEBT-05  -> Phase 8   [pending]
+PERS-08  -> Phase 8   [pending]
+OUTP-03  -> Phase 9   [pending]
+OUTP-04  -> Phase 9   [pending]
+OUTP-05  -> Phase 9   [pending]
+UI-05    -> Phase 10  [pending]
+UI-07    -> Phase 10  [pending]
+OPS-01   -> Phase 10  [pending]
+
+Mapped: 41/41
 Orphaned: 0
 ```
 
 ---
 *Roadmap created: 2026-03-20*
-*Last updated: 2026-03-22 (Phase 6 complete -- enhanced ticker resolution)*
+*Last updated: 2026-03-22 — v1.1 milestone initialized (4 new phases)*
