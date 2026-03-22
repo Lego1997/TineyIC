@@ -48,6 +48,11 @@ class DebateOrchestrator(TinyWorld):
 
         self.make_everyone_accessible()
 
+        # Optional streaming callbacks (set by UI before run_debate)
+        self.on_phase_start = None   # Optional[Callable[[str], None]] -- called with phase.value
+        self.on_agent_start = None   # Optional[Callable[[str, str], None]] -- called with (agent.name, phase.value)
+        self.on_agent_done = None    # Optional[Callable[[str, str, list], None]] -- called with (agent.name, phase.value, actions)
+
     # ------------------------------------------------------------------
     # Context injection
     # ------------------------------------------------------------------
@@ -74,6 +79,10 @@ class DebateOrchestrator(TinyWorld):
         phase = self.PHASE_ORDER[self._phase_index]
         self.current_phase = phase
 
+        # Notify: phase starting
+        if self.on_phase_start:
+            self.on_phase_start(phase.value)
+
         # Broadcast the phase prompt as an internal goal
         prompt = PHASE_PROMPTS[phase].format(company=self.data_package.company_name)
         self.broadcast_internal_goal(prompt)
@@ -81,9 +90,18 @@ class DebateOrchestrator(TinyWorld):
         # Agents act sequentially in stable order
         agents_actions: dict = {}
         for agent in self.agents:
+            # Notify: agent about to act
+            if self.on_agent_start:
+                self.on_agent_start(agent.name, phase.value)
+
             actions = agent.act(return_actions=True)
-            agents_actions[agent.name] = actions
-            self._handle_actions(agent, agent.pop_latest_actions())
+            latest = agent.pop_latest_actions()
+            agents_actions[agent.name] = latest
+            self._handle_actions(agent, latest)
+
+            # Notify: agent finished
+            if self.on_agent_done:
+                self.on_agent_done(agent.name, phase.value, latest)
 
         self._phase_history.append(phase.value)
         self._phase_index += 1

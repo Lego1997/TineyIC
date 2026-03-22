@@ -7,6 +7,7 @@ dependencies = [
     "python-dotenv",
     "yfinance>=1.2.0",
     "edgartools>=5.25.1",
+    "streamlit>=1.40.0",
 ]
 
 [tool.uv.sources]
