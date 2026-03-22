@@ -44,42 +44,42 @@ def build_data_package(ticker: str) -> DataPackage:
     warnings: list[str] = []
 
     # Step 1: Validate ticker (DATA-01)
-    is_valid, company_name = resolve_ticker(ticker)
+    is_valid, resolved_ticker, company_name = resolve_ticker(ticker)
     if not is_valid:
         raise ValueError(f"Invalid ticker: {ticker}")
 
-    logger.info("Building data package for %s (%s)", ticker, company_name)
+    logger.info("Building data package for %s (%s)", resolved_ticker, company_name)
 
     # Step 2: Fetch company description
-    description = _fetch_description(ticker)
+    description = _fetch_description(resolved_ticker)
 
     # Step 3: Fetch financial fundamentals (DATA-02)
-    financials = fetch_financials(ticker)
+    financials = fetch_financials(resolved_ticker)
     if financials is None:
         warnings.append("Financial fundamentals unavailable")
 
     # Step 4: Fetch SEC filings (DATA-03)
-    filing_10k = fetch_filings(ticker, "10-K")
+    filing_10k = fetch_filings(resolved_ticker, "10-K")
     if filing_10k is None:
         warnings.append("10-K filing unavailable")
 
-    filing_10q = fetch_filings(ticker, "10-Q")
+    filing_10q = fetch_filings(resolved_ticker, "10-Q")
     if filing_10q is None:
         warnings.append("10-Q filing unavailable")
 
     # Step 5: Fetch news (DATA-04)
-    news = fetch_news(ticker)
+    news = fetch_news(resolved_ticker)
     if news is None:
         warnings.append("No recent news found")
 
     # Step 6: Fetch social sentiment (DATA-05)
-    social = fetch_social_sentiment(ticker, company_name)
+    social = fetch_social_sentiment(resolved_ticker, company_name)
     if social is None:
         warnings.append("X/Twitter sentiment unavailable")
 
     # Step 7: Assemble DataPackage
     package = DataPackage(
-        ticker=ticker.upper().strip(),
+        ticker=resolved_ticker,
         company_name=company_name,
         description=description,
         fetched_at=datetime.now(),

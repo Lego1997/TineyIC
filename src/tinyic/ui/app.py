@@ -95,6 +95,7 @@ def init_state():
         "status": "idle",
         "ticker": "",
         "company_name": "",
+        "_last_query": "",
         "selected_personas": list(PERSONA_INFO.keys()),
         "debate_log": [],
         "current_phase": "",
@@ -122,18 +123,19 @@ def render_sidebar():
 
         disabled = st.session_state.status in ("fetching", "debating", "extracting")
 
-        ticker = st.text_input(
-            "Stock Ticker",
-            placeholder="e.g., AAPL, MSFT, TSLA",
+        query = st.text_input(
+            "Company or Ticker",
+            placeholder="e.g., AAPL, Apple, 0700.HK",
             disabled=disabled,
             key="ticker_input",
         )
 
-        if ticker and ticker.upper().strip() != st.session_state.ticker:
-            st.session_state.ticker = ticker.upper().strip()
+        if query and query.strip() != st.session_state.get("_last_query", ""):
+            st.session_state["_last_query"] = query.strip()
             with st.spinner("Resolving..."):
-                _resolve_ticker(st.session_state.ticker)
-        elif not ticker:
+                _resolve_ticker(query.strip())
+        elif not query:
+            st.session_state["_last_query"] = ""
             st.session_state.ticker = ""
             st.session_state.company_name = ""
             if st.session_state.status == "ready":
@@ -141,8 +143,8 @@ def render_sidebar():
 
         if st.session_state.company_name:
             st.success(f"{st.session_state.company_name} ({st.session_state.ticker})")
-        elif st.session_state.ticker and st.session_state.status == "idle":
-            st.error("Invalid ticker")
+        elif st.session_state.get("_last_query") and st.session_state.status == "idle":
+            st.error("Could not resolve. Try a ticker symbol or full company name.")
 
         st.divider()
 
@@ -180,14 +182,16 @@ def render_sidebar():
                 st.rerun()
 
 
-def _resolve_ticker(ticker):
-    """Resolve ticker to company name. Updates session_state."""
+def _resolve_ticker(query):
+    """Resolve ticker or company name. Updates session_state."""
     from tinyic.data.ticker_resolver import resolve_ticker
-    is_valid, name = resolve_ticker(ticker)
+    is_valid, symbol, name = resolve_ticker(query)
     if is_valid:
+        st.session_state.ticker = symbol
         st.session_state.company_name = name
         st.session_state.status = "ready"
     else:
+        st.session_state.ticker = ""
         st.session_state.company_name = ""
         st.session_state.status = "idle"
 

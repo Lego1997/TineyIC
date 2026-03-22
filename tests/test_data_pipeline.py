@@ -767,7 +767,7 @@ class TestBuildDataPackage:
         self, mock_desc, mock_resolve, mock_fin, mock_filings, mock_news, mock_social
     ):
         """All sources succeed -> DataPackage with all fields, no warnings."""
-        mock_resolve.return_value = (True, "Apple Inc.")
+        mock_resolve.return_value = (True, "AAPL", "Apple Inc.")
         mock_desc.return_value = "Apple designs and sells consumer electronics."
         mock_fin.return_value = FinancialData(pe_ratio=28.5, revenue=394_000_000_000)
         mock_filings.side_effect = [
@@ -794,7 +794,7 @@ class TestBuildDataPackage:
     @patch("tinyic.data.pipeline.resolve_ticker")
     def test_build_data_package_invalid_ticker(self, mock_resolve):
         """Invalid ticker raises ValueError."""
-        mock_resolve.return_value = (False, "")
+        mock_resolve.return_value = (False, "", "")
 
         with pytest.raises(ValueError, match="Invalid ticker"):
             build_data_package("XYZNOTREAL")
@@ -809,7 +809,7 @@ class TestBuildDataPackage:
         self, mock_desc, mock_resolve, mock_fin, mock_filings, mock_news, mock_social
     ):
         """Some sources fail -> DataPackage has warnings for failed sources."""
-        mock_resolve.return_value = (True, "Apple Inc.")
+        mock_resolve.return_value = (True, "AAPL", "Apple Inc.")
         mock_desc.return_value = None
         mock_fin.return_value = FinancialData(pe_ratio=28.5)
         mock_filings.side_effect = [
@@ -842,7 +842,7 @@ class TestBuildDataPackage:
         self, mock_desc, mock_resolve, mock_fin, mock_filings, mock_news, mock_social
     ):
         """All data sources fail -> DataPackage has 5 warnings but doesn't crash."""
-        mock_resolve.return_value = (True, "Apple Inc.")
+        mock_resolve.return_value = (True, "AAPL", "Apple Inc.")
         mock_desc.return_value = None
         mock_fin.return_value = None
         mock_filings.return_value = None
@@ -870,7 +870,7 @@ class TestBuildDataPackage:
         self, mock_desc, mock_resolve, mock_fin, mock_filings, mock_news, mock_social
     ):
         """Full DataPackage.to_context_string() is under 12000 chars."""
-        mock_resolve.return_value = (True, "Apple Inc.")
+        mock_resolve.return_value = (True, "AAPL", "Apple Inc.")
         mock_desc.return_value = "Apple designs consumer electronics." * 5
         mock_fin.return_value = FinancialData(
             pe_ratio=28.5, pb_ratio=48.2, profit_margin=0.246,
