@@ -1,4 +1,4 @@
-"""Tests for the debate engine: models, prompts, and orchestrator."""
+"""Tests for the debate engine: models, prompts, orchestrator, extraction, and scorecard."""
 
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +14,7 @@ from tinyic.debate.models import (
     Vote,
     VoteChoice,
 )
+from tinyic.debate.extraction import extract_votes, build_scorecard, _parse_list_field, _parse_bool
 from tinyic.debate.orchestrator import DebateOrchestrator
 from tinyic.debate.prompts import CONTEXT_PREAMBLE, PHASE_PROMPTS
 from tinytroupe.environment.tiny_world import TinyWorld
@@ -266,3 +267,248 @@ class TestDebateOrchestrator:
         result = orch._step()
         assert result == {}
         assert orch.current_phase == DebatePhase.COMPLETE
+
+
+# ===========================================================================
+# TestVoteExtraction
+# ===========================================================================
+
+
+class TestVoteExtraction:
+    """Tests for extract_votes() using mocked ResultsExtractor."""
+
+    @patch("tinyic.debate.extraction.ResultsExtractor")
+    def test_extract_votes_success(self, MockExtractor):
+        """extract_votes returns parsed Vote objects from extraction results."""
+        mock_extractor = MockExtractor.return_value
+        mock_extractor.extract_results_from_agents.return_value = [
+            {
+                "vote": "BUY",
+                "confidence": "HIGH",
+                "reasoning": "- strong moat\n- good management",
+                "key_risks": "- valuation high",
+                "changed_mind": "false",
+            },
+            {
+                "vote": "SELL",
+                "confidence": "MEDIUM",
+                "reasoning": "- overvalued\n- cycle peak",
+                "key_risks": "- revenue slowdown",
+                "changed_mind": "true",
+            },
+        ]
+
+        dp = make_mock_data_package()
+        personas = [make_mock_persona("Alpha"), make_mock_persona("Beta")]
+        orch = DebateOrchestrator(name="test_ev1", personas=personas, data_package=dp)
+
+        votes = extract_votes(orch)
+
+        assert len(votes) == 2
+        assert votes[0].investor == "Alpha"
+        assert votes[0].vote == VoteChoice.BUY
+        assert votes[0].confidence == Confidence.HIGH
+        # Reasoning was parsed from string to list
+        assert isinstance(votes[0].reasoning, list)
+        assert len(votes[0].reasoning) == 2
+        assert "strong moat" in votes[0].reasoning[0]
+        assert votes[0].changed_mind is False
+
+        assert votes[1].investor == "Beta"
+        assert votes[1].vote == VoteChoice.SELL
+        assert votes[1].changed_mind is True
+
+    @patch("tinyic.debate.extraction.ResultsExtractor")
+    def test_extract_votes_fuzzy_vote(self, MockExtractor):
+        """Fuzzy vote matching: 'STRONG BUY' -> BUY."""
+        mock_extractor = MockExtractor.return_value
+        mock_extractor.extract_results_from_agents.return_value = [
+            {"vote": "STRONG BUY", "confidence": "HIGH"},
+            {"vote": "CONDITIONAL SELL", "confidence": "MEDIUM"},
+        ]
+
+        dp = make_mock_data_package()
+        personas = [make_mock_persona("Buffett"), make_mock_persona("Graham")]
+        orch = DebateOrchestrator(name="test_fuzzy", personas=personas, data_package=dp)
+
+        votes = extract_votes(orch)
+
+        assert len(votes) == 2
+        assert votes[0].vote == VoteChoice.BUY
+        assert votes[1].vote == VoteChoice.SELL
+
+    @patch("tinyic.debate.extraction.ResultsExtractor")
+    def test_extract_votes_extraction_failure(self, MockExtractor):
+        """When extraction raises, fallback HOLD/LOW votes are returned."""
+        mock_extractor = MockExtractor.return_value
+        mock_extractor.extract_results_from_agents.side_effect = Exception("API error")
+
+        dp = make_mock_data_package()
+        personas = [make_mock_persona("Alpha"), make_mock_persona("Beta")]
+        orch = DebateOrchestrator(name="test_fail", personas=personas, data_package=dp)
+
+        votes = extract_votes(orch)
+
+        assert len(votes) == 2
+        for v in votes:
+            assert v.vote == VoteChoice.HOLD
+            assert v.confidence == Confidence.LOW
+            assert "Extraction failed" in v.reasoning
+
+    @patch("tinyic.debate.extraction.ResultsExtractor")
+    def test_extract_votes_missing_fields(self, MockExtractor):
+        """Missing fields get sensible defaults (confidence=MEDIUM, reasoning=[])."""
+        mock_extractor = MockExtractor.return_value
+        mock_extractor.extract_results_from_agents.return_value = [
+            {"vote": "BUY"},
+            {"vote": "SELL"},
+        ]
+
+        dp = make_mock_data_package()
+        personas = [make_mock_persona("Sparse"), make_mock_persona("Minimal")]
+        orch = DebateOrchestrator(name="test_sparse", personas=personas, data_package=dp)
+
+        votes = extract_votes(orch)
+
+        assert len(votes) == 2
+        # Check first vote has sensible defaults
+        assert votes[0].vote == VoteChoice.BUY
+        assert votes[0].confidence == Confidence.MEDIUM
+        assert votes[0].reasoning == []
+        assert votes[0].key_risks == []
+        assert votes[0].changed_mind is False
+        # Second vote also gets defaults
+        assert votes[1].vote == VoteChoice.SELL
+        assert votes[1].confidence == Confidence.MEDIUM
+
+
+# ===========================================================================
+# TestBuildScorecard
+# ===========================================================================
+
+
+class TestBuildScorecard:
+    """Tests for build_scorecard() consensus and aggregation logic."""
+
+    def test_scorecard_consensus_majority(self):
+        """3 BUY + 1 SELL -> consensus=BUY, bull_count=3, bear_count=1."""
+        votes = [
+            Vote(investor="A", vote="BUY", confidence="HIGH"),
+            Vote(investor="B", vote="BUY", confidence="MEDIUM"),
+            Vote(investor="C", vote="BUY", confidence="LOW"),
+            Vote(investor="D", vote="SELL", confidence="HIGH"),
+        ]
+        sc = build_scorecard(votes, "AAPL", "Apple Inc.")
+
+        assert sc.consensus == VoteChoice.BUY
+        assert sc.bull_count == 3
+        assert sc.bear_count == 1
+        assert sc.hold_count == 0
+        assert sc.ticker == "AAPL"
+        assert sc.company_name == "Apple Inc."
+
+    def test_scorecard_consensus_tie(self):
+        """2 BUY + 2 SELL -> consensus=None (no strict majority)."""
+        votes = [
+            Vote(investor="A", vote="BUY", confidence="HIGH"),
+            Vote(investor="B", vote="BUY", confidence="MEDIUM"),
+            Vote(investor="C", vote="SELL", confidence="HIGH"),
+            Vote(investor="D", vote="SELL", confidence="MEDIUM"),
+        ]
+        sc = build_scorecard(votes, "MSFT", "Microsoft")
+
+        assert sc.consensus is None
+        assert sc.bull_count == 2
+        assert sc.bear_count == 2
+
+    def test_scorecard_to_markdown_format(self):
+        """Markdown output contains table headers, investor names, vote values."""
+        votes = [
+            Vote(investor="Buffett", vote="BUY", confidence="HIGH", reasoning=["wide moat"]),
+            Vote(investor="Graham", vote="HOLD", confidence="MEDIUM", reasoning=["fair value"]),
+        ]
+        sc = build_scorecard(votes, "GOOG", "Alphabet")
+        md = sc.to_markdown()
+
+        assert "| Investor |" in md
+        assert "| Vote |" in md
+        assert "Buffett" in md
+        assert "Graham" in md
+        assert "BUY" in md
+        assert "HOLD" in md
+        assert "Alphabet" in md
+        assert "GOOG" in md
+
+
+# ===========================================================================
+# TestRunDebate
+# ===========================================================================
+
+
+class TestRunDebate:
+    """Tests for the top-level run_debate() convenience function."""
+
+    def test_run_debate_min_personas(self):
+        """run_debate with 1 persona name raises ValueError."""
+        with pytest.raises(ValueError, match="At least"):
+            from tinyic.debate import run_debate
+            run_debate("AAPL", ["warren_buffett"])
+
+    @patch("tinyic.debate.build_scorecard")
+    @patch("tinyic.debate.extract_votes")
+    @patch("tinyic.debate.DebateOrchestrator")
+    @patch("tinyic.data.pipeline.build_data_package")
+    @patch("tinyic.personas.registry.load_persona")
+    def test_run_debate_wiring(self, mock_load, mock_build_dp, mock_orch_cls, mock_extract, mock_scorecard):
+        """run_debate wires orchestrator, extraction, and scorecard correctly."""
+        from tinyic.debate import run_debate
+
+        # Setup mocks
+        mock_persona_a = MagicMock()
+        mock_persona_a.name = "Warren Buffett"
+        mock_persona_b = MagicMock()
+        mock_persona_b.name = "Benjamin Graham"
+        mock_load.side_effect = [mock_persona_a, mock_persona_b]
+
+        mock_dp = make_mock_data_package()
+        mock_build_dp.return_value = mock_dp
+
+        mock_orch = mock_orch_cls.return_value
+        mock_orch._phase_history = ["opening_statements", "cross_examination", "rebuttal", "final_verdict"]
+        mock_orch.pretty_current_interactions.return_value = "Debate transcript..."
+
+        mock_votes = [
+            Vote(investor="Warren Buffett", vote="BUY", confidence="HIGH"),
+            Vote(investor="Benjamin Graham", vote="HOLD", confidence="MEDIUM"),
+        ]
+        mock_extract.return_value = mock_votes
+
+        mock_sc = Scorecard(
+            ticker="AAPL",
+            company_name="Apple Inc.",
+            votes=mock_votes,
+            consensus=VoteChoice.BUY,
+            bull_count=1,
+            bear_count=0,
+            hold_count=1,
+        )
+        mock_scorecard.return_value = mock_sc
+
+        # Execute
+        result = run_debate("AAPL", ["warren_buffett", "benjamin_graham"])
+
+        # Verify all components were called
+        assert mock_load.call_count == 2
+        mock_build_dp.assert_called_once_with("AAPL")
+        mock_orch_cls.assert_called_once()
+        mock_orch.run_debate.assert_called_once()
+        mock_extract.assert_called_once_with(mock_orch)
+        mock_scorecard.assert_called_once()
+
+        # Verify result
+        assert isinstance(result, DebateResult)
+        assert result.ticker == "AAPL"
+        assert result.company_name == "Apple Inc."
+        assert result.scorecard is mock_sc
+        assert len(result.phases_completed) == 4
+        assert result.transcript == "Debate transcript..."
