@@ -2,8 +2,8 @@
 
 **Created:** 2026-03-20
 **Granularity:** Standard
-**Phases:** 11 (v1: 6 complete, v1.1: 5 pending)
-**Coverage:** 28/28 v1 requirements complete + 16 v1.1 requirements mapped
+**Phases:** 12 (v1: 6 complete, v1.1: 6 pending)
+**Coverage:** 28/28 v1 requirements complete + 20 v1.1 requirements mapped
 
 ## Phases
 
@@ -21,6 +21,7 @@
 - [ ] **Phase 9: Memo & Disagreement Engine** - Full narrative investment memo, cross-persona disagreement extraction, Markdown/DOCX export
 - [ ] **Phase 10: UI Delivery** - Company data sidebar, memo/disagreement views, download buttons, per-debate cost display
 - [ ] **Phase 11: Model Selection** - Runtime LLM model selection via UI dropdown, config override per debate session
+- [ ] **Phase 12: Deep Research Pipeline** - Web search + LLM synthesis to produce comprehensive research brief for all personas
 
 ## Phase Details
 
@@ -174,6 +175,19 @@ Plans:
   5. Model selection is locked during an active debate (consistent with existing sidebar lock behavior) and only takes effect on the next debate
 **Plans:** TBD
 
+### Phase 12: Deep Research Pipeline
+**Goal**: Every debate is informed by a comprehensive, LLM-synthesized research brief that covers the target company's business, competition, industry, management, and analyst perspectives -- not just raw financial data
+**Depends on**: Phase 7 (clean baseline), Phase 11 (model selection -- research uses the selected model)
+**Requirements**: DATA-06, DATA-07, DATA-08, DATA-09
+**Success Criteria** (what must be TRUE):
+  1. `build_data_package()` includes an optional deep research step that uses web search APIs (e.g., Tavily, Brave Search, or xAI's web search) + LLM synthesis to produce a structured `ResearchBrief`
+  2. The `ResearchBrief` covers at minimum: business model and competitive moat analysis, industry trends and macro tailwinds/headwinds, management track record and capital allocation, recent catalysts and developments (last 6 months), and bull/bear investment cases from public analyst perspectives
+  3. The `ResearchBrief` is stored as a new field on `DataPackage` and included in `to_context_string()` so all personas receive the enriched fact base at debate start
+  4. The research step is toggleable via a UI checkbox or parameter (default: enabled) -- when disabled, the pipeline behaves exactly as in v1 with no performance penalty
+  5. When web search or LLM synthesis fails, the system logs a warning and continues with existing data sources (graceful degradation, consistent with the pipeline's existing pattern)
+  6. Unit tests verify `ResearchBrief` model, pipeline integration, toggle behavior, and failure handling without requiring API keys
+**Plans:** TBD
+
 ## Progress
 
 ### v1
@@ -196,6 +210,7 @@ Plans:
 | 9. Memo & Disagreement Engine | 0/TBD | Pending | — |
 | 10. UI Delivery | 0/TBD | Pending | — |
 | 11. Model Selection | 0/TBD | Pending | — |
+| 12. Deep Research Pipeline | 0/TBD | Pending | — |
 
 ## Dependency Graph
 
@@ -225,6 +240,7 @@ Phase 8 depends on Phase 7 only.
 Phase 9 depends on Phase 8 (better debate quality → better memo source material).
 Phase 10 depends on Phase 9 (needs memo/export artifacts) and Phase 7 (needs cost stats).
 Phase 11 depends on Phase 7 only — can run in parallel with Phases 8-9.
+Phase 12 depends on Phase 7 + Phase 11 (uses selected model for synthesis) — can run in parallel with Phase 8-9.
 
 ## Coverage Map
 
@@ -276,11 +292,15 @@ OPS-01    -> Phase 10  [pending]
 CONFIG-01 -> Phase 11  [pending]
 CONFIG-02 -> Phase 11  [pending]
 CONFIG-03 -> Phase 11  [pending]
+DATA-06   -> Phase 12  [pending]
+DATA-07   -> Phase 12  [pending]
+DATA-08   -> Phase 12  [pending]
+DATA-09   -> Phase 12  [pending]
 
-Mapped: 44/44
+Mapped: 48/48
 Orphaned: 0
 ```
 
 ---
 *Roadmap created: 2026-03-20*
-*Last updated: 2026-03-22 — v1.1 milestone initialized (5 new phases)*
+*Last updated: 2026-03-22 — v1.1 milestone initialized (6 new phases)*

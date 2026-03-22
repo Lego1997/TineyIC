@@ -91,6 +91,13 @@ Output quality, debate robustness, and polish. Makes the output worth reading an
 - [ ] **CONFIG-02**: Selected model overrides `config.ini` at runtime and is passed through `DebateOrchestrator` to all `TinyPerson.act()` calls for that debate session
 - [ ] **CONFIG-03**: Model selection includes a brief description of each model's strengths (e.g., "GPT-5.2: deep reasoning", "Codex 5.3: fast, code-oriented") to help users choose
 
+### Deep Research Pipeline
+
+- [ ] **DATA-06**: Before each debate, the system conducts a structured deep research pass on the target company using web search APIs and LLM synthesis, producing a comprehensive research brief that goes beyond the raw financial data sources
+- [ ] **DATA-07**: Research brief covers key investment analysis dimensions: business model and competitive landscape, industry trends and tailwinds/headwinds, management quality and track record, recent developments and catalysts, and bull/bear cases from public analyst perspectives
+- [ ] **DATA-08**: Research results are stored in a new `ResearchBrief` model field on `DataPackage` and injected into all persona contexts at debate start, so every persona argues from the same enriched fact base
+- [ ] **DATA-09**: The research step is configurable (can be skipped for faster debates) and degrades gracefully -- if web search or synthesis fails, the debate proceeds with the existing data sources and a warning
+
 ## v2 Requirements
 
 Deferred to future release. Tracked but not in current roadmap.
@@ -180,11 +187,15 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CONFIG-01 | Phase 11: Model Selection | Pending |
 | CONFIG-02 | Phase 11: Model Selection | Pending |
 | CONFIG-03 | Phase 11: Model Selection | Pending |
+| DATA-06 | Phase 12: Deep Research Pipeline | Pending |
+| DATA-07 | Phase 12: Deep Research Pipeline | Pending |
+| DATA-08 | Phase 12: Deep Research Pipeline | Pending |
+| DATA-09 | Phase 12: Deep Research Pipeline | Pending |
 
 **Coverage:**
 - v1 requirements: 28 total, 28 complete
-- v1.1 requirements: 16 total, 0 complete
-- Mapped to phases: 44/44
+- v1.1 requirements: 20 total, 0 complete
+- Mapped to phases: 48/48
 - Unmapped: 0
 
 ---
