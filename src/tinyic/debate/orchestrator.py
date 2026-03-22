@@ -1,5 +1,8 @@
 """DebateOrchestrator -- a TinyWorld subclass for structured investment debates."""
 
+import queue
+import threading
+
 from tinytroupe.environment.tiny_world import TinyWorld
 
 from tinyic.constants import MAX_PERSONAS, MIN_PERSONAS
@@ -53,6 +56,11 @@ class DebateOrchestrator(TinyWorld):
         self.on_agent_start = None   # Optional[Callable[[str, str], None]] -- called with (agent.name, phase.value)
         self.on_agent_done = None    # Optional[Callable[[str, str, list], None]] -- called with (agent.name, phase.value, actions)
 
+        # Optional message queue for user steering (set by UI)
+        self.message_queue = None  # Optional[queue.Queue] -- items are (message_str, target_agent_name_or_None)
+        # Optional phase gate for inter-phase pausing (set by UI)
+        self.phase_gate = None     # Optional[threading.Event] -- if set, _step waits for it before proceeding
+
     # ------------------------------------------------------------------
     # Context injection
     # ------------------------------------------------------------------
@@ -76,6 +84,11 @@ class DebateOrchestrator(TinyWorld):
             self.current_phase = DebatePhase.COMPLETE
             return {}
 
+        # Wait for phase gate if set (inter-phase pause)
+        if self.phase_gate is not None:
+            self.phase_gate.wait()
+            self.phase_gate.clear()  # Reset for next phase
+
         phase = self.PHASE_ORDER[self._phase_index]
         self.current_phase = phase
 
@@ -90,6 +103,9 @@ class DebateOrchestrator(TinyWorld):
         # Agents act sequentially in stable order
         agents_actions: dict = {}
         for agent in self.agents:
+            # Drain message queue before each agent acts
+            self._process_message_queue()
+
             # Notify: agent about to act
             if self.on_agent_start:
                 self.on_agent_start(agent.name, phase.value)
@@ -111,6 +127,36 @@ class DebateOrchestrator(TinyWorld):
 
         return agents_actions
 
+    def _process_message_queue(self):
+        """Drain the message queue, injecting user messages into the debate.
+
+        Messages are tuples of (text, target_agent_name_or_None).
+        If target is None, broadcast to all agents.
+        If target is a valid agent name, deliver via agent.listen() to that agent
+        and broadcast an observation to others.
+        """
+        if self.message_queue is None:
+            return
+
+        while True:
+            try:
+                text, target = self.message_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            if target and target in self.name_to_agent:
+                # Targeted message: direct to target, observation to others
+                target_agent = self.name_to_agent[target]
+                target_agent.listen(f"[Moderator to {target}]: {text}")
+                for agent in self.agents:
+                    if agent.name != target:
+                        agent.listen(
+                            f"[Moderator asked {target}]: {text}"
+                        )
+            else:
+                # Broadcast to all agents
+                self.broadcast(f"[Moderator]: {text}")
+
     # ------------------------------------------------------------------
     # Convenience runner
     # ------------------------------------------------------------------
@@ -118,6 +164,9 @@ class DebateOrchestrator(TinyWorld):
     def run_debate(self) -> None:
         """Run the full debate: inject context, then execute all phases."""
         self.inject_context()
+        # If phase_gate is set, signal it for the first phase
+        if self.phase_gate is not None:
+            self.phase_gate.set()
         self.run(
             steps=len(self.PHASE_ORDER),
             parallelize=False,

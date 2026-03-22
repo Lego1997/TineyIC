@@ -142,3 +142,156 @@ class TestExtractTalkContent:
 
         assert extract_talk_content([]) == "(No response)"
         assert extract_talk_content(None) == "(No response)"
+
+
+import queue
+import threading
+
+
+class TestMessageQueue:
+    """Test message queue injection into debate."""
+
+    def test_broadcast_message_delivered(self):
+        """Messages with no target are broadcast to all agents."""
+        personas = [make_mock_persona("Alice"), make_mock_persona("Bob")]
+        dp = make_mock_data_package()
+        orch = DebateOrchestrator(name="test", personas=personas, data_package=dp)
+
+        q = queue.Queue()
+        orch.message_queue = q
+        q.put(("What about the moat?", None))
+
+        orch.run_debate()
+
+        # broadcast() calls listen() on all agents -- check that listen was called
+        # with a message containing "Moderator" and "moat"
+        all_listen_calls = []
+        for p in personas:
+            for call in p.listen.call_args_list:
+                all_listen_calls.append(str(call))
+        moderator_calls = [c for c in all_listen_calls if "Moderator" in c and "moat" in c]
+        assert len(moderator_calls) > 0
+
+    def test_targeted_message_delivered(self):
+        """Messages with @mention target deliver directly to that agent."""
+        personas = [make_mock_persona("Alice"), make_mock_persona("Bob")]
+        dp = make_mock_data_package()
+        orch = DebateOrchestrator(name="test", personas=personas, data_package=dp)
+
+        q = queue.Queue()
+        orch.message_queue = q
+        q.put(("What about the moat?", "Alice"))
+
+        orch.run_debate()
+
+        # Alice should get "[Moderator to Alice]" message
+        alice = personas[0]
+        alice_listen_calls = [str(c) for c in alice.listen.call_args_list]
+        targeted = [c for c in alice_listen_calls if "Moderator to Alice" in c]
+        assert len(targeted) > 0
+
+        # Bob should get "[Moderator asked Alice]" observation
+        bob = personas[1]
+        bob_listen_calls = [str(c) for c in bob.listen.call_args_list]
+        observation = [c for c in bob_listen_calls if "Moderator asked Alice" in c]
+        assert len(observation) > 0
+
+    def test_no_queue_no_error(self):
+        """Debate runs normally when no message queue is set."""
+        personas = [make_mock_persona("A"), make_mock_persona("B")]
+        dp = make_mock_data_package()
+        orch = DebateOrchestrator(name="test", personas=personas, data_package=dp)
+
+        orch.run_debate()  # Should not raise
+        assert orch.is_complete
+
+
+class TestPhaseGate:
+    """Test inter-phase pausing via threading.Event."""
+
+    def test_phase_gate_blocks_until_set(self):
+        """Debate waits at phase_gate.wait() until event is set."""
+        personas = [make_mock_persona("A"), make_mock_persona("B")]
+        dp = make_mock_data_package()
+        orch = DebateOrchestrator(name="test", personas=personas, data_package=dp)
+
+        gate = threading.Event()
+        orch.phase_gate = gate
+
+        completed = {"value": False}
+
+        def run_in_thread():
+            orch.run_debate()
+            completed["value"] = True
+
+        t = threading.Thread(target=run_in_thread, daemon=True)
+        t.start()
+
+        # Debate should be blocked at first phase gate
+        # (run_debate sets gate for first phase, so first phase runs)
+        # Wait briefly, then signal gates for remaining phases
+        import time
+        time.sleep(0.5)
+
+        # Signal remaining 3 phases
+        for _ in range(3):
+            gate.set()
+            time.sleep(0.2)
+
+        t.join(timeout=5)
+        assert completed["value"], "Debate should have completed"
+        assert orch.is_complete
+
+    def test_no_gate_no_blocking(self):
+        """Debate runs straight through when no phase_gate is set."""
+        personas = [make_mock_persona("A"), make_mock_persona("B")]
+        dp = make_mock_data_package()
+        orch = DebateOrchestrator(name="test", personas=personas, data_package=dp)
+
+        orch.run_debate()
+        assert orch.is_complete
+
+
+class TestParseUserMessage:
+    """Test @mention parsing from user input."""
+
+    def test_no_mention(self):
+        from tinyic.ui.app import parse_user_message
+        text, target = parse_user_message("What about the balance sheet?")
+        assert text == "What about the balance sheet?"
+        assert target is None
+
+    def test_mention_buffett(self):
+        from tinyic.ui.app import parse_user_message
+        text, target = parse_user_message("@Buffett what about the moat?")
+        assert text == "what about the moat?"
+        assert target == "Warren Buffett"
+
+    def test_mention_graham(self):
+        from tinyic.ui.app import parse_user_message
+        text, target = parse_user_message("@graham is it trading below book value?")
+        assert text == "is it trading below book value?"
+        assert target == "Benjamin Graham"
+
+    def test_mention_case_insensitive(self):
+        from tinyic.ui.app import parse_user_message
+        text, target = parse_user_message("@MUNGER thoughts on management?")
+        assert target == "Charlie Munger"
+
+    def test_mention_li_lu(self):
+        from tinyic.ui.app import parse_user_message
+        _, target = parse_user_message("@Li what about China exposure?")
+        assert target == "Li Lu"
+
+    def test_unknown_mention(self):
+        from tinyic.ui.app import parse_user_message
+        text, target = parse_user_message("@Soros what do you think?")
+        assert text == "what do you think?"
+        assert target is None
+
+    def test_mention_by_first_name(self):
+        from tinyic.ui.app import parse_user_message
+        _, target = parse_user_message("@Warren how long would you hold?")
+        assert target == "Warren Buffett"
+        _, target = parse_user_message("@Howard where are we in the cycle?")
+        assert target == "Howard Marks"

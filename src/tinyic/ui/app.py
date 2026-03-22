@@ -4,6 +4,7 @@ import streamlit as st
 import threading
 import queue
 from datetime import datetime
+import re
 
 _TESTING = False
 try:
@@ -54,6 +55,40 @@ def extract_talk_content(actions):
     return "\n\n".join(parts) if parts else "(No response)"
 
 
+def parse_user_message(text):
+    """Parse user message for @mention targeting.
+
+    Args:
+        text: Raw user input string.
+
+    Returns:
+        (clean_text, target_agent_name_or_None)
+    """
+    name_map = {
+        "buffett": "Warren Buffett",
+        "warren": "Warren Buffett",
+        "munger": "Charlie Munger",
+        "charlie": "Charlie Munger",
+        "graham": "Benjamin Graham",
+        "benjamin": "Benjamin Graham",
+        "lynch": "Peter Lynch",
+        "peter": "Peter Lynch",
+        "marks": "Howard Marks",
+        "howard": "Howard Marks",
+        "li": "Li Lu",
+        "lu": "Li Lu",
+    }
+
+    match = re.match(r"^@(\w+)\s+(.+)", text, re.DOTALL)
+    if match:
+        mention = match.group(1).lower()
+        clean_text = match.group(2).strip()
+        target = name_map.get(mention)
+        return (clean_text, target)
+
+    return (text, None)
+
+
 def init_state():
     """Initialize session state with defaults. Idempotent -- only sets missing keys."""
     defaults = {
@@ -68,6 +103,11 @@ def init_state():
         "error_message": "",
         "ui_queue": None,
         "stop_event": None,
+        "message_queue": None,        # queue.Queue for user steering messages -> orchestrator
+        "phase_gate": None,           # threading.Event instance, shared with background thread
+        "waiting_for_continue": False, # True when paused between phases
+        "user_messages": [],           # User messages to display in chat log
+        "incomplete_warning": False,   # True if debate ended with error (partial results)
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -160,24 +200,32 @@ def _start_debate():
     st.session_state.error_message = ""
     st.session_state.current_phase = ""
     st.session_state.current_agent = ""
+    st.session_state.user_messages = []
+    st.session_state.incomplete_warning = False
+    st.session_state.waiting_for_continue = False
 
+    # Create shared concurrency primitives
     st.session_state.ui_queue = queue.Queue()
     st.session_state.stop_event = threading.Event()
+    st.session_state.message_queue = queue.Queue()
+    st.session_state.phase_gate = threading.Event()
 
     ticker = st.session_state.ticker
     persona_names = list(st.session_state.selected_personas)
     ui_queue = st.session_state.ui_queue
     stop_event = st.session_state.stop_event
+    message_queue = st.session_state.message_queue
+    phase_gate = st.session_state.phase_gate
 
     thread = threading.Thread(
         target=_debate_worker,
-        args=(ticker, persona_names, ui_queue, stop_event),
+        args=(ticker, persona_names, ui_queue, stop_event, message_queue, phase_gate),
         daemon=True,
     )
     thread.start()
 
 
-def _debate_worker(ticker, persona_names, ui_queue, stop_event):
+def _debate_worker(ticker, persona_names, ui_queue, stop_event, message_queue=None, phase_gate=None):
     """Background thread: fetch data -> run debate -> extract votes -> scorecard.
 
     IMPORTANT: This function NEVER reads or writes st.session_state.
@@ -199,6 +247,14 @@ def _debate_worker(ticker, persona_names, ui_queue, stop_event):
             personas=personas,
             data_package=data_package,
         )
+
+        # Set message queue and phase gate for steering
+        orchestrator.message_queue = message_queue
+        orchestrator.phase_gate = phase_gate
+
+        # Track agents done per phase for phase_complete events
+        agent_count_in_phase = [0]
+        num_personas = len(persona_names)
 
         def on_phase_start(phase_value):
             ui_queue.put({
@@ -223,6 +279,12 @@ def _debate_worker(ticker, persona_names, ui_queue, stop_event):
                 "content": content,
                 "timestamp": datetime.now().isoformat(),
             })
+            agent_count_in_phase[0] += 1
+            if agent_count_in_phase[0] >= num_personas:
+                agent_count_in_phase[0] = 0
+                # Don't pause after VERDICT (last phase)
+                if phase_value != "final_verdict":
+                    ui_queue.put({"type": "phase_complete", "phase": phase_value})
 
         orchestrator.on_phase_start = on_phase_start
         orchestrator.on_agent_start = on_agent_start
@@ -256,6 +318,28 @@ def _debate_worker(ticker, persona_names, ui_queue, stop_event):
         })
 
     except Exception as e:
+        # Try to build partial scorecard from whatever we have
+        try:
+            if 'orchestrator' in locals() and orchestrator._phase_history:
+                from tinyic.debate.extraction import extract_votes, build_scorecard
+                from tinyic.debate.models import DebateResult
+
+                votes = extract_votes(orchestrator)
+                scorecard = build_scorecard(votes, ticker, data_package.company_name)
+                transcript = orchestrator.pretty_current_interactions()
+
+                result = DebateResult(
+                    ticker=ticker,
+                    company_name=data_package.company_name,
+                    scorecard=scorecard,
+                    phases_completed=orchestrator._phase_history,
+                    transcript=transcript,
+                )
+                ui_queue.put({"type": "partial_complete", "result": result, "error": str(e)})
+                return
+        except Exception:
+            pass  # Partial extraction also failed
+
         ui_queue.put({"type": "error", "message": str(e)})
 
 
@@ -290,6 +374,13 @@ def _drain_queue():
         elif msg_type == "error":
             st.session_state.error_message = msg["message"]
             st.session_state.status = "error"
+        elif msg_type == "phase_complete":
+            st.session_state.waiting_for_continue = True
+        elif msg_type == "partial_complete":
+            st.session_state.debate_result = msg["result"]
+            st.session_state.incomplete_warning = True
+            st.session_state.error_message = msg["error"]
+            st.session_state.status = "complete"
 
 
 def render_debate_section():
@@ -310,6 +401,11 @@ def render_debate_section():
             elif entry["type"] == "message":
                 with st.chat_message(name=entry["agent"]):
                     st.markdown(entry["content"])
+            elif entry["type"] == "user":
+                target = entry.get("target")
+                prefix = f"*To {target}:* " if target else ""
+                with st.chat_message(name="Moderator", avatar="🎙️"):
+                    st.markdown(f"{prefix}{entry['content']}")
 
         if st.session_state.status == "debating" and st.session_state.current_agent:
             with st.chat_message(name=st.session_state.current_agent):
@@ -436,10 +532,50 @@ def main():
 
     elif st.session_state.status in ("fetching", "debating", "extracting"):
         st.title(f"Investment Committee: {st.session_state.company_name}")
-        render_debate_section()
+        render_debate_section()  # st.fragment handles polling + rendering
+
+        # Phase pause: show Continue button between phases (outside fragment)
+        if st.session_state.waiting_for_continue:
+            st.info(f"**{PHASE_LABELS.get(st.session_state.current_phase, '')}** complete. Review the discussion, then continue.")
+            cols = st.columns([1, 3])
+            with cols[0]:
+                if st.button("Continue to next phase", type="primary"):
+                    st.session_state.waiting_for_continue = False
+                    st.session_state.phase_gate.set()
+                    st.rerun()
+
+        # Chat input for user steering (outside fragment, in main body)
+        if st.session_state.status == "debating":
+            if user_input := st.chat_input("Ask a question or steer the debate (@name to target)"):
+                clean_text, target = parse_user_message(user_input)
+
+                # Add to display log
+                st.session_state.debate_log.append({
+                    "type": "user",
+                    "content": clean_text,
+                    "target": target,
+                    "timestamp": datetime.now().isoformat(),
+                })
+
+                # Enqueue for orchestrator
+                st.session_state.message_queue.put((clean_text, target))
+
+                # If waiting for continue, also signal the gate
+                if st.session_state.waiting_for_continue:
+                    st.session_state.waiting_for_continue = False
+                    st.session_state.phase_gate.set()
+
+                st.rerun()
 
     elif st.session_state.status == "complete":
         st.title(f"Investment Committee: {st.session_state.company_name}")
+        if st.session_state.incomplete_warning:
+            phases_done = len(st.session_state.debate_result.phases_completed) if st.session_state.debate_result else 0
+            st.warning(
+                f"Debate incomplete ({phases_done} of 4 phases). "
+                "Scorecard based on available discussion. "
+                f"Error: {st.session_state.error_message}"
+            )
         _drain_queue()
         render_debate_section()
         render_scorecard()
