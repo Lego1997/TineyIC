@@ -128,39 +128,45 @@ class TestDataModels:
 # ---------------------------------------------------------------------------
 
 class TestTickerResolver:
-    """Mock yfinance.Ticker to test resolve_ticker."""
+    """Test ticker resolution with enhanced resolver."""
 
     @patch("yfinance.Ticker")
     def test_resolve_ticker_valid(self, mock_ticker_cls):
-        """Valid ticker returns (True, company_name)."""
+        """Valid ticker returns (True, symbol, company_name)."""
         mock_instance = MagicMock()
         mock_instance.info = {"longName": "Apple Inc.", "shortName": "Apple"}
         mock_ticker_cls.return_value = mock_instance
 
-        is_valid, name = resolve_ticker("AAPL")
+        is_valid, symbol, name = resolve_ticker("AAPL")
         assert is_valid is True
+        assert symbol == "AAPL"
         assert name == "Apple Inc."
-        mock_ticker_cls.assert_called_once_with("AAPL")
 
     @patch("yfinance.Ticker")
-    def test_resolve_ticker_invalid(self, mock_ticker_cls):
-        """Invalid ticker (no name in info) returns (False, "")."""
+    def test_resolve_ticker_invalid_falls_through(self, mock_ticker_cls):
+        """Invalid ticker with no search results returns (False, '', '')."""
         mock_instance = MagicMock()
         mock_instance.info = {}
         mock_ticker_cls.return_value = mock_instance
 
-        is_valid, name = resolve_ticker("XYZNOTREAL")
-        assert is_valid is False
-        assert name == ""
+        with patch("yfinance.Search") as mock_search:
+            mock_search.return_value = MagicMock(quotes=[])
+            is_valid, symbol, name = resolve_ticker("XYZNOTREAL")
+            assert is_valid is False
+            assert symbol == ""
+            assert name == ""
 
     @patch("yfinance.Ticker")
-    def test_resolve_ticker_exception(self, mock_ticker_cls):
-        """Exception during resolution returns (False, "")."""
+    def test_resolve_ticker_exception_falls_through(self, mock_ticker_cls):
+        """Exception in .info falls through to search."""
         mock_ticker_cls.side_effect = Exception("Network error")
 
-        is_valid, name = resolve_ticker("AAPL")
-        assert is_valid is False
-        assert name == ""
+        with patch("yfinance.Search") as mock_search:
+            mock_search.return_value = MagicMock(quotes=[])
+            is_valid, symbol, name = resolve_ticker("AAPL")
+            assert is_valid is False
+            assert symbol == ""
+            assert name == ""
 
     @patch("yfinance.Ticker")
     def test_resolve_ticker_normalizes_input(self, mock_ticker_cls):
@@ -169,7 +175,7 @@ class TestTickerResolver:
         mock_instance.info = {"longName": "Apple Inc."}
         mock_ticker_cls.return_value = mock_instance
 
-        is_valid, name = resolve_ticker("aapl ")
+        is_valid, symbol, name = resolve_ticker("aapl ")
         assert is_valid is True
         assert name == "Apple Inc."
         mock_ticker_cls.assert_called_once_with("AAPL")
@@ -181,9 +187,234 @@ class TestTickerResolver:
         mock_instance.info = {"shortName": "Apple"}
         mock_ticker_cls.return_value = mock_instance
 
-        is_valid, name = resolve_ticker("AAPL")
+        is_valid, symbol, name = resolve_ticker("AAPL")
         assert is_valid is True
         assert name == "Apple"
+
+
+class TestResolveTickerNameSearch:
+    """Test company name resolution via yfinance Search."""
+
+    @patch("yfinance.Search")
+    def test_name_search_apple(self, mock_search):
+        """'Apple' resolves to AAPL via search."""
+        mock_search.return_value = MagicMock(quotes=[
+            {"symbol": "AAPL", "longname": "Apple Inc.", "shortname": "Apple Inc.", "quoteType": "EQUITY"},
+        ])
+        is_valid, symbol, name = resolve_ticker("Apple")
+        assert is_valid is True
+        assert symbol == "AAPL"
+        assert name == "Apple Inc."
+
+    @patch("yfinance.Search")
+    def test_name_search_tencent(self, mock_search):
+        """'Tencent' resolves to 0700.HK via search."""
+        mock_search.return_value = MagicMock(quotes=[
+            {"symbol": "0700.HK", "longname": "Tencent Holdings Limited", "shortname": "TENCENT", "quoteType": "EQUITY"},
+        ])
+        is_valid, symbol, name = resolve_ticker("Tencent")
+        assert is_valid is True
+        assert symbol == "0700.HK"
+        assert name == "Tencent Holdings Limited"
+
+    @patch("yfinance.Search")
+    def test_name_search_prefers_equity(self, mock_search):
+        """Search prefers EQUITY results over other quote types."""
+        mock_search.return_value = MagicMock(quotes=[
+            {"symbol": "AAPL240621C00100000", "longname": "AAPL Option", "quoteType": "OPTION"},
+            {"symbol": "AAPL", "longname": "Apple Inc.", "shortname": "Apple", "quoteType": "EQUITY"},
+        ])
+        is_valid, symbol, name = resolve_ticker("Apple")
+        assert is_valid is True
+        assert symbol == "AAPL"
+        assert name == "Apple Inc."
+
+    @patch("yfinance.Search")
+    def test_name_search_no_results(self, mock_search):
+        """Search with no results returns invalid."""
+        mock_search.return_value = MagicMock(quotes=[])
+        # Also need to patch Ticker for the fallback path
+        with patch("yfinance.Ticker") as mock_ticker:
+            mock_ticker.return_value = MagicMock(info={})
+            is_valid, symbol, name = resolve_ticker("xyznonexistentcompany")
+            assert is_valid is False
+
+    @patch("yfinance.Search")
+    def test_name_search_exception(self, mock_search):
+        """Search exception falls through gracefully."""
+        mock_search.side_effect = Exception("API error")
+        with patch("yfinance.Ticker") as mock_ticker:
+            mock_ticker.return_value = MagicMock(info={})
+            is_valid, symbol, name = resolve_ticker("Apple")
+            assert is_valid is False
+
+
+class TestResolveTickerInternational:
+    """Test international ticker resolution."""
+
+    @patch("yfinance.Ticker")
+    def test_hong_kong_ticker(self, mock_ticker_cls):
+        """0700.HK resolves to Tencent."""
+        mock_instance = MagicMock()
+        mock_instance.info = {"longName": "Tencent Holdings Limited"}
+        mock_ticker_cls.return_value = mock_instance
+
+        is_valid, symbol, name = resolve_ticker("0700.HK")
+        assert is_valid is True
+        assert symbol == "0700.HK"
+        assert name == "Tencent Holdings Limited"
+        mock_ticker_cls.assert_called_once_with("0700.HK")
+
+    @patch("yfinance.Ticker")
+    def test_tokyo_ticker(self, mock_ticker_cls):
+        """7203.T resolves to Toyota."""
+        mock_instance = MagicMock()
+        mock_instance.info = {"longName": "Toyota Motor Corporation"}
+        mock_ticker_cls.return_value = mock_instance
+
+        is_valid, symbol, name = resolve_ticker("7203.T")
+        assert is_valid is True
+        assert symbol == "7203.T"
+
+    @patch("yfinance.Ticker")
+    def test_german_ticker(self, mock_ticker_cls):
+        """SAP.DE resolves correctly."""
+        mock_instance = MagicMock()
+        mock_instance.info = {"longName": "SAP SE"}
+        mock_ticker_cls.return_value = mock_instance
+
+        is_valid, symbol, name = resolve_ticker("SAP.DE")
+        assert is_valid is True
+        assert symbol == "SAP.DE"
+
+    @patch("yfinance.Ticker")
+    def test_lowercase_international_normalizes(self, mock_ticker_cls):
+        """sap.de normalizes to SAP.DE."""
+        mock_instance = MagicMock()
+        mock_instance.info = {"longName": "SAP SE"}
+        mock_ticker_cls.return_value = mock_instance
+
+        is_valid, symbol, name = resolve_ticker("sap.de")
+        assert is_valid is True
+        mock_ticker_cls.assert_called_once_with("SAP.DE")
+
+
+class TestResolveTickerFallback:
+    """Test fallback chain behavior: .info -> fast_info -> Search -> invalid."""
+
+    def test_info_fails_fast_info_succeeds(self):
+        """When .info returns no name but fast_info validates, use Search for name."""
+        with patch("yfinance.Ticker") as mock_ticker:
+            mock_instance = MagicMock()
+            mock_instance.info = {}  # .info fails (no name)
+            mock_instance.fast_info.currency = "USD"  # fast_info succeeds
+            mock_ticker.return_value = mock_instance
+
+            with patch("yfinance.Search") as mock_search:
+                mock_search.return_value = MagicMock(quotes=[
+                    {"symbol": "AAPL", "longname": "Apple Inc.", "quoteType": "EQUITY"},
+                ])
+                is_valid, symbol, name = resolve_ticker("AAPL")
+                assert is_valid is True
+                assert symbol == "AAPL"
+                assert name == "Apple Inc."
+
+    def test_info_fails_fast_info_fails_search_succeeds(self):
+        """When both .info and fast_info fail, fall back to Search API."""
+        with patch("yfinance.Ticker") as mock_ticker:
+            from unittest.mock import PropertyMock
+            mock_instance = MagicMock()
+            mock_instance.info = {}
+            type(mock_instance.fast_info).currency = PropertyMock(side_effect=KeyError("currency"))
+            mock_ticker.return_value = mock_instance
+
+            with patch("yfinance.Search") as mock_search:
+                mock_search.return_value = MagicMock(quotes=[
+                    {"symbol": "AAPL", "longname": "Apple Inc.", "quoteType": "EQUITY"},
+                ])
+                is_valid, symbol, name = resolve_ticker("AAPL")
+                assert is_valid is True
+                assert symbol == "AAPL"
+                assert name == "Apple Inc."
+
+    def test_info_exception_search_succeeds(self):
+        """When .info throws, fall back through fast_info and Search."""
+        with patch("yfinance.Ticker") as mock_ticker:
+            mock_ticker.side_effect = Exception("HTTP 500")
+
+            with patch("yfinance.Search") as mock_search:
+                mock_search.return_value = MagicMock(quotes=[
+                    {"symbol": "MSFT", "longname": "Microsoft Corporation", "quoteType": "EQUITY"},
+                ])
+                is_valid, symbol, name = resolve_ticker("MSFT")
+                assert is_valid is True
+                assert symbol == "MSFT"
+
+    def test_fast_info_valid_but_search_empty_returns_symbol_as_name(self):
+        """When fast_info confirms validity but Search returns nothing, use symbol as name."""
+        with patch("yfinance.Ticker") as mock_ticker:
+            mock_instance = MagicMock()
+            mock_instance.info = {}
+            mock_instance.fast_info.currency = "HKD"
+            mock_ticker.return_value = mock_instance
+
+            with patch("yfinance.Search") as mock_search:
+                mock_search.return_value = MagicMock(quotes=[])
+                is_valid, symbol, name = resolve_ticker("0700.HK")
+                assert is_valid is True
+                assert symbol == "0700.HK"
+                assert name == "0700.HK"  # Falls back to symbol as name
+
+    def test_all_strategies_fail(self):
+        """When all fallback strategies fail, returns invalid."""
+        with patch("yfinance.Ticker") as mock_ticker:
+            from unittest.mock import PropertyMock
+            mock_instance = MagicMock()
+            mock_instance.info = {}
+            type(mock_instance.fast_info).currency = PropertyMock(side_effect=KeyError("currency"))
+            mock_ticker.return_value = mock_instance
+
+            with patch("yfinance.Search") as mock_search:
+                mock_search.return_value = MagicMock(quotes=[])
+                is_valid, symbol, name = resolve_ticker("XYZNOTREAL")
+                assert is_valid is False
+                assert symbol == ""
+                assert name == ""
+
+    def test_empty_input(self):
+        """Empty input returns invalid immediately."""
+        is_valid, symbol, name = resolve_ticker("")
+        assert is_valid is False
+        assert symbol == ""
+        assert name == ""
+
+    def test_whitespace_input(self):
+        """Whitespace-only input returns invalid."""
+        is_valid, symbol, name = resolve_ticker("   ")
+        assert is_valid is False
+
+
+class TestLooksLikeTicker:
+    """Test the ticker vs name heuristic."""
+
+    def test_standard_us_tickers(self):
+        from tinyic.data.ticker_resolver import _looks_like_ticker
+        assert _looks_like_ticker("AAPL") is True
+        assert _looks_like_ticker("MSFT") is True
+        assert _looks_like_ticker("A") is True
+
+    def test_international_tickers(self):
+        from tinyic.data.ticker_resolver import _looks_like_ticker
+        assert _looks_like_ticker("0700.HK") is True
+        assert _looks_like_ticker("SAP.DE") is True
+        assert _looks_like_ticker("7203.T") is True
+        assert _looks_like_ticker("MC.PA") is True
+
+    def test_company_names(self):
+        from tinyic.data.ticker_resolver import _looks_like_ticker
+        assert _looks_like_ticker("Apple") is False
+        assert _looks_like_ticker("Tencent Holdings") is False
+        assert _looks_like_ticker("toyota motor") is False
 
 
 # ---------------------------------------------------------------------------
