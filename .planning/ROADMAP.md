@@ -2,8 +2,8 @@
 
 **Created:** 2026-03-20
 **Granularity:** Standard
-**Phases:** 5
-**Coverage:** 25/25 v1 requirements mapped
+**Phases:** 6
+**Coverage:** 25/25 v1 requirements mapped + 3 v1.1 enhancements
 
 ## Phases
 
@@ -11,7 +11,8 @@
 - [x] **Phase 2: Persona Engineering** - Distill 6 investor philosophies into differentiated persona configs
 - [x] **Phase 3: Financial Data Pipeline** - Build data fetching and normalization for company analysis
 - [x] **Phase 4: Debate Engine and Verdict Extraction** - Orchestrate structured multi-agent debate and extract structured votes
-- [ ] **Phase 5: Streamlit UI** - Complete user interface from ticker input to debate display to scorecard
+- [x] **Phase 5: Streamlit UI** - Complete user interface from ticker input to debate display to scorecard
+- [x] **Phase 6: Enhanced Ticker Resolution** - Support company name search, international exchanges, and robust resolver fallbacks
 
 ## Phase Details
 
@@ -86,7 +87,24 @@ Plans:
   2. The debate displays in real-time using chat message components, with each persona's statements appearing as they are generated
   3. After the debate completes, the scorecard view shows all persona votes and reasoning in a clear visual layout
   4. User can type a question or steering prompt during an active debate, and it is injected into the next round of discussion
-**Plans**: TBD
+**Plans:** 2 plans
+
+Plans:
+- [x] 05-01-PLAN.md -- Orchestrator streaming callbacks, Streamlit app with ticker input, persona selection, real-time debate display, and scorecard view
+- [x] 05-02-PLAN.md -- Mid-debate user steering via chat input with @mention targeting, inter-phase pauses, and failure handling
+
+### Phase 6: Enhanced Ticker Resolution
+**Goal**: Users can enter a company name (e.g., "Apple", "Tencent") or a ticker from any major exchange (NYSE, NASDAQ, HKEX, TSE, Frankfurt, Euronext, LSE, etc.) and get correct resolution
+**Depends on**: Phase 3 (ticker_resolver.py), Phase 5 (UI input handling)
+**Requirements**: RESOLVE-01, RESOLVE-02, RESOLVE-03
+**Success Criteria** (what must be TRUE):
+  1. Entering a company name (e.g., "Apple", "Toyota", "Tencent") resolves to the correct ticker and company name via yfinance Search
+  2. International tickers work (e.g., 0700.HK, 7203.T, SAP.DE, MC.PA) -- the resolver accepts exchange-suffixed symbols
+  3. The resolver is robust against yfinance `.info` failures -- uses multiple fallback strategies (fast_info, Search API) before returning invalid
+**Plans:** TBD
+
+Plans:
+- [x] 06-01-PLAN.md -- Enhanced ticker resolver with name search, international support, and robust fallbacks; updated UI input handling and tests
 
 ## Progress
 
@@ -96,7 +114,8 @@ Plans:
 | 2. Persona Engineering | 2/2 | Complete | 2026-03-22 |
 | 3. Financial Data Pipeline | 2/2 | Complete | 2026-03-22 |
 | 4. Debate Engine and Verdict Extraction | 2/2 | Complete | 2026-03-22 |
-| 5. Streamlit UI | 0/? | Not started | - |
+| 5. Streamlit UI | 2/2 | Complete | 2026-03-22 |
+| 6. Enhanced Ticker Resolution | 1/1 | Complete | 2026-03-22 |
 
 ## Dependency Graph
 
@@ -105,7 +124,7 @@ Phase 1: Foundation
    |
    +---> Phase 2: Persona Engineering ---+
    |                                      |
-   +---> Phase 3: Financial Data Pipeline +---> Phase 4: Debate Engine ---> Phase 5: UI
+   +---> Phase 3: Financial Data Pipeline +---> Phase 4: Debate Engine ---> Phase 5: UI ---> Phase 6: Enhanced Resolver
 ```
 
 Phases 2 and 3 can execute in parallel after Phase 1 completes.
@@ -138,11 +157,14 @@ UI-01    -> Phase 5
 UI-02    -> Phase 5
 UI-03    -> Phase 5
 UI-04    -> Phase 5
+RESOLVE-01 -> Phase 6
+RESOLVE-02 -> Phase 6
+RESOLVE-03 -> Phase 6
 
-Mapped: 25/25
+Mapped: 28/28
 Orphaned: 0
 ```
 
 ---
 *Roadmap created: 2026-03-20*
-*Last updated: 2026-03-22 (Phase 4 complete)*
+*Last updated: 2026-03-22 (Phase 6 complete -- enhanced ticker resolution)*

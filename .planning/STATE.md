@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v0.6
 milestone_name: milestone
-status: executing
-last_updated: "2026-03-22T04:18:00.000Z"
+status: complete
+last_updated: "2026-03-22T08:15:00.000Z"
 progress:
-  total_phases: 5
-  completed_phases: 4
-  total_plans: 8
-  completed_plans: 8
+  total_phases: 6
+  completed_phases: 6
+  total_plans: 11
+  completed_plans: 11
 ---
 
 # State: openIC
@@ -17,21 +17,21 @@ progress:
 
 **Core Value:** Investor personas must be convincingly distinct and philosophically accurate -- each argues from their real-world framework, producing genuinely differentiated perspectives.
 
-**Current Focus:** Phase 05 — streamlit-ui (NEXT)
+**Current Focus:** All phases complete. Project at v0.6 milestone.
 
 ## Current Position
 
-Phase: 04 (debate-engine) -- COMPLETE
-Plan: 2 of 2 complete
+Phase: 06 (enhanced-ticker-resolution) -- COMPLETE
+Plan: 1 of 1 complete
 
 ## Performance Metrics
 
 | Metric | Value |
 |--------|-------|
-| Plans completed | 8 |
-| Plans total | 8 (Phase 1: 2, Phase 2: 2, Phase 3: 2, Phase 4: 2) |
-| Phases completed | 4/5 |
-| Requirements completed | 21/25 |
+| Plans completed | 11 |
+| Plans total | 11 (Phase 1: 2, Phase 2: 2, Phase 3: 2, Phase 4: 2, Phase 5: 2, Phase 6: 1) |
+| Phases completed | 6/6 |
+| Requirements completed | 28/28 |
 | Estimated cost/debate | $3-8 (from research) |
 | Phase 01 P01 | 66min | 2 tasks | 112 files |
 | Phase 01 P02 | 21min | 2 tasks | 3 files |
@@ -39,6 +39,10 @@ Plan: 2 of 2 complete
 | Phase 03 P02 | 4min | 2 tasks | 5 files |
 | Phase 04 P01 | 11min | 2 tasks | 5 files |
 | Phase 04 P02 | 3min | 2 tasks | 4 files |
+| Phase 05 P01 | ~8min | 2 tasks | 4 files |
+| Phase 05 P02 | ~9min | 2 tasks | 3 files |
+| Phase 06 P01 | 4min | 2 tasks | 4 files |
+| Total tests | 154 (+ 7 live API) |
 
 ## Accumulated Context
 
@@ -71,6 +75,14 @@ Plan: 2 of 2 complete
 | Strict majority consensus (> 50%) | Ties produce consensus=None; avoids false consensus on split votes | Phase 4 |
 | Lazy imports in run_debate() | load_persona and build_data_package imported inside function body to avoid circular deps | Phase 4 |
 | Fallback HOLD/LOW votes on extraction failure | Never crash; always return usable scorecard even if LLM extraction fails | Phase 4 |
+| queue.Queue for thread-safe UI communication | Background thread never writes to st.session_state; all events go through queue | Phase 5 |
+| st.fragment(run_every=2) for debate polling | Independent fragment rerun avoids blocking main thread; stops polling when debate ends | Phase 5 |
+| _TESTING guard for pytest imports | st.set_page_config fails in test context; guard enables importing helper functions | Phase 5 |
+| phase_gate (threading.Event) for inter-phase pausing | Debate blocks between phases until user clicks Continue or sends a message | Phase 5 |
+| @mention name_map for persona targeting | Maps short names (Buffett, Warren) to full display names for message routing | Phase 5 |
+| Mixed-case heuristic for ticker vs name | Title case "Apple" = company name; pure upper "AAPL" / pure lower "aapl" = ticker | Phase 6 |
+| 4-layer fallback chain for resolver | .info -> fast_info -> Search API -> invalid; never depends on single yfinance code path | Phase 6 |
+| 3-tuple return from resolve_ticker | (is_valid, ticker_symbol, company_name) -- callers need resolved symbol for name inputs | Phase 6 |
 
 ### Key Risks
 
@@ -80,7 +92,7 @@ Plan: 2 of 2 complete
 | Persona convergence (all sound the same) | MITIGATED | 4-layer anti-convergence (style/beliefs/vocabulary/constraints); 57 unit tests + human checkpoint passed | 2 |
 | Persona drift over multi-turn debate | HIGH | System prompt re-injection, 3-4 round limit | 4 |
 | API cost explosion (6 agents x multiple rounds) | MODERATE | Token budgets, prompt caching, round summaries | 4 |
-| Streamlit rerun vs long-running debate | MODERATE | Background thread, state checkpointing | 5 |
+| Streamlit rerun vs long-running debate | RESOLVED | Background thread + queue.Queue + st.fragment polling | 5 |
 
 ### Todos
 
@@ -94,6 +106,9 @@ Plan: 2 of 2 complete
 - [x] Execute Plan 03-02: SEC filings, xAI social sentiment, pipeline orchestrator, and 14 new tests
 - [x] Execute Plan 04-01: DebateOrchestrator, models, prompts, and 15 unit tests
 - [x] Execute Plan 04-02: Vote extraction, scorecard builder, run_debate(), and 9 new unit tests + 1 live API test
+- [x] Execute Plan 05-01: Orchestrator streaming callbacks + Streamlit UI app (8 new tests)
+- [x] Execute Plan 05-02: Mid-debate steering, @mention targeting, phase pauses (12 new tests)
+- [x] Execute Plan 06-01: Enhanced ticker resolver with name search, international support, fallback chain (20 new/updated tests)
 
 ### Blockers
 
@@ -101,10 +116,10 @@ None currently.
 
 ## Session Continuity
 
-**Last action:** Executed Plan 04-02 (extraction.py, updated __init__.py, test_debate.py, test_debate_live.py). 115 non-live tests passing (9 new extraction/scorecard/run_debate tests). Phase 4 complete.
-**Next action:** Begin Phase 5 planning (Streamlit UI).
-**Context to preserve:** Phases 1-4 fully complete. The debate engine is end-to-end functional: run_debate(ticker, persona_names) -> DebateResult with scorecard, transcript, phase history. extract_votes() uses ResultsExtractor with fuzzy parsing and fallback votes. build_scorecard() uses strict-majority consensus. 10 exports from tinyic.debate (DebateOrchestrator, 6 models, extract_votes, build_scorecard, run_debate). 115 unit tests + 7 live_api tests (deselected in CI).
+**Last action:** Completed Plan 06-01 (enhanced ticker resolution). All 6 phases and 11 plans complete.
+**Next action:** Project at v0.6 milestone. All requirements fulfilled.
+**Context to preserve:** Ticker resolver now supports company names ("Apple" -> AAPL), international tickers (0700.HK, 7203.T, SAP.DE), and has a 4-layer fallback chain. Returns 3-tuple (is_valid, ticker_symbol, company_name). UI accepts both company names and tickers without auto-uppercasing. 154 unit tests + 7 live API tests.
 
 ---
 *State initialized: 2026-03-20*
-*Last updated: 2026-03-22 after Plan 04-02 completion (Phase 4 complete)*
+*Last updated: 2026-03-22 after Plan 06-01 completion (Phase 6 complete, all phases done)*

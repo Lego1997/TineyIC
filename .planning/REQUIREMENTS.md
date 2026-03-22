@@ -45,10 +45,16 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### UI
 
-- [ ] **UI-01**: Streamlit app with ticker input field and company resolution
-- [ ] **UI-02**: Real-time debate display showing each persona's statements via st.chat_message
-- [ ] **UI-03**: Scorecard view displaying all votes and reasoning after debate completes
-- [ ] **UI-04**: User can inject questions or steer the debate mid-session via chat input
+- [x] **UI-01**: Streamlit app with ticker input field and company resolution
+- [x] **UI-02**: Real-time debate display showing each persona's statements via st.chat_message
+- [x] **UI-03**: Scorecard view displaying all votes and reasoning after debate completes
+- [x] **UI-04**: User can inject questions or steer the debate mid-session via chat input
+
+### Enhanced Ticker Resolution
+
+- [x] **RESOLVE-01**: Entering a company name (e.g., "Apple", "Toyota", "Tencent") resolves to the correct ticker and company name via yfinance Search
+- [x] **RESOLVE-02**: International tickers work (e.g., 0700.HK, 7203.T, SAP.DE, MC.PA) -- the resolver accepts exchange-suffixed symbols
+- [x] **RESOLVE-03**: The resolver is robust against yfinance `.info` failures -- uses multiple fallback strategies (fast_info, Search API) before returning invalid
 
 ## v2 Requirements
 
@@ -123,16 +129,19 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DEBT-03 | Phase 4: Debate Engine and Verdict Extraction | Complete |
 | OUTP-01 | Phase 4: Debate Engine and Verdict Extraction | Complete |
 | OUTP-02 | Phase 4: Debate Engine and Verdict Extraction | Complete |
-| UI-01 | Phase 5: Streamlit UI | Pending |
-| UI-02 | Phase 5: Streamlit UI | Pending |
-| UI-03 | Phase 5: Streamlit UI | Pending |
-| UI-04 | Phase 5: Streamlit UI | Pending |
+| UI-01 | Phase 5: Streamlit UI | Complete |
+| UI-02 | Phase 5: Streamlit UI | Complete |
+| UI-03 | Phase 5: Streamlit UI | Complete |
+| UI-04 | Phase 5: Streamlit UI | Complete |
+| RESOLVE-01 | Phase 6: Enhanced Ticker Resolution | Complete |
+| RESOLVE-02 | Phase 6: Enhanced Ticker Resolution | Complete |
+| RESOLVE-03 | Phase 6: Enhanced Ticker Resolution | Complete |
 
 **Coverage:**
-- v1 requirements: 25 total
-- Mapped to phases: 25
+- v1 requirements: 28 total
+- Mapped to phases: 28
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-20*
-*Last updated: 2026-03-22 after Plan 04-02 completion (Phase 4 complete)*
+*Last updated: 2026-03-22 after Plan 06-01 completion (Phase 6 complete)*
