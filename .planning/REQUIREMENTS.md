@@ -22,7 +22,7 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **PERS-04**: Peter Lynch persona with philosophy distilled from One Up on Wall Street, Beating the Street, and public writings
 - [x] **PERS-05**: Howard Marks persona with philosophy distilled from investor memos, The Most Important Thing, and public writings
 - [x] **PERS-06**: Li Lu persona with philosophy distilled from Columbia lectures, shareholder letters, and public writings
-- [ ] **PERS-07**: User can select which personas participate in a given debate
+- [x] **PERS-07**: User can select which personas participate in a given debate
 
 ### Financial Data
 
@@ -34,14 +34,14 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Debate
 
-- [ ] **DEBT-01**: Debate follows structured phases: opening statements, cross-examination, rebuttal, final verdict
-- [ ] **DEBT-02**: Debate orchestrator manages turn order and phase transitions using TinyWorld broadcast+run pattern
-- [ ] **DEBT-03**: All personas receive the same financial DataPackage as shared context at debate start
+- [x] **DEBT-01**: Debate follows structured phases: opening statements, cross-examination, rebuttal, final verdict
+- [x] **DEBT-02**: Debate orchestrator manages turn order and phase transitions using TinyWorld broadcast+run pattern
+- [x] **DEBT-03**: All personas receive the same financial DataPackage as shared context at debate start
 
 ### Output
 
-- [ ] **OUTP-01**: System extracts a buy/hold/sell vote from each participating persona via ResultsExtractor
-- [ ] **OUTP-02**: System generates a scorecard displaying all persona votes with key reasoning
+- [x] **OUTP-01**: System extracts a buy/hold/sell vote from each participating persona via ResultsExtractor
+- [x] **OUTP-02**: System generates a scorecard displaying all persona votes with key reasoning
 
 ### UI
 
@@ -112,17 +112,17 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PERS-04 | Phase 2: Persona Engineering | Complete |
 | PERS-05 | Phase 2: Persona Engineering | Complete |
 | PERS-06 | Phase 2: Persona Engineering | Complete |
-| PERS-07 | Phase 4: Debate Engine and Verdict Extraction | Pending |
+| PERS-07 | Phase 4: Debate Engine and Verdict Extraction | Complete |
 | DATA-01 | Phase 3: Financial Data Pipeline | Complete |
 | DATA-02 | Phase 3: Financial Data Pipeline | Complete |
 | DATA-03 | Phase 3: Financial Data Pipeline | Complete |
 | DATA-04 | Phase 3: Financial Data Pipeline | Complete |
 | DATA-05 | Phase 3: Financial Data Pipeline | Complete |
-| DEBT-01 | Phase 4: Debate Engine and Verdict Extraction | Pending |
-| DEBT-02 | Phase 4: Debate Engine and Verdict Extraction | Pending |
-| DEBT-03 | Phase 4: Debate Engine and Verdict Extraction | Pending |
-| OUTP-01 | Phase 4: Debate Engine and Verdict Extraction | Pending |
-| OUTP-02 | Phase 4: Debate Engine and Verdict Extraction | Pending |
+| DEBT-01 | Phase 4: Debate Engine and Verdict Extraction | Complete |
+| DEBT-02 | Phase 4: Debate Engine and Verdict Extraction | Complete |
+| DEBT-03 | Phase 4: Debate Engine and Verdict Extraction | Complete |
+| OUTP-01 | Phase 4: Debate Engine and Verdict Extraction | Complete |
+| OUTP-02 | Phase 4: Debate Engine and Verdict Extraction | Complete |
 | UI-01 | Phase 5: Streamlit UI | Pending |
 | UI-02 | Phase 5: Streamlit UI | Pending |
 | UI-03 | Phase 5: Streamlit UI | Pending |
@@ -135,4 +135,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-03-20*
-*Last updated: 2026-03-22 after Plan 03-02 completion (Phase 3 complete)*
+*Last updated: 2026-03-22 after Plan 04-02 completion (Phase 4 complete)*

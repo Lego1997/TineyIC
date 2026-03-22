@@ -10,7 +10,7 @@
 - [x] **Phase 1: Foundation and TinyTroupe Integration** - Fork TinyTroupe, validate GPT-5.2 compatibility, establish project skeleton
 - [x] **Phase 2: Persona Engineering** - Distill 6 investor philosophies into differentiated persona configs
 - [x] **Phase 3: Financial Data Pipeline** - Build data fetching and normalization for company analysis
-- [ ] **Phase 4: Debate Engine and Verdict Extraction** - Orchestrate structured multi-agent debate and extract structured votes
+- [x] **Phase 4: Debate Engine and Verdict Extraction** - Orchestrate structured multi-agent debate and extract structured votes
 - [ ] **Phase 5: Streamlit UI** - Complete user interface from ticker input to debate display to scorecard
 
 ## Phase Details
@@ -75,7 +75,7 @@ Plans:
 
 Plans:
 - [x] 04-01-PLAN.md -- Data models (DebatePhase, Vote, Scorecard), prompt templates, DebateOrchestrator (TinyWorld subclass), and unit tests with mocked agents
-- [ ] 04-02-PLAN.md -- Vote extraction via ResultsExtractor, scorecard builder, run_debate() convenience function, and live API integration test
+- [x] 04-02-PLAN.md -- Vote extraction via ResultsExtractor, scorecard builder, run_debate() convenience function, and live API integration test
 
 ### Phase 5: Streamlit UI
 **Goal**: A complete user journey from entering a ticker to watching a live debate to reviewing the final scorecard
@@ -95,7 +95,7 @@ Plans:
 | 1. Foundation and TinyTroupe Integration | 2/2 | Complete | 2026-03-20 |
 | 2. Persona Engineering | 2/2 | Complete | 2026-03-22 |
 | 3. Financial Data Pipeline | 2/2 | Complete | 2026-03-22 |
-| 4. Debate Engine and Verdict Extraction | 1/2 | In Progress | - |
+| 4. Debate Engine and Verdict Extraction | 2/2 | Complete | 2026-03-22 |
 | 5. Streamlit UI | 0/? | Not started | - |
 
 ## Dependency Graph
@@ -145,4 +145,4 @@ Orphaned: 0
 
 ---
 *Roadmap created: 2026-03-20*
-*Last updated: 2026-03-22 (Plan 04-01 complete)*
+*Last updated: 2026-03-22 (Phase 4 complete)*

@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v0.6
 milestone_name: milestone
 status: executing
-last_updated: "2026-03-22T03:58:00.000Z"
+last_updated: "2026-03-22T04:18:00.000Z"
 progress:
   total_phases: 5
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 8
-  completed_plans: 7
+  completed_plans: 8
 ---
 
 # State: openIC
@@ -17,27 +17,28 @@ progress:
 
 **Core Value:** Investor personas must be convincingly distinct and philosophically accurate -- each argues from their real-world framework, producing genuinely differentiated perspectives.
 
-**Current Focus:** Phase 04 — debate-engine (IN PROGRESS)
+**Current Focus:** Phase 05 — streamlit-ui (NEXT)
 
 ## Current Position
 
-Phase: 04 (debate-engine)
-Plan: 1 of 2 complete
+Phase: 04 (debate-engine) -- COMPLETE
+Plan: 2 of 2 complete
 
 ## Performance Metrics
 
 | Metric | Value |
 |--------|-------|
-| Plans completed | 7 |
+| Plans completed | 8 |
 | Plans total | 8 (Phase 1: 2, Phase 2: 2, Phase 3: 2, Phase 4: 2) |
-| Phases completed | 3/5 |
-| Requirements completed | 15/25 |
+| Phases completed | 4/5 |
+| Requirements completed | 21/25 |
 | Estimated cost/debate | $3-8 (from research) |
 | Phase 01 P01 | 66min | 2 tasks | 112 files |
 | Phase 01 P02 | 21min | 2 tasks | 3 files |
 | Phase 03 P01 | 4min | 2 tasks | 8 files |
 | Phase 03 P02 | 4min | 2 tasks | 5 files |
 | Phase 04 P01 | 11min | 2 tasks | 5 files |
+| Phase 04 P02 | 3min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -67,6 +68,9 @@ Plan: 1 of 2 complete
 | Override _step() entirely in DebateOrchestrator | Avoids TinyWorld's parallelization and randomization -- debate needs sequential, stable agent order | Phase 4 |
 | Fuzzy vote validator using string containment | Handles ResultsExtractor returning "STRONG BUY" or "CONDITIONAL SELL" robustly | Phase 4 |
 | MagicMock without spec for agent mocks | TinyWorld.add_agent dynamically sets agent.environment; spec would block this | Phase 4 |
+| Strict majority consensus (> 50%) | Ties produce consensus=None; avoids false consensus on split votes | Phase 4 |
+| Lazy imports in run_debate() | load_persona and build_data_package imported inside function body to avoid circular deps | Phase 4 |
+| Fallback HOLD/LOW votes on extraction failure | Never crash; always return usable scorecard even if LLM extraction fails | Phase 4 |
 
 ### Key Risks
 
@@ -89,6 +93,7 @@ Plan: 1 of 2 complete
 - [x] Execute Plan 03-01: Pydantic data models, ticker resolver, yfinance fetchers, and 21 unit tests
 - [x] Execute Plan 03-02: SEC filings, xAI social sentiment, pipeline orchestrator, and 14 new tests
 - [x] Execute Plan 04-01: DebateOrchestrator, models, prompts, and 15 unit tests
+- [x] Execute Plan 04-02: Vote extraction, scorecard builder, run_debate(), and 9 new unit tests + 1 live API test
 
 ### Blockers
 
@@ -96,10 +101,10 @@ None currently.
 
 ## Session Continuity
 
-**Last action:** Executed Plan 04-01 (models.py, prompts.py, orchestrator.py, test_debate.py). 106 non-live tests passing (15 new debate tests). Phase 4 Plan 1 complete.
-**Next action:** Execute Plan 04-02 (vote extraction via ResultsExtractor, scorecard builder, run_debate convenience function, live API integration test).
-**Context to preserve:** Phases 1-3 fully complete. Phase 4 Plan 1 complete: DebateOrchestrator (TinyWorld subclass) with 4-phase debate flow, Pydantic models (DebatePhase, Vote, Scorecard, DebateResult), fuzzy vote validator, PHASE_PROMPTS dict. 7 exports from tinyic.debate (DebateOrchestrator + 6 models). DebateOrchestrator._step() overrides TinyWorld._step() entirely for sequential agent turns. broadcast_internal_goal() sets phase goals, agents act() in stable order. run_debate() = inject_context() + run(steps=4). Tests use MagicMock agents with autouse fixture clearing TinyWorld.all_environments.
+**Last action:** Executed Plan 04-02 (extraction.py, updated __init__.py, test_debate.py, test_debate_live.py). 115 non-live tests passing (9 new extraction/scorecard/run_debate tests). Phase 4 complete.
+**Next action:** Begin Phase 5 planning (Streamlit UI).
+**Context to preserve:** Phases 1-4 fully complete. The debate engine is end-to-end functional: run_debate(ticker, persona_names) -> DebateResult with scorecard, transcript, phase history. extract_votes() uses ResultsExtractor with fuzzy parsing and fallback votes. build_scorecard() uses strict-majority consensus. 10 exports from tinyic.debate (DebateOrchestrator, 6 models, extract_votes, build_scorecard, run_debate). 115 unit tests + 7 live_api tests (deselected in CI).
 
 ---
 *State initialized: 2026-03-20*
-*Last updated: 2026-03-22 after Plan 04-01 completion*
+*Last updated: 2026-03-22 after Plan 04-02 completion (Phase 4 complete)*
