@@ -74,7 +74,7 @@ Plans:
 **Plans:** 2 plans
 
 Plans:
-- [ ] 04-01-PLAN.md -- Data models (DebatePhase, Vote, Scorecard), prompt templates, DebateOrchestrator (TinyWorld subclass), and unit tests with mocked agents
+- [x] 04-01-PLAN.md -- Data models (DebatePhase, Vote, Scorecard), prompt templates, DebateOrchestrator (TinyWorld subclass), and unit tests with mocked agents
 - [ ] 04-02-PLAN.md -- Vote extraction via ResultsExtractor, scorecard builder, run_debate() convenience function, and live API integration test
 
 ### Phase 5: Streamlit UI
@@ -95,7 +95,7 @@ Plans:
 | 1. Foundation and TinyTroupe Integration | 2/2 | Complete | 2026-03-20 |
 | 2. Persona Engineering | 2/2 | Complete | 2026-03-22 |
 | 3. Financial Data Pipeline | 2/2 | Complete | 2026-03-22 |
-| 4. Debate Engine and Verdict Extraction | 0/2 | Planned | - |
+| 4. Debate Engine and Verdict Extraction | 1/2 | In Progress | - |
 | 5. Streamlit UI | 0/? | Not started | - |
 
 ## Dependency Graph
@@ -145,4 +145,4 @@ Orphaned: 0
 
 ---
 *Roadmap created: 2026-03-20*
-*Last updated: 2026-03-22 (Phase 4 planned)*
+*Last updated: 2026-03-22 (Plan 04-01 complete)*

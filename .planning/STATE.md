@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v0.6
 milestone_name: milestone
 status: executing
-last_updated: "2026-03-22T16:47:00.000Z"
+last_updated: "2026-03-22T03:58:00.000Z"
 progress:
   total_phases: 5
   completed_phases: 3
-  total_plans: 6
-  completed_plans: 6
+  total_plans: 8
+  completed_plans: 7
 ---
 
 # State: openIC
@@ -17,19 +17,19 @@ progress:
 
 **Core Value:** Investor personas must be convincingly distinct and philosophically accurate -- each argues from their real-world framework, producing genuinely differentiated perspectives.
 
-**Current Focus:** Phase 03 — financial-data-pipeline (COMPLETE)
+**Current Focus:** Phase 04 — debate-engine (IN PROGRESS)
 
 ## Current Position
 
-Phase: 03 (financial-data-pipeline) — COMPLETE
-Plan: 2 of 2 complete
+Phase: 04 (debate-engine)
+Plan: 1 of 2 complete
 
 ## Performance Metrics
 
 | Metric | Value |
 |--------|-------|
-| Plans completed | 6 |
-| Plans total | 6 (Phase 1: 2, Phase 2: 2, Phase 3: 2) |
+| Plans completed | 7 |
+| Plans total | 8 (Phase 1: 2, Phase 2: 2, Phase 3: 2, Phase 4: 2) |
 | Phases completed | 3/5 |
 | Requirements completed | 15/25 |
 | Estimated cost/debate | $3-8 (from research) |
@@ -37,6 +37,7 @@ Plan: 2 of 2 complete
 | Phase 01 P02 | 21min | 2 tasks | 3 files |
 | Phase 03 P01 | 4min | 2 tasks | 8 files |
 | Phase 03 P02 | 4min | 2 tasks | 5 files |
+| Phase 04 P01 | 11min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -63,6 +64,9 @@ Plan: 2 of 2 complete
 | _sources field outside persona dict | Attribution tracking without polluting TinyTroupe prompt injection | Phase 2 |
 | Style field encodes reasoning STRUCTURE not just tone | TinyTroupe over-emphasizes style; each persona starts analysis with different first question | Phase 2 |
 | analyze_company/format_vote are simple wrappers for v1 | Phase 4 debate engine will enhance with structured extraction and JSON-formatted votes | Phase 2 |
+| Override _step() entirely in DebateOrchestrator | Avoids TinyWorld's parallelization and randomization -- debate needs sequential, stable agent order | Phase 4 |
+| Fuzzy vote validator using string containment | Handles ResultsExtractor returning "STRONG BUY" or "CONDITIONAL SELL" robustly | Phase 4 |
+| MagicMock without spec for agent mocks | TinyWorld.add_agent dynamically sets agent.environment; spec would block this | Phase 4 |
 
 ### Key Risks
 
@@ -84,6 +88,7 @@ Plan: 2 of 2 complete
 - [x] Execute Plan 02-02: Modern cluster (Lynch, Marks, Li Lu) + analyze_company/format_vote + live API validation
 - [x] Execute Plan 03-01: Pydantic data models, ticker resolver, yfinance fetchers, and 21 unit tests
 - [x] Execute Plan 03-02: SEC filings, xAI social sentiment, pipeline orchestrator, and 14 new tests
+- [x] Execute Plan 04-01: DebateOrchestrator, models, prompts, and 15 unit tests
 
 ### Blockers
 
@@ -91,10 +96,10 @@ None currently.
 
 ## Session Continuity
 
-**Last action:** Executed Plan 03-02 (filings.py, social.py, pipeline.py, 14 new tests). All 91 tests passing. Phase 3 complete.
-**Next action:** Begin Phase 4 planning (Debate Engine).
-**Context to preserve:** Phases 1-3 fully complete. Full data pipeline operational: build_data_package(ticker) -> DataPackage with 5 data sources (yfinance financials, edgartools filings, yfinance news, xAI social sentiment). 11 exports from tinyic.data (5 models + 5 fetchers + build_data_package). 35 data pipeline tests + 57 persona tests = 91 total passing. edgartools uses set_identity() once per process. xAI API uses OpenAI SDK with base_url override; gracefully skips when XAI_API_KEY missing. Pipeline raises ValueError for invalid tickers, adds warnings for failed sources. DataPackage.to_context_string() stays under 12K chars.
+**Last action:** Executed Plan 04-01 (models.py, prompts.py, orchestrator.py, test_debate.py). 106 non-live tests passing (15 new debate tests). Phase 4 Plan 1 complete.
+**Next action:** Execute Plan 04-02 (vote extraction via ResultsExtractor, scorecard builder, run_debate convenience function, live API integration test).
+**Context to preserve:** Phases 1-3 fully complete. Phase 4 Plan 1 complete: DebateOrchestrator (TinyWorld subclass) with 4-phase debate flow, Pydantic models (DebatePhase, Vote, Scorecard, DebateResult), fuzzy vote validator, PHASE_PROMPTS dict. 7 exports from tinyic.debate (DebateOrchestrator + 6 models). DebateOrchestrator._step() overrides TinyWorld._step() entirely for sequential agent turns. broadcast_internal_goal() sets phase goals, agents act() in stable order. run_debate() = inject_context() + run(steps=4). Tests use MagicMock agents with autouse fixture clearing TinyWorld.all_environments.
 
 ---
 *State initialized: 2026-03-20*
-*Last updated: 2026-03-22*
+*Last updated: 2026-03-22 after Plan 04-01 completion*
