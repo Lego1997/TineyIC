@@ -17,7 +17,7 @@
 
 ### v1.1 (Active)
 - [x] **Phase 7: Release Hardening** - Migrate deprecated APIs, fix test flakiness, eliminate warnings, expose cost stats
-- [ ] **Phase 8: Debate Quality Controls** - Anti-convergence controls, rotating devil's advocate, differentiation regression tests
+- [x] **Phase 8: Debate Quality Controls** - Anti-convergence controls, rotating devil's advocate, differentiation regression tests
 - [ ] **Phase 9: Memo & Disagreement Engine** - Full narrative investment memo, cross-persona disagreement extraction, Markdown/DOCX export
 - [ ] **Phase 10: UI Delivery** - Company data sidebar, memo/disagreement views, download buttons, per-debate cost display
 - [ ] **Phase 11: Model Selection** - Runtime LLM model selection via UI dropdown, config override per debate session
@@ -145,7 +145,7 @@ Plans:
 
 Plans:
 - [x] 08-01-PLAN.md -- Anti-convergence reinforcement prompts + rotating devil's advocate role injection in orchestrator._step()
-- [ ] 08-02-PLAN.md -- Differentiation regression tests with TF-IDF cosine similarity on recorded debate fixtures
+- [x] 08-02-PLAN.md -- Differentiation regression tests with TF-IDF cosine similarity on recorded debate fixtures
 
 ### Phase 9: Memo & Disagreement Engine
 **Goal**: The system produces a publishable investment memo and a structured disagreement analysis from every completed debate
@@ -214,7 +214,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 7. Release Hardening | 2/2 | Complete | 2026-03-23 |
-| 8. Debate Quality Controls | 1/2 | In Progress | — |
+| 8. Debate Quality Controls | 2/2 | Complete | 2026-03-23 |
 | 9. Memo & Disagreement Engine | 0/TBD | Pending | — |
 | 10. UI Delivery | 0/TBD | Pending | — |
 | 11. Model Selection | 0/TBD | Pending | — |
@@ -288,9 +288,9 @@ HARD-01  -> Phase 7   [complete]
 HARD-02  -> Phase 7   [complete]
 HARD-03  -> Phase 7   [complete]
 HARD-04  -> Phase 7   [complete]
-DEBT-04  -> Phase 8   [pending]
-DEBT-05  -> Phase 8   [pending]
-PERS-08  -> Phase 8   [pending]
+DEBT-04  -> Phase 8   [complete]
+DEBT-05  -> Phase 8   [complete]
+PERS-08  -> Phase 8   [complete]
 OUTP-03  -> Phase 9   [pending]
 OUTP-04  -> Phase 9   [pending]
 OUTP-05  -> Phase 9   [pending]
@@ -311,4 +311,4 @@ Orphaned: 0
 
 ---
 *Roadmap created: 2026-03-20*
-*Last updated: 2026-03-23 -- Phase 8 Plan 01 complete (1/2 plans)*
+*Last updated: 2026-03-23 -- Phase 8 complete (2/2 plans)*

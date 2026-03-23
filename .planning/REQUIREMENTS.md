@@ -71,7 +71,7 @@ Output quality, debate robustness, and polish. Makes the output worth reading an
 
 - [x] **DEBT-04**: Anti-convergence controls that prevent persona opinions from collapsing to consensus over multi-round debates (note: system prompt re-injection already happens via `TinyPerson.reset_prompt()` each `act()` call -- this requires additional structural controls)
 - [x] **DEBT-05**: Rotating devil's advocate role during cross-examination phase -- one persona argues the strongest counter-position, with final votes remaining unconstrained
-- [ ] **PERS-08**: Lightweight automated differentiation regression tests that detect convergence on fixed company fixtures (PERS-08-lite scope -- not full differentiation suite)
+- [x] **PERS-08**: Lightweight automated differentiation regression tests that detect convergence on fixed company fixtures (PERS-08-lite scope -- not full differentiation suite)
 
 ### Memo & Disagreement
 
@@ -177,7 +177,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | HARD-04 | Phase 7: Release Hardening | Complete |
 | DEBT-04 | Phase 8: Debate Quality Controls | Complete |
 | DEBT-05 | Phase 8: Debate Quality Controls | Complete |
-| PERS-08 | Phase 8: Debate Quality Controls | Pending |
+| PERS-08 | Phase 8: Debate Quality Controls | Complete |
 | OUTP-03 | Phase 9: Memo & Disagreement Engine | Pending |
 | OUTP-04 | Phase 9: Memo & Disagreement Engine | Pending |
 | OUTP-05 | Phase 9: Memo & Disagreement Engine | Pending |
@@ -194,10 +194,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 **Coverage:**
 - v1 requirements: 28 total, 28 complete
-- v1.1 requirements: 20 total, 6 complete
+- v1.1 requirements: 20 total, 7 complete
 - Mapped to phases: 48/48
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-20*
-*Last updated: 2026-03-23 -- Phase 8 Plan 01 complete (DEBT-04, DEBT-05)*
+*Last updated: 2026-03-23 -- Phase 8 complete (DEBT-04, DEBT-05, PERS-08)*

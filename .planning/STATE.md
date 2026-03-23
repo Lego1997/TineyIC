@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: "Output Quality + Debate Robustness + Polish"
 status: executing
-last_updated: "2026-03-23T05:08:00Z"
+last_updated: "2026-03-23T05:11:00Z"
 progress:
   total_phases: 6
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 4
-  completed_plans: 3
+  completed_plans: 4
 ---
 
 # State: openIC
@@ -21,8 +21,8 @@ progress:
 
 ## Current Position
 
-Phase: 08 (debate-quality-controls) -- IN PROGRESS
-Plan: 1 of 2 (08-01 complete)
+Phase: 08 (debate-quality-controls) -- COMPLETE
+Plan: 2 of 2
 
 ## v1 Completion Summary
 
@@ -36,7 +36,7 @@ v1 milestone passed audit on 2026-03-22:
 | Phase | Name | Status | Depends On |
 |-------|------|--------|------------|
 | 7 | Release Hardening | Complete | — (gate) |
-| 8 | Debate Quality Controls | In Progress (1/2) | Phase 7 |
+| 8 | Debate Quality Controls | Complete | Phase 7 |
 | 9 | Memo & Disagreement Engine | Pending | Phase 7, 8 |
 | 10 | UI Delivery | Pending | Phase 7, 9 |
 | 11 | Model Selection | Pending | Phase 7 |
@@ -57,10 +57,10 @@ v1 milestone passed audit on 2026-03-22:
 
 | Metric | Value |
 |--------|-------|
-| Plans completed | 3/4 (Phase 7: 2/2, Phase 8: 1/2) |
-| Phases completed | 1/6 |
-| Requirements completed | 6/20 |
-| Total tests | 175 (+ 7 live API) |
+| Plans completed | 4/4 (Phase 7: 2/2, Phase 8: 2/2) |
+| Phases completed | 2/6 |
+| Requirements completed | 7/20 |
+| Total tests | 181 (+ 7 live API) |
 
 ## Accumulated Context
 
@@ -82,6 +82,8 @@ v1 milestone passed audit on 2026-03-22:
 | Fallback philosophy hook for unknown personas | Generic "Stay true to your unique perspective." text for names not in PHILOSOPHY_HOOKS | Phase 8 |
 | Reinforcement via listen() not internalize_goal() | listen() adds to conversation memory; internalize_goal() would create conflicting goals | Phase 8 |
 | DA selection once before agent loop | Ensures exactly one DA per cross-exam phase, not per-agent selection | Phase 8 |
+| TF-IDF cosine similarity for differentiation | scikit-learn already installed; robust offline metric for persona text distinctness | Phase 8 |
+| Hand-crafted fixture over recorded API output | Ensures deterministic, API-independent regression baseline with controlled vocabulary | Phase 8 |
 | Role release before agent loop at REBUTTAL | DA gets clean release before any agent acts in rebuttal phase | Phase 8 |
 
 ### Key Risks (v1.1)
@@ -109,10 +111,10 @@ None currently.
 
 ## Session Continuity
 
-**Last action:** Completed Phase 8 Plan 01 (anti-convergence controls + rotating devil's advocate).
-**Next action:** Execute Phase 8 Plan 02 (differentiation regression tests with TF-IDF cosine similarity).
-**Context to preserve:** 175 tests passing (160 from Phase 7 + 9 anti-convergence/DA + 6 from other). Zero deprecation warnings. Anti-convergence reinforcement injected before every agent.act() in all 4 phases. DA prompt confined to CROSS_EXAM only. Role release at REBUTTAL start. PHILOSOPHY_HOOKS has 6 known persona mappings with generic fallback.
+**Last action:** Completed Phase 8 Plan 02 (differentiation regression tests) -- Phase 8 fully complete.
+**Next action:** Plan and execute Phase 9 (Memo & Disagreement Engine) or Phase 11 (Model Selection) -- both depend only on completed phases.
+**Context to preserve:** 181 tests passing (175 from Phase 8 Plan 01 + 6 differentiation regression tests). Zero deprecation warnings. Anti-convergence reinforcement active in all debate phases. DA confined to CROSS_EXAM with role release at REBUTTAL. measure_differentiation() utility available for reuse. Recorded fixture at tests/fixtures/recorded_debate_apple.json. All pairwise persona similarities under 0.12 (threshold: 0.70).
 
 ---
 *State initialized: 2026-03-20*
-*Last updated: 2026-03-23 -- Phase 8 Plan 01 complete (anti-convergence + DA)*
+*Last updated: 2026-03-23 -- Phase 8 complete (2/2 plans: anti-convergence + DA, differentiation regression tests)*
