@@ -610,15 +610,16 @@ class TestFetchFilings:
     @patch("edgar.Company")
     def test_fetch_filings_10k_valid(self, mock_company_cls, mock_set_identity):
         """Valid 10-K filing returns FilingSummary with form_type and text."""
-        # Setup mock chain
+        # Setup mock chain: html() returns None to skip HTMLParser path,
+        # markdown() returns structured markdown for section extraction
         mock_filing = MagicMock()
         mock_filing.filing_date = "2025-10-30"
-        mock_filing_obj = MagicMock()
-        mock_filing_obj.__getitem__ = MagicMock(
-            side_effect=lambda key: f"Section content for {key}..." * 50
+        mock_filing.html.return_value = None
+        mock_filing.markdown.return_value = (
+            "# Item 1 - Business\n" + "Business description content. " * 50 + "\n"
+            "# Item 1A - Risk Factors\n" + "Risk factors content. " * 50 + "\n"
+            "# Item 7 - MD&A\n" + "Management discussion content. " * 50 + "\n"
         )
-        mock_filing.obj.return_value = mock_filing_obj
-        mock_filing.text.return_value = "Fallback text content"
 
         mock_filings = MagicMock()
         mock_filings.latest.return_value = mock_filing
@@ -640,11 +641,12 @@ class TestFetchFilings:
         """Valid 10-Q filing returns FilingSummary with text under 2000 chars."""
         mock_filing = MagicMock()
         mock_filing.filing_date = "2025-07-15"
-        mock_filing_obj = MagicMock()
-        mock_filing_obj.__getitem__ = MagicMock(
-            side_effect=lambda key: f"Quarterly content for {key}..." * 30
+        mock_filing.html.return_value = None
+        mock_filing.markdown.return_value = (
+            "# Part I - Financial Information\n" + "Financial statements. " * 30 + "\n"
+            "# Item 1 - Financial Statements\n" + "Quarterly financials. " * 30 + "\n"
+            "# Item 2 - MD&A\n" + "Quarterly discussion. " * 30 + "\n"
         )
-        mock_filing.obj.return_value = mock_filing_obj
 
         mock_filings = MagicMock()
         mock_filings.latest.return_value = mock_filing
@@ -689,9 +691,9 @@ class TestFetchFilings:
         """Long filing text is truncated to max_chars."""
         mock_filing = MagicMock()
         mock_filing.filing_date = "2025-10-30"
-        # Structured access fails, fallback to text()
-        mock_filing.obj.side_effect = Exception("obj() failed")
-        mock_filing.text.return_value = "X" * 5000  # 5000 chars, should be truncated
+        # HTMLParser path fails, fallback to markdown() with long text
+        mock_filing.html.return_value = None
+        mock_filing.markdown.return_value = "X" * 5000  # 5000 chars, should be truncated
 
         mock_filings = MagicMock()
         mock_filings.latest.return_value = mock_filing
@@ -912,8 +914,15 @@ class TestLiveAPIIntegration:
     """
 
     @pytest.mark.live_api
+    @pytest.mark.timeout(120)
     def test_live_aapl(self):
-        """End-to-end build_data_package for AAPL with real APIs."""
+        """End-to-end build_data_package for AAPL with real APIs.
+
+        Note: This test only requires network access (yfinance + edgartools),
+        NOT an OPENAI_API_KEY. It will pass without API keys when run with
+        ``-m live_api``. The other 6 live_api tests skip via the has_api_key
+        fixture when no key is present.
+        """
         pkg = build_data_package("AAPL")
         assert pkg.ticker == "AAPL"
         assert "Apple" in pkg.company_name

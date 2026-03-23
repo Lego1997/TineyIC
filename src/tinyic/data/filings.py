@@ -1,6 +1,11 @@
-"""edgartools SEC filings fetcher."""
+"""edgartools SEC filings fetcher.
+
+Uses edgar.documents.HTMLParser for structured section extraction,
+avoiding deprecated edgar.files.html / edgar.files.htmltools imports.
+"""
 
 import logging
+import re
 from typing import Optional
 
 from .models import FilingSummary
@@ -9,6 +14,10 @@ logger = logging.getLogger(__name__)
 
 # edgartools requires identity for SEC EDGAR access
 _identity_set = False
+
+# Section headings to extract per filing type
+_10K_SECTIONS = ["Item 1", "Item 1A", "Item 7"]
+_10Q_SECTIONS = ["Part I", "Item 1", "Item 2"]
 
 
 def _ensure_identity():
@@ -20,8 +29,46 @@ def _ensure_identity():
         _identity_set = True
 
 
+def _extract_sections(markdown: str, section_keys: list[str], max_per_section: int) -> list[str]:
+    """Extract named sections from filing markdown text.
+
+    Looks for headings matching section_keys (case-insensitive) and extracts
+    the content under each heading up to the next heading or max_per_section chars.
+
+    Args:
+        markdown: Full filing text in markdown format.
+        section_keys: List of section heading prefixes to match (e.g. "Item 1A").
+        max_per_section: Max characters to extract per section.
+
+    Returns:
+        List of formatted section strings like "## Item 1\\n<content>".
+    """
+    parts = []
+    # Build pattern: match headings that start with any of the section keys
+    # Handles markdown headings like "# Item 1" or "## Item 1A" or plain "Item 1A"
+    for key in section_keys:
+        # Match heading line containing the key (case-insensitive)
+        pattern = re.compile(
+            rf"^(?:#+\s*)?{re.escape(key)}[^a-zA-Z0-9].*$",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        match = pattern.search(markdown)
+        if match:
+            start = match.end()
+            # Find next heading (any markdown heading)
+            next_heading = re.search(r"^#+\s", markdown[start:], re.MULTILINE)
+            end = start + next_heading.start() if next_heading else len(markdown)
+            section_text = markdown[start:end].strip()[:max_per_section]
+            if section_text:
+                parts.append(f"## {key}\n{section_text}")
+    return parts
+
+
 def fetch_filings(ticker: str, form_type: str = "10-K") -> Optional[FilingSummary]:
     """Fetch latest SEC filing summary via edgartools.
+
+    Uses HTMLParser for structured extraction (non-deprecated API), with
+    markdown fallback for plain text.
 
     Args:
         ticker: Stock ticker symbol.
@@ -48,42 +95,41 @@ def fetch_filings(ticker: str, form_type: str = "10-K") -> Optional[FilingSummar
             logger.warning("No latest %s filing for %s", form_type, ticker)
             return None
 
-        # Try structured access via filing object
-        text_parts = []
-        try:
-            filing_obj = latest.obj()
-            if filing_obj is not None:
-                # For 10-K: extract key sections (Business, Risk Factors, MD&A)
-                if form_type == "10-K":
-                    for item_key in ["Item 1", "Item 1A", "Item 7"]:
-                        try:
-                            section = filing_obj[item_key]
-                            if section:
-                                section_text = str(section)[:1000]
-                                text_parts.append(f"## {item_key}\n{section_text}")
-                        except (KeyError, TypeError, IndexError):
-                            pass
-                # For 10-Q: extract key sections
-                else:
-                    for item_key in ["Part I", "Item 1", "Item 2"]:
-                        try:
-                            section = filing_obj[item_key]
-                            if section:
-                                section_text = str(section)[:700]
-                                text_parts.append(f"## {item_key}\n{section_text}")
-                        except (KeyError, TypeError, IndexError):
-                            pass
-        except Exception as e:
-            logger.debug("Structured filing access failed for %s %s: %s", ticker, form_type, e)
+        # Determine section keys and per-section limit
+        if form_type == "10-K":
+            section_keys = _10K_SECTIONS
+            max_per_section = 1000
+        else:
+            section_keys = _10Q_SECTIONS
+            max_per_section = 700
 
-        # Fallback: get plain text and truncate
+        text_parts: list[str] = []
+
+        # Primary: HTMLParser-based structured extraction
+        try:
+            html = latest.html()
+            if html:
+                from edgar.documents import HTMLParser
+                parser = HTMLParser.create_for_ai()
+                doc = parser.parse(html)
+                if doc:
+                    md = doc.to_markdown()
+                    if md:
+                        text_parts = _extract_sections(md, section_keys, max_per_section)
+        except Exception as e:
+            logger.debug("HTMLParser extraction failed for %s %s: %s", ticker, form_type, e)
+
+        # Fallback: get full markdown and extract sections or truncate
         if not text_parts:
             try:
-                text = latest.text()
-                if text:
-                    text_parts = [text[:max_chars]]
+                md = latest.markdown()
+                if md:
+                    text_parts = _extract_sections(md, section_keys, max_per_section)
+                    # If section extraction found nothing, use raw markdown
+                    if not text_parts:
+                        text_parts = [md[:max_chars]]
             except Exception as e:
-                logger.warning("Could not get text for %s %s: %s", ticker, form_type, e)
+                logger.warning("Could not get markdown for %s %s: %s", ticker, form_type, e)
 
         if not text_parts:
             logger.warning("No text extracted from %s %s filing", ticker, form_type)
