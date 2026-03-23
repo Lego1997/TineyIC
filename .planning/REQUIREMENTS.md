@@ -62,10 +62,10 @@ Output quality, debate robustness, and polish. Makes the output worth reading an
 
 ### Release Hardening
 
-- [ ] **HARD-01**: Migrate edgartools usage from deprecated `edgar.files.html` / `edgar.files.htmltools` to `edgar.documents.HTMLParser` before v6.0 removal
-- [ ] **HARD-02**: Stabilize live API test path -- all 7 currently-deselected `live_api` tests either pass reliably or are removed with documented rationale
-- [ ] **HARD-03**: Fix Pydantic v1-style `class Config` deprecation in TinyTroupe fork's `SimulationValidator` (use `ConfigDict` instead)
-- [ ] **HARD-04**: Expose per-debate token/call cost statistics retrieval point from `OpenAIClient.get_cost_stats()` to application layer
+- [x] **HARD-01**: Migrate edgartools usage from deprecated `edgar.files.html` / `edgar.files.htmltools` to `edgar.documents.HTMLParser` before v6.0 removal
+- [x] **HARD-02**: Stabilize live API test path -- all 7 currently-deselected `live_api` tests either pass reliably or are removed with documented rationale
+- [x] **HARD-03**: Fix Pydantic v1-style `class Config` deprecation in TinyTroupe fork's `SimulationValidator` (use `ConfigDict` instead)
+- [x] **HARD-04**: Expose per-debate token/call cost statistics retrieval point from `OpenAIClient.get_cost_stats()` to application layer
 
 ### Debate Quality
 
@@ -171,10 +171,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| HARD-01 | Phase 7: Release Hardening | Pending |
-| HARD-02 | Phase 7: Release Hardening | Pending |
-| HARD-03 | Phase 7: Release Hardening | Pending |
-| HARD-04 | Phase 7: Release Hardening | Pending |
+| HARD-01 | Phase 7: Release Hardening | Complete |
+| HARD-02 | Phase 7: Release Hardening | Complete |
+| HARD-03 | Phase 7: Release Hardening | Complete |
+| HARD-04 | Phase 7: Release Hardening | Complete |
 | DEBT-04 | Phase 8: Debate Quality Controls | Pending |
 | DEBT-05 | Phase 8: Debate Quality Controls | Pending |
 | PERS-08 | Phase 8: Debate Quality Controls | Pending |
@@ -194,10 +194,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 **Coverage:**
 - v1 requirements: 28 total, 28 complete
-- v1.1 requirements: 20 total, 0 complete
+- v1.1 requirements: 20 total, 4 complete
 - Mapped to phases: 48/48
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-20*
-*Last updated: 2026-03-22 — v1.1 milestone initialized*
+*Last updated: 2026-03-23 -- Phase 7 complete (HARD-01 through HARD-04)*

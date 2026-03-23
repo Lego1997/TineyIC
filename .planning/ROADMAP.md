@@ -16,7 +16,7 @@
 - [x] **Phase 6: Enhanced Ticker Resolution** - Support company name search, international exchanges, and robust resolver fallbacks
 
 ### v1.1 (Active)
-- [ ] **Phase 7: Release Hardening** - Migrate deprecated APIs, fix test flakiness, eliminate warnings, expose cost stats
+- [x] **Phase 7: Release Hardening** - Migrate deprecated APIs, fix test flakiness, eliminate warnings, expose cost stats
 - [ ] **Phase 8: Debate Quality Controls** - Anti-convergence controls, rotating devil's advocate, differentiation regression tests
 - [ ] **Phase 9: Memo & Disagreement Engine** - Full narrative investment memo, cross-persona disagreement extraction, Markdown/DOCX export
 - [ ] **Phase 10: UI Delivery** - Company data sidebar, memo/disagreement views, download buttons, per-debate cost display
@@ -125,7 +125,11 @@ Plans:
   3. All 7 previously-deselected `live_api` tests either pass when API keys are present, or are removed with a documented rationale in the test file
   4. `SimulationValidator` in TinyTroupe fork uses `model_config = ConfigDict(...)` instead of `class Config`
   5. A function `get_debate_cost_stats()` exists that returns token counts and estimated cost from `OpenAIClient`, callable after a debate completes
-**Plans:** TBD
+**Plans:** 2 plans
+
+Plans:
+- [x] 07-01-PLAN.md -- Zero deprecation warnings: edgartools HTMLParser migration + Pydantic ConfigDict fix + pytest warning filters
+- [x] 07-02-PLAN.md -- Live API test stabilization + cost stats exposure via DebateResult.cost_stats and get_debate_cost_stats()
 
 ### Phase 8: Debate Quality Controls
 **Goal**: Personas maintain distinct positions throughout multi-round debates, with at least one structurally dissenting voice during cross-examination
@@ -205,7 +209,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 7. Release Hardening | 0/TBD | Pending | — |
+| 7. Release Hardening | 2/2 | Complete | 2026-03-23 |
 | 8. Debate Quality Controls | 0/TBD | Pending | — |
 | 9. Memo & Disagreement Engine | 0/TBD | Pending | — |
 | 10. UI Delivery | 0/TBD | Pending | — |
@@ -275,11 +279,11 @@ RESOLVE-01 -> Phase 6  [complete]
 RESOLVE-02 -> Phase 6  [complete]
 RESOLVE-03 -> Phase 6  [complete]
 
-# v1.1 (13/13 mapped, 0 complete)
-HARD-01  -> Phase 7   [pending]
-HARD-02  -> Phase 7   [pending]
-HARD-03  -> Phase 7   [pending]
-HARD-04  -> Phase 7   [pending]
+# v1.1 (20/20 mapped, 4 complete)
+HARD-01  -> Phase 7   [complete]
+HARD-02  -> Phase 7   [complete]
+HARD-03  -> Phase 7   [complete]
+HARD-04  -> Phase 7   [complete]
 DEBT-04  -> Phase 8   [pending]
 DEBT-05  -> Phase 8   [pending]
 PERS-08  -> Phase 8   [pending]
@@ -303,4 +307,4 @@ Orphaned: 0
 
 ---
 *Roadmap created: 2026-03-20*
-*Last updated: 2026-03-22 — v1.1 milestone initialized (6 new phases)*
+*Last updated: 2026-03-23 -- Phase 7 complete (2/2 plans)*
