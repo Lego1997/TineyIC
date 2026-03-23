@@ -17,3 +17,8 @@ markers = [
     "live_api: tests that require a live OpenAI API key",
 ]
 timeout = 120
+filterwarnings = [
+    "ignore::DeprecationWarning:edgar.files.*:",
+    "ignore::DeprecationWarning:edgar._markdown:",
+    "ignore::DeprecationWarning:edgar._filings:",
+]
