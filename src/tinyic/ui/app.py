@@ -202,6 +202,104 @@ def _resolve_ticker(query):
         st.session_state.status = "idle"
 
 
+def render_data_sidebar():
+    """Render the company data sidebar panel with financials, chart, and warnings.
+
+    Shows key metrics, price chart, data freshness, and any data source warnings.
+    Only renders when data is available (after data_ready event).
+    """
+    financials = st.session_state.get("sidebar_financials")
+    if financials is None:
+        return  # No data yet
+
+    st.markdown("#### Company Data")
+
+    # Description
+    desc = st.session_state.get("sidebar_description")
+    if desc:
+        st.caption(desc)
+
+    # Key metrics in 2-column grid
+    col1, col2 = st.columns(2)
+
+    def _fmt_large(val):
+        """Format large numbers (market cap, revenue) with B/M suffix."""
+        if val is None:
+            return "N/A"
+        if abs(val) >= 1e12:
+            return f"${val / 1e12:.1f}T"
+        if abs(val) >= 1e9:
+            return f"${val / 1e9:.1f}B"
+        if abs(val) >= 1e6:
+            return f"${val / 1e6:.1f}M"
+        return f"${val:,.0f}"
+
+    def _fmt_ratio(val):
+        if val is None:
+            return "N/A"
+        return f"{val:.1f}x"
+
+    def _fmt_pct(val):
+        if val is None:
+            return "N/A"
+        return f"{val * 100:.1f}%"
+
+    with col1:
+        st.metric("P/E Ratio", _fmt_ratio(financials.get("pe_ratio")))
+        st.metric("Revenue", _fmt_large(financials.get("revenue")))
+        st.metric("ROE", _fmt_pct(financials.get("roe")))
+
+    with col2:
+        st.metric("Market Cap", _fmt_large(financials.get("market_cap")))
+        st.metric("Profit Margin", _fmt_pct(financials.get("profit_margin")))
+        st.metric("D/E Ratio", _fmt_ratio(financials.get("debt_to_equity")))
+
+    # Price chart
+    price_history = st.session_state.get("sidebar_price_history", [])
+    if price_history:
+        import pandas as pd
+        chart_df = pd.DataFrame(price_history)
+        chart_df["date"] = pd.to_datetime(chart_df["date"])
+        chart_df = chart_df.set_index("date")
+        st.line_chart(chart_df["close"], use_container_width=True)
+
+    # Data freshness
+    fetched_at = st.session_state.get("sidebar_fetched_at")
+    if fetched_at:
+        st.caption(f"Data fetched: {fetched_at[:19].replace('T', ' ')}")
+
+    # Warnings
+    warnings = st.session_state.get("sidebar_warnings", [])
+    if warnings:
+        for w in warnings:
+            st.warning(w, icon="\u26a0\ufe0f")
+
+
+def _render_cost_display():
+    """Display per-debate token usage and estimated cost.
+
+    Cost stats flow: orchestrator.get_cost_stats() -> DebateResult.cost_stats
+    -> get_debate_cost_stats() formats into display-ready dict -> st.metric renders.
+    """
+    result = st.session_state.get("debate_result")
+    if not result or not result.cost_stats:
+        return
+
+    from tinyic.debate import get_debate_cost_stats
+    stats = get_debate_cost_stats(result)
+
+    st.divider()
+    st.subheader("Debate Cost")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Input Tokens", f"{stats['input_tokens']:,}")
+    with c2:
+        st.metric("Output Tokens", f"{stats['output_tokens']:,}")
+    with c3:
+        st.metric("Estimated Cost", f"${stats['estimated_cost_usd']:.4f}")
+
+
 def _start_debate():
     """Launch the debate in a background thread."""
     st.session_state.status = "fetching"
@@ -565,40 +663,45 @@ def main():
 
     elif st.session_state.status in ("fetching", "debating", "extracting"):
         st.title(f"Investment Committee: {st.session_state.company_name}")
-        render_debate_section()  # st.fragment handles polling + rendering
 
-        # Phase pause: show Continue button between phases (outside fragment)
-        if st.session_state.waiting_for_continue:
-            st.info(f"**{PHASE_LABELS.get(st.session_state.current_phase, '')}** complete. Review the discussion, then continue.")
-            cols = st.columns([1, 3])
-            with cols[0]:
-                if st.button("Continue to next phase", type="primary"):
-                    st.session_state.waiting_for_continue = False
-                    st.session_state.phase_gate.set()
+        # Two-column layout: debate (left, wider) + data sidebar (right)
+        has_data = st.session_state.get("sidebar_financials") is not None
+        if has_data:
+            debate_col, data_col = st.columns([2, 1])
+        else:
+            debate_col = st.container()
+            data_col = None
+
+        with debate_col:
+            render_debate_section()
+
+            if st.session_state.waiting_for_continue:
+                st.info(f"**{PHASE_LABELS.get(st.session_state.current_phase, '')}** complete. Review the discussion, then continue.")
+                cols = st.columns([1, 3])
+                with cols[0]:
+                    if st.button("Continue to next phase", type="primary"):
+                        st.session_state.waiting_for_continue = False
+                        st.session_state.phase_gate.set()
+                        st.rerun()
+
+            if st.session_state.status == "debating":
+                if user_input := st.chat_input("Ask a question or steer the debate (@name to target)"):
+                    clean_text, target = parse_user_message(user_input)
+                    st.session_state.debate_log.append({
+                        "type": "user",
+                        "content": clean_text,
+                        "target": target,
+                        "timestamp": datetime.now().isoformat(),
+                    })
+                    st.session_state.message_queue.put((clean_text, target))
+                    if st.session_state.waiting_for_continue:
+                        st.session_state.waiting_for_continue = False
+                        st.session_state.phase_gate.set()
                     st.rerun()
 
-        # Chat input for user steering (outside fragment, in main body)
-        if st.session_state.status == "debating":
-            if user_input := st.chat_input("Ask a question or steer the debate (@name to target)"):
-                clean_text, target = parse_user_message(user_input)
-
-                # Add to display log
-                st.session_state.debate_log.append({
-                    "type": "user",
-                    "content": clean_text,
-                    "target": target,
-                    "timestamp": datetime.now().isoformat(),
-                })
-
-                # Enqueue for orchestrator
-                st.session_state.message_queue.put((clean_text, target))
-
-                # If waiting for continue, also signal the gate
-                if st.session_state.waiting_for_continue:
-                    st.session_state.waiting_for_continue = False
-                    st.session_state.phase_gate.set()
-
-                st.rerun()
+        if data_col is not None:
+            with data_col:
+                render_data_sidebar()
 
     elif st.session_state.status == "complete":
         st.title(f"Investment Committee: {st.session_state.company_name}")
@@ -609,9 +712,23 @@ def main():
                 "Scorecard based on available discussion. "
                 f"Error: {st.session_state.error_message}"
             )
-        _drain_queue()
-        render_debate_section()
-        render_scorecard()
+
+        has_data = st.session_state.get("sidebar_financials") is not None
+        if has_data:
+            results_col, data_col = st.columns([2, 1])
+        else:
+            results_col = st.container()
+            data_col = None
+
+        with results_col:
+            _drain_queue()
+            render_debate_section()
+            render_scorecard()
+            _render_cost_display()
+
+        if data_col is not None:
+            with data_col:
+                render_data_sidebar()
 
     elif st.session_state.status == "error":
         st.title("Something went wrong")
