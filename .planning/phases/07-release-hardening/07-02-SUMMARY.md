@@ -112,7 +112,3 @@ Test count: 154 (baseline) + 6 (new cost stats) = 160 passing.
 1. **test_live_aapl stays without has_api_key**: It only needs yfinance+edgartools (free, network-only). Adding `has_api_key` would cause it to be skipped unnecessarily when running `-m live_api` without OPENAI_API_KEY.
 2. **GPT-5.2 pricing for cost estimation**: Used $2.50/M input tokens and $10.00/M output tokens as an approximation.
 3. **Dual format support**: `get_debate_cost_stats()` handles both raw `OpenAIClient.get_cost_stats()` format and `TinyWorld.get_cost_stats()` nested format with `base_stats` key.
-
-## Self-Check: PASSED
-
-All 5 modified files exist on disk. Commit f125333 exists in git log. Summary file exists.
