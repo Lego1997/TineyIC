@@ -338,3 +338,106 @@ class TestFetchPriceHistory:
             result = fetch_price_history("AAPL")
 
         assert result == []
+
+
+class TestDataSidebarHelpers:
+    """Test data sidebar helper/formatting functions."""
+
+    def test_render_data_sidebar_no_data_returns_early(self):
+        """render_data_sidebar does nothing when no financial data is available."""
+        from tinyic.ui.app import render_data_sidebar
+        assert callable(render_data_sidebar)
+
+
+class TestCostDisplay:
+    """Test cost stats formatting."""
+
+    def test_get_debate_cost_stats_with_stats(self):
+        from tinyic.debate import get_debate_cost_stats
+        from tinyic.debate.models import DebateResult, Scorecard
+
+        result = DebateResult(
+            ticker="AAPL",
+            company_name="Apple Inc.",
+            scorecard=Scorecard(ticker="AAPL", company_name="Apple Inc.", votes=[]),
+            phases_completed=["opening_statements"],
+            cost_stats={
+                "base_stats": {
+                    "input_tokens": 50000,
+                    "output_tokens": 10000,
+                    "total_tokens": 60000,
+                    "model_calls": 12,
+                    "cached_calls": 0,
+                }
+            },
+        )
+        stats = get_debate_cost_stats(result)
+        assert stats["input_tokens"] == 50000
+        assert stats["output_tokens"] == 10000
+        assert stats["total_tokens"] == 60000
+        assert stats["estimated_cost_usd"] > 0
+
+    def test_get_debate_cost_stats_no_stats(self):
+        from tinyic.debate import get_debate_cost_stats
+        from tinyic.debate.models import DebateResult, Scorecard
+
+        result = DebateResult(
+            ticker="AAPL",
+            company_name="Apple Inc.",
+            scorecard=Scorecard(ticker="AAPL", company_name="Apple Inc.", votes=[]),
+            phases_completed=["opening_statements"],
+            cost_stats=None,
+        )
+        stats = get_debate_cost_stats(result)
+        assert stats["input_tokens"] == 0
+        assert stats["estimated_cost_usd"] == 0.0
+
+
+class TestDataReadyEvent:
+    """Test data_ready event handling in _drain_queue."""
+
+    def test_drain_queue_data_ready(self):
+        """data_ready event stores sidebar data in session state."""
+        import streamlit as st
+        from tinyic.ui.app import _drain_queue
+
+        q = queue.Queue()
+        q.put({
+            "type": "data_ready",
+            "financials": {"pe_ratio": 28.5, "market_cap": 3.0e12},
+            "description": "Apple designs consumer electronics.",
+            "fetched_at": "2026-03-23T10:00:00",
+            "warnings": ["10-Q filing unavailable"],
+            "price_history": [{"date": "2025-01-01", "close": 150.0}],
+        })
+        st.session_state.ui_queue = q
+
+        _drain_queue()
+
+        assert st.session_state.sidebar_financials == {"pe_ratio": 28.5, "market_cap": 3.0e12}
+        assert st.session_state.sidebar_description == "Apple designs consumer electronics."
+        assert st.session_state.sidebar_fetched_at == "2026-03-23T10:00:00"
+        assert st.session_state.sidebar_warnings == ["10-Q filing unavailable"]
+        assert len(st.session_state.sidebar_price_history) == 1
+
+    def test_drain_queue_complete_with_data_package(self):
+        """complete event stores data_package in session state."""
+        import streamlit as st
+        from tinyic.ui.app import _drain_queue
+
+        q = queue.Queue()
+        mock_result = MagicMock()
+        mock_dp = MagicMock()
+        q.put({
+            "type": "complete",
+            "result": mock_result,
+            "data_package": mock_dp,
+            "data_package_text": '{"ticker": "AAPL"}',
+        })
+        st.session_state.ui_queue = q
+
+        _drain_queue()
+
+        assert st.session_state.debate_result is mock_result
+        assert st.session_state.data_package is mock_dp
+        assert st.session_state.status == "complete"
