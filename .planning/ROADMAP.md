@@ -18,7 +18,7 @@
 ### v1.1 (Active)
 - [x] **Phase 7: Release Hardening** - Migrate deprecated APIs, fix test flakiness, eliminate warnings, expose cost stats
 - [x] **Phase 8: Debate Quality Controls** - Anti-convergence controls, rotating devil's advocate, differentiation regression tests
-- [ ] **Phase 9: Memo & Disagreement Engine** - Full narrative investment memo, cross-persona disagreement extraction, Markdown/DOCX export
+- [x] **Phase 9: Memo & Disagreement Engine** - Full narrative investment memo, cross-persona disagreement extraction, Markdown/DOCX export
 - [ ] **Phase 10: UI Delivery** - Company data sidebar, memo/disagreement views, download buttons, per-debate cost display
 - [ ] **Phase 11: Model Selection** - Runtime LLM model selection via UI dropdown, config override per debate session
 - [ ] **Phase 12: Deep Research Pipeline** - Web search + LLM synthesis to produce comprehensive research brief for all personas
@@ -157,7 +157,11 @@ Plans:
   3. A `DisagreementAnalysis` object identifies the top 3 dimensions where personas diverged most (e.g., valuation methodology, risk assessment, growth outlook) with evidence quotes from the transcript
   4. Both memo and scorecard can be exported as Markdown files (guaranteed) and DOCX files (when pandoc is available, with graceful fallback to Markdown-only)
   5. Unit tests verify memo structure, disagreement extraction, and export formats without API calls
-**Plans:** TBD
+**Plans:** 2 plans
+
+Plans:
+- [x] 09-01-PLAN.md -- InvestmentMemo + DisagreementAnalysis models, MemoGenerator with LLM synthesis, and unit tests with mocked client
+- [x] 09-02-PLAN.md -- ExportManager for Markdown/DOCX output with graceful pandoc fallback and export tests
 
 ### Phase 10: UI Delivery
 **Goal**: Users see company data alongside the debate, can download all outputs, and see what the debate cost
@@ -215,7 +219,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 7. Release Hardening | 2/2 | Complete | 2026-03-23 |
 | 8. Debate Quality Controls | 2/2 | Complete | 2026-03-23 |
-| 9. Memo & Disagreement Engine | 0/TBD | Pending | — |
+| 9. Memo & Disagreement Engine | 2/2 | Complete | 2026-03-23 |
 | 10. UI Delivery | 0/TBD | Pending | — |
 | 11. Model Selection | 0/TBD | Pending | — |
 | 12. Deep Research Pipeline | 0/TBD | Pending | — |
@@ -291,9 +295,9 @@ HARD-04  -> Phase 7   [complete]
 DEBT-04  -> Phase 8   [complete]
 DEBT-05  -> Phase 8   [complete]
 PERS-08  -> Phase 8   [complete]
-OUTP-03  -> Phase 9   [pending]
-OUTP-04  -> Phase 9   [pending]
-OUTP-05  -> Phase 9   [pending]
+OUTP-03  -> Phase 9   [complete]
+OUTP-04  -> Phase 9   [complete]
+OUTP-05  -> Phase 9   [complete]
 UI-05    -> Phase 10  [pending]
 UI-07    -> Phase 10  [pending]
 OPS-01    -> Phase 10  [pending]
@@ -311,4 +315,4 @@ Orphaned: 0
 
 ---
 *Roadmap created: 2026-03-20*
-*Last updated: 2026-03-23 -- Phase 8 complete (2/2 plans)*
+*Last updated: 2026-03-23 -- Phase 9 complete (2/2 plans executed)*

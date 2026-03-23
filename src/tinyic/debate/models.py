@@ -95,6 +95,91 @@ class Scorecard(BaseModel):
         return "\n".join(lines)
 
 
+class MemoSection(BaseModel):
+    """A single section of the investment memo with grounding metadata."""
+    title: str
+    content: str
+    contributing_personas: list[str] = Field(default_factory=list)
+    supporting_data: list[str] = Field(default_factory=list)
+
+
+class InvestmentMemo(BaseModel):
+    """Full narrative investment memo synthesized from debate."""
+    ticker: str
+    company_name: str
+    executive_summary: MemoSection
+    investment_thesis: MemoSection
+    key_risks: MemoSection
+    valuation_discussion: MemoSection
+    final_verdict: MemoSection
+    generated_at: datetime = Field(default_factory=datetime.now)
+
+    def to_markdown(self) -> str:
+        """Render the memo as a Markdown document."""
+        sections = [
+            self.executive_summary,
+            self.investment_thesis,
+            self.key_risks,
+            self.valuation_discussion,
+            self.final_verdict,
+        ]
+        lines = [f"# Investment Memo: {self.company_name} ({self.ticker})", ""]
+        for section in sections:
+            lines.append(f"## {section.title}")
+            lines.append("")
+            lines.append(section.content)
+            lines.append("")
+            if section.contributing_personas:
+                lines.append(
+                    f"*Contributors: {', '.join(section.contributing_personas)}*"
+                )
+            if section.supporting_data:
+                lines.append(
+                    f"*Data references: {', '.join(section.supporting_data)}*"
+                )
+            lines.append("")
+        return "\n".join(lines)
+
+
+class Disagreement(BaseModel):
+    """A single dimension of disagreement between personas."""
+    dimension: str
+    description: str
+    sides: list[dict] = Field(default_factory=list)
+    # Each dict: {persona: str, position: str, evidence_quote: str}
+    resolution: str = ""
+
+
+class DisagreementAnalysis(BaseModel):
+    """Top disagreements extracted from the debate."""
+    ticker: str
+    company_name: str
+    disagreements: list[Disagreement] = Field(default_factory=list)
+    generated_at: datetime = Field(default_factory=datetime.now)
+
+    def to_markdown(self) -> str:
+        """Render disagreement analysis as Markdown."""
+        lines = [
+            f"# Disagreement Analysis: {self.company_name} ({self.ticker})",
+            "",
+        ]
+        for i, d in enumerate(self.disagreements, 1):
+            lines.append(f"## {i}. {d.dimension}")
+            lines.append("")
+            lines.append(d.description)
+            lines.append("")
+            for side in d.sides:
+                lines.append(f"**{side.get('persona', 'Unknown')}:** {side.get('position', '')}")
+                quote = side.get("evidence_quote", "")
+                if quote:
+                    lines.append(f'> "{quote}"')
+                lines.append("")
+            if d.resolution:
+                lines.append(f"**Resolution:** {d.resolution}")
+                lines.append("")
+        return "\n".join(lines)
+
+
 class DebateResult(BaseModel):
     """Complete result from a debate run."""
 
@@ -107,4 +192,6 @@ class DebateResult(BaseModel):
         default=None,
         description="Token usage and cost statistics from the debate",
     )
+    memo: Optional["InvestmentMemo"] = None
+    disagreement_analysis: Optional["DisagreementAnalysis"] = None
     created_at: datetime = Field(default_factory=datetime.now)

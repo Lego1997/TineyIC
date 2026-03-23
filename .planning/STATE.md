@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: "Output Quality + Debate Robustness + Polish"
 status: executing
-last_updated: "2026-03-23T05:11:00Z"
+last_updated: "2026-03-23T10:10:00Z"
 progress:
   total_phases: 6
-  completed_phases: 2
-  total_plans: 4
-  completed_plans: 4
+  completed_phases: 3
+  total_plans: 6
+  completed_plans: 6
 ---
 
 # State: openIC
@@ -21,8 +21,8 @@ progress:
 
 ## Current Position
 
-Phase: 08 (debate-quality-controls) -- COMPLETE
-Plan: 2 of 2
+Phase: 09 (memo-disagreement-engine) -- COMPLETE
+Plan: 2 of 2 (all plans executed)
 
 ## v1 Completion Summary
 
@@ -37,7 +37,7 @@ v1 milestone passed audit on 2026-03-22:
 |-------|------|--------|------------|
 | 7 | Release Hardening | Complete | — (gate) |
 | 8 | Debate Quality Controls | Complete | Phase 7 |
-| 9 | Memo & Disagreement Engine | Pending | Phase 7, 8 |
+| 9 | Memo & Disagreement Engine | Complete | Phase 7, 8 |
 | 10 | UI Delivery | Pending | Phase 7, 9 |
 | 11 | Model Selection | Pending | Phase 7 |
 | 12 | Deep Research Pipeline | Pending | Phase 7, 11 |
@@ -57,10 +57,10 @@ v1 milestone passed audit on 2026-03-22:
 
 | Metric | Value |
 |--------|-------|
-| Plans completed | 4/4 (Phase 7: 2/2, Phase 8: 2/2) |
-| Phases completed | 2/6 |
-| Requirements completed | 7/20 |
-| Total tests | 181 (+ 7 live API) |
+| Plans completed | 6/6 (Phase 7: 2/2, Phase 8: 2/2, Phase 9: 2/2) |
+| Phases completed | 3/6 |
+| Requirements completed | 10/20 |
+| Total tests | 208 (+ 7 live API) |
 
 ## Accumulated Context
 
@@ -85,6 +85,9 @@ v1 milestone passed audit on 2026-03-22:
 | TF-IDF cosine similarity for differentiation | scikit-learn already installed; robust offline metric for persona text distinctness | Phase 8 |
 | Hand-crafted fixture over recorded API output | Ensures deterministic, API-independent regression baseline with controlled vocabulary | Phase 8 |
 | Role release before agent loop at REBUTTAL | DA gets clean release before any agent acts in rebuttal phase | Phase 8 |
+| Direct file write for Markdown, ArtifactExporter for DOCX only | ArtifactExporter's dedent() strips Markdown indentation; direct write preserves formatting | Phase 9 |
+| Lazy-import ArtifactExporter in export.py | Avoids pulling pandas/pypandoc/markdown at module import time; only DOCX path needs them | Phase 9 |
+| Transcript truncation at 8000 chars (keep end) | Cross-exam and verdict phases are most informative for memo synthesis; opening can be trimmed | Phase 9 |
 
 ### Key Risks (v1.1)
 
@@ -100,7 +103,7 @@ v1 milestone passed audit on 2026-03-22:
 
 - [x] Plan Phase 7: Release Hardening (2 plans created)
 - [x] Plan Phase 8: Debate Quality Controls (2 plans executed)
-- [ ] Plan Phase 9: Memo & Disagreement Engine
+- [x] Plan Phase 9: Memo & Disagreement Engine (2 plans created)
 - [ ] Plan Phase 10: UI Delivery
 - [ ] Plan Phase 11: Model Selection
 - [ ] Plan Phase 12: Deep Research Pipeline
@@ -111,10 +114,10 @@ None currently.
 
 ## Session Continuity
 
-**Last action:** Completed Phase 8 Plan 02 (differentiation regression tests) -- Phase 8 fully complete.
-**Next action:** Plan and execute Phase 9 (Memo & Disagreement Engine) or Phase 11 (Model Selection) -- both depend only on completed phases.
-**Context to preserve:** 181 tests passing (175 from Phase 8 Plan 01 + 6 differentiation regression tests). Zero deprecation warnings. Anti-convergence reinforcement active in all debate phases. DA confined to CROSS_EXAM with role release at REBUTTAL. measure_differentiation() utility available for reuse. Recorded fixture at tests/fixtures/recorded_debate_apple.json. All pairwise persona similarities under 0.12 (threshold: 0.70).
+**Last action:** Executed Phase 9 (Memo & Disagreement Engine) -- both plans complete (09-01: models + generators, 09-02: export).
+**Next action:** Plan Phase 10 (UI Delivery) or execute Phase 11 (Model Selection, parallel-eligible).
+**Context to preserve:** 208 tests passing. Zero deprecation warnings. InvestmentMemo with 5 grounded sections + DisagreementAnalysis with top 3 divergences. ExportManager supports Markdown (guaranteed) and DOCX (pandoc-gated). generate_memo() and extract_disagreements() use client().send_message() with graceful fallback. Transcript truncation at 8000 chars. Lazy-import ArtifactExporter in export.py.
 
 ---
 *State initialized: 2026-03-20*
-*Last updated: 2026-03-23 -- Phase 8 complete (2/2 plans: anti-convergence + DA, differentiation regression tests)*
+*Last updated: 2026-03-23 -- Phase 9 executed (2/2 plans complete: memo+disagreement models/generators, export functionality)*

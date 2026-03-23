@@ -3,8 +3,10 @@
 import logging
 
 from .models import DebatePhase, VoteChoice, Confidence, Vote, Scorecard, DebateResult
+from .models import InvestmentMemo, MemoSection, DisagreementAnalysis, Disagreement
 from .orchestrator import DebateOrchestrator
 from .extraction import extract_votes, build_scorecard
+from .memo import generate_memo, extract_disagreements
 
 from tinyic.constants import MIN_PERSONAS
 
@@ -106,8 +108,14 @@ __all__ = [
     "Vote",
     "Scorecard",
     "DebateResult",
+    "InvestmentMemo",
+    "MemoSection",
+    "DisagreementAnalysis",
+    "Disagreement",
     "extract_votes",
     "build_scorecard",
     "run_debate",
     "get_debate_cost_stats",
+    "generate_memo",
+    "extract_disagreements",
 ]
