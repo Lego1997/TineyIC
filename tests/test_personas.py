@@ -399,6 +399,7 @@ PERSONA_KEYWORDS = {
 
 class TestLiveAPIDifferentiation:
     @pytest.mark.live_api
+    @pytest.mark.timeout(300)
     def test_differentiation(self, has_api_key):
         """Send same prompt to all 6 personas and check for signature keywords."""
         results = {}
@@ -434,6 +435,7 @@ class TestLiveAPIDifferentiation:
         )
 
     @pytest.mark.live_api
+    @pytest.mark.timeout(120)
     def test_analyze_company_returns_structure(self, has_api_key):
         """analyze_company returns dict with expected keys."""
         p = load_persona("warren_buffett")
@@ -449,6 +451,7 @@ class TestLiveAPIDifferentiation:
         assert len(result["analysis"]) > 0
 
     @pytest.mark.live_api
+    @pytest.mark.timeout(120)
     def test_format_vote_returns_structure(self, has_api_key):
         """format_vote returns dict with expected keys after analyze_company."""
         p = load_persona("warren_buffett")

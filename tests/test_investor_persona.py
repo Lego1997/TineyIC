@@ -78,6 +78,7 @@ class TestInvestorPersonaLiveAPI:
     """Integration tests that require a live OpenAI API key."""
 
     @pytest.mark.live_api
+    @pytest.mark.timeout(120)
     def test_listen_act_gpt52(self, has_api_key):
         """FOUND-03: InvestorPersona can listen() and act() using GPT-5.2.
 
@@ -110,6 +111,7 @@ class TestInvestorPersonaLiveAPI:
         assert "type" in first_action or "content" in first_action or "action" in first_action
 
     @pytest.mark.live_api
+    @pytest.mark.timeout(120)
     def test_sdk_v2_compatibility(self, has_api_key):
         """FOUND-04: OpenAI SDK v2.x works with TinyTroupe fork without errors.
 

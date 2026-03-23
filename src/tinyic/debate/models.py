@@ -103,4 +103,8 @@ class DebateResult(BaseModel):
     scorecard: Scorecard
     phases_completed: list[str]
     transcript: Optional[str] = None
+    cost_stats: Optional[dict] = Field(
+        default=None,
+        description="Token usage and cost statistics from the debate",
+    )
     created_at: datetime = Field(default_factory=datetime.now)

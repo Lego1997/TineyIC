@@ -49,6 +49,8 @@ def run_debate(
     )
     orchestrator.run_debate()
 
+    cost_stats = orchestrator.get_cost_stats()
+
     votes = extract_votes(orchestrator)
     scorecard = build_scorecard(votes, ticker, data_package.company_name)
     transcript = orchestrator.pretty_current_interactions()
@@ -59,7 +61,41 @@ def run_debate(
         scorecard=scorecard,
         phases_completed=orchestrator._phase_history,
         transcript=transcript,
+        cost_stats=cost_stats,
     )
+
+
+def get_debate_cost_stats(result: DebateResult) -> dict:
+    """Get formatted cost statistics from a completed debate.
+
+    Returns dict with token counts and estimated USD cost.
+    Returns empty stats dict if cost_stats not available.
+    """
+    if not result.cost_stats:
+        return {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "model_calls": 0,
+            "cached_calls": 0,
+            "estimated_cost_usd": 0.0,
+        }
+
+    stats = result.cost_stats
+    base = stats.get("base_stats", stats)  # handle both TinyWorld and raw formats
+
+    # Estimate cost (GPT-5.2 pricing approximation)
+    input_cost = base.get("input_tokens", 0) / 1_000_000 * 2.50
+    output_cost = base.get("output_tokens", 0) / 1_000_000 * 10.00
+
+    return {
+        "input_tokens": base.get("input_tokens", 0),
+        "output_tokens": base.get("output_tokens", 0),
+        "total_tokens": base.get("total_tokens", 0),
+        "model_calls": base.get("model_calls", 0),
+        "cached_calls": base.get("cached_calls", 0),
+        "estimated_cost_usd": round(input_cost + output_cost, 4),
+    }
 
 
 __all__ = [
@@ -73,4 +109,5 @@ __all__ = [
     "extract_votes",
     "build_scorecard",
     "run_debate",
+    "get_debate_cost_stats",
 ]

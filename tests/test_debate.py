@@ -476,6 +476,7 @@ class TestRunDebate:
         mock_orch = mock_orch_cls.return_value
         mock_orch._phase_history = ["opening_statements", "cross_examination", "rebuttal", "final_verdict"]
         mock_orch.pretty_current_interactions.return_value = "Debate transcript..."
+        mock_orch.get_cost_stats.return_value = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "model_calls": 0}
 
         mock_votes = [
             Vote(investor="Warren Buffett", vote="BUY", confidence="HIGH"),
@@ -512,3 +513,160 @@ class TestRunDebate:
         assert result.scorecard is mock_sc
         assert len(result.phases_completed) == 4
         assert result.transcript == "Debate transcript..."
+
+
+# ===========================================================================
+# TestCostStats
+# ===========================================================================
+
+
+class TestCostStats:
+    """Tests for cost stats exposure (HARD-04)."""
+
+    def test_debate_result_accepts_cost_stats(self):
+        """DebateResult accepts optional cost_stats field."""
+        sc = Scorecard(ticker="AAPL", company_name="Apple", votes=[])
+        result = DebateResult(
+            ticker="AAPL",
+            company_name="Apple",
+            scorecard=sc,
+            phases_completed=[],
+            cost_stats={
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "total_tokens": 150,
+                "model_calls": 3,
+            },
+        )
+        assert result.cost_stats is not None
+        assert result.cost_stats["input_tokens"] == 100
+
+    def test_debate_result_cost_stats_optional(self):
+        """DebateResult works without cost_stats (backward compat)."""
+        sc = Scorecard(ticker="AAPL", company_name="Apple", votes=[])
+        result = DebateResult(
+            ticker="AAPL",
+            company_name="Apple",
+            scorecard=sc,
+            phases_completed=[],
+        )
+        assert result.cost_stats is None
+
+    def test_get_debate_cost_stats_populated(self):
+        """get_debate_cost_stats returns formatted stats from populated result."""
+        from tinyic.debate import get_debate_cost_stats
+
+        sc = Scorecard(ticker="AAPL", company_name="Apple", votes=[])
+        result = DebateResult(
+            ticker="AAPL",
+            company_name="Apple",
+            scorecard=sc,
+            phases_completed=[],
+            cost_stats={
+                "input_tokens": 10000,
+                "output_tokens": 5000,
+                "total_tokens": 15000,
+                "model_calls": 10,
+                "cached_calls": 2,
+            },
+        )
+        stats = get_debate_cost_stats(result)
+        assert stats["input_tokens"] == 10000
+        assert stats["output_tokens"] == 5000
+        assert stats["total_tokens"] == 15000
+        assert stats["model_calls"] == 10
+        assert stats["cached_calls"] == 2
+        assert stats["estimated_cost_usd"] > 0
+
+    def test_get_debate_cost_stats_none(self):
+        """get_debate_cost_stats handles None cost_stats gracefully."""
+        from tinyic.debate import get_debate_cost_stats
+
+        sc = Scorecard(ticker="AAPL", company_name="Apple", votes=[])
+        result = DebateResult(
+            ticker="AAPL",
+            company_name="Apple",
+            scorecard=sc,
+            phases_completed=[],
+        )
+        stats = get_debate_cost_stats(result)
+        assert stats["input_tokens"] == 0
+        assert stats["estimated_cost_usd"] == 0.0
+
+    def test_get_debate_cost_stats_tinyworld_format(self):
+        """get_debate_cost_stats handles TinyWorld nested format with base_stats."""
+        from tinyic.debate import get_debate_cost_stats
+
+        sc = Scorecard(ticker="AAPL", company_name="Apple", votes=[])
+        result = DebateResult(
+            ticker="AAPL",
+            company_name="Apple",
+            scorecard=sc,
+            phases_completed=[],
+            cost_stats={
+                "base_stats": {
+                    "input_tokens": 5000,
+                    "output_tokens": 2000,
+                    "total_tokens": 7000,
+                    "model_calls": 5,
+                    "cached_calls": 1,
+                },
+                "per_agent": {},
+            },
+        )
+        stats = get_debate_cost_stats(result)
+        assert stats["input_tokens"] == 5000
+        assert stats["total_tokens"] == 7000
+
+    @patch("tinyic.debate.build_scorecard")
+    @patch("tinyic.debate.extract_votes")
+    @patch("tinyic.debate.DebateOrchestrator")
+    @patch("tinyic.data.pipeline.build_data_package")
+    @patch("tinyic.personas.registry.load_persona")
+    def test_run_debate_populates_cost_stats(
+        self, mock_load, mock_build_dp, mock_orch_cls, mock_extract, mock_scorecard
+    ):
+        """run_debate() calls get_cost_stats() and populates result."""
+        from tinyic.debate import run_debate
+
+        mock_persona_a = MagicMock()
+        mock_persona_a.name = "A"
+        mock_persona_b = MagicMock()
+        mock_persona_b.name = "B"
+        mock_load.side_effect = [mock_persona_a, mock_persona_b]
+
+        mock_dp = make_mock_data_package()
+        mock_build_dp.return_value = mock_dp
+
+        mock_orch = mock_orch_cls.return_value
+        mock_orch._phase_history = [
+            "opening_statements",
+            "cross_examination",
+            "rebuttal",
+            "final_verdict",
+        ]
+        mock_orch.pretty_current_interactions.return_value = "Transcript"
+        mock_orch.get_cost_stats.return_value = {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,
+            "model_calls": 2,
+        }
+
+        mock_votes = [Vote(investor="A", vote="BUY", confidence="HIGH")]
+        mock_extract.return_value = mock_votes
+        mock_scorecard.return_value = Scorecard(
+            ticker="AAPL",
+            company_name="Apple",
+            votes=mock_votes,
+            consensus=VoteChoice.BUY,
+            bull_count=1,
+            bear_count=0,
+            hold_count=0,
+        )
+
+        result = run_debate("AAPL", ["a", "b"])
+
+        mock_orch.get_cost_stats.assert_called_once()
+        assert result.cost_stats is not None
+        assert result.cost_stats["input_tokens"] == 100
