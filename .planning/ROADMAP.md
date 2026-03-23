@@ -173,7 +173,11 @@ Plans:
   3. Per-debate token usage (input/output tokens) and estimated cost are displayed in the UI after the debate completes
   4. The data sidebar updates immediately after data fetching (before debate rounds begin), not after the debate ends
   5. All new UI components work correctly with the existing debate flow (real-time display, steering, phase pauses)
-**Plans:** TBD
+**Plans:** 2 plans
+
+Plans:
+- [x] 10-01-PLAN.md -- Company data sidebar (financials, price chart, warnings) and per-debate cost display (token usage, estimated USD)
+- [ ] 10-02-PLAN.md -- Memo/disagreement views, download buttons, post-debate tabs
 
 ### Phase 11: Model Selection
 **Goal**: Users can choose which LLM model powers the debate, with the selection applied at runtime without editing config files
@@ -220,7 +224,7 @@ Plans:
 | 7. Release Hardening | 2/2 | Complete | 2026-03-23 |
 | 8. Debate Quality Controls | 2/2 | Complete | 2026-03-23 |
 | 9. Memo & Disagreement Engine | 2/2 | Complete | 2026-03-23 |
-| 10. UI Delivery | 0/TBD | Pending | — |
+| 10. UI Delivery | 1/2 | In Progress | — |
 | 11. Model Selection | 0/TBD | Pending | — |
 | 12. Deep Research Pipeline | 0/TBD | Pending | — |
 
@@ -298,9 +302,9 @@ PERS-08  -> Phase 8   [complete]
 OUTP-03  -> Phase 9   [complete]
 OUTP-04  -> Phase 9   [complete]
 OUTP-05  -> Phase 9   [complete]
-UI-05    -> Phase 10  [pending]
+UI-05    -> Phase 10  [complete]
 UI-07    -> Phase 10  [pending]
-OPS-01    -> Phase 10  [pending]
+OPS-01    -> Phase 10  [complete]
 CONFIG-01 -> Phase 11  [pending]
 CONFIG-02 -> Phase 11  [pending]
 CONFIG-03 -> Phase 11  [pending]
@@ -315,4 +319,4 @@ Orphaned: 0
 
 ---
 *Roadmap created: 2026-03-20*
-*Last updated: 2026-03-23 -- Phase 9 complete (2/2 plans executed)*
+*Last updated: 2026-03-23 -- Phase 10 Plan 01 complete (data sidebar + cost display)*

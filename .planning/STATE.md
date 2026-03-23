@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: "Output Quality + Debate Robustness + Polish"
 status: executing
-last_updated: "2026-03-23T10:10:00Z"
+last_updated: "2026-03-23T11:12:00Z"
 progress:
   total_phases: 6
   completed_phases: 3
-  total_plans: 6
-  completed_plans: 6
+  total_plans: 8
+  completed_plans: 7
 ---
 
 # State: openIC
@@ -21,8 +21,8 @@ progress:
 
 ## Current Position
 
-Phase: 09 (memo-disagreement-engine) -- COMPLETE
-Plan: 2 of 2 (all plans executed)
+Phase: 10 (ui-delivery) -- IN PROGRESS
+Plan: 1 of 2 complete (10-01 data sidebar + cost display done)
 
 ## v1 Completion Summary
 
@@ -38,7 +38,7 @@ v1 milestone passed audit on 2026-03-22:
 | 7 | Release Hardening | Complete | — (gate) |
 | 8 | Debate Quality Controls | Complete | Phase 7 |
 | 9 | Memo & Disagreement Engine | Complete | Phase 7, 8 |
-| 10 | UI Delivery | Pending | Phase 7, 9 |
+| 10 | UI Delivery | In Progress (1/2) | Phase 7, 9 |
 | 11 | Model Selection | Pending | Phase 7 |
 | 12 | Deep Research Pipeline | Pending | Phase 7, 11 |
 
@@ -57,10 +57,10 @@ v1 milestone passed audit on 2026-03-22:
 
 | Metric | Value |
 |--------|-------|
-| Plans completed | 6/6 (Phase 7: 2/2, Phase 8: 2/2, Phase 9: 2/2) |
+| Plans completed | 7/8 (Phase 7: 2/2, Phase 8: 2/2, Phase 9: 2/2, Phase 10: 1/2) |
 | Phases completed | 3/6 |
-| Requirements completed | 10/20 |
-| Total tests | 208 (+ 7 live API) |
+| Requirements completed | 12/20 |
+| Total tests | 215 (+ 7 live API) |
 
 ## Accumulated Context
 
@@ -88,6 +88,9 @@ v1 milestone passed audit on 2026-03-22:
 | Direct file write for Markdown, ArtifactExporter for DOCX only | ArtifactExporter's dedent() strips Markdown indentation; direct write preserves formatting | Phase 9 |
 | Lazy-import ArtifactExporter in export.py | Avoids pulling pandas/pypandoc/markdown at module import time; only DOCX path needs them | Phase 9 |
 | Transcript truncation at 8000 chars (keep end) | Cross-exam and verdict phases are most informative for memo synthesis; opening can be trimmed | Phase 9 |
+| Module-level yfinance import in financials.py | Enables mock patching at tinyic.data.financials.yf; local import would create unpatchable function-scoped name | Phase 10 |
+| Data sidebar in main content columns, not Streamlit sidebar | Streamlit sidebar already full with ticker input and persona checkboxes; 2:1 column ratio preserves debate width | Phase 10 |
+| Price history is UI-only data | Not added to DataPackage model (designed for LLM context); fetched and stored separately for chart rendering | Phase 10 |
 
 ### Key Risks (v1.1)
 
@@ -114,10 +117,10 @@ None currently.
 
 ## Session Continuity
 
-**Last action:** Executed Phase 9 (Memo & Disagreement Engine) -- both plans complete (09-01: models + generators, 09-02: export).
-**Next action:** Plan Phase 10 (UI Delivery) or execute Phase 11 (Model Selection, parallel-eligible).
-**Context to preserve:** 208 tests passing. Zero deprecation warnings. InvestmentMemo with 5 grounded sections + DisagreementAnalysis with top 3 divergences. ExportManager supports Markdown (guaranteed) and DOCX (pandoc-gated). generate_memo() and extract_disagreements() use client().send_message() with graceful fallback. Transcript truncation at 8000 chars. Lazy-import ArtifactExporter in export.py.
+**Last action:** Executed Phase 10 Plan 01 (Data Sidebar + Cost Display) -- data sidebar with financials, price chart, warnings; per-debate cost display with token counts.
+**Next action:** Execute Phase 10 Plan 02 (Memo/Disagreement Views + Download Buttons).
+**Context to preserve:** 215 tests passing. fetch_price_history() in financials.py. render_data_sidebar() and _render_cost_display() in app.py. data_ready event from worker thread stores sidebar data in session state. data_package stored in session_state for Plan 10-02 memo generation. 2:1 column layout (debate left, data right). cost_stats flows orchestrator.get_cost_stats() -> DebateResult -> get_debate_cost_stats() -> st.metric.
 
 ---
 *State initialized: 2026-03-20*
-*Last updated: 2026-03-23 -- Phase 9 executed (2/2 plans complete: memo+disagreement models/generators, export functionality)*
+*Last updated: 2026-03-23 -- Phase 10 Plan 01 executed (data sidebar + cost display)*
