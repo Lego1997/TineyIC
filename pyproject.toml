@@ -22,3 +22,10 @@ filterwarnings = [
     "ignore::DeprecationWarning:edgar._markdown:",
     "ignore::DeprecationWarning:edgar._filings:",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-timeout>=2.4.0",
+    "python-dotenv>=1.2.2",
+]
