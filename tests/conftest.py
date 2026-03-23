@@ -1,13 +1,24 @@
 """Shared test fixtures for tinyIC."""
 
 import os
+import warnings
 import pytest
 from dotenv import load_dotenv
 
 
 def pytest_configure(config):
-    """Load .env file for tests."""
+    """Load .env file and pre-import noisy third-party modules."""
     load_dotenv()
+
+    # Pre-import edgartools with warnings suppressed so its internal
+    # import-level deprecation warnings fire outside the test context.
+    # This prevents them from being captured/errored during test runs.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        try:
+            import edgar  # noqa: F401
+        except ImportError:
+            pass
 
 
 @pytest.fixture
