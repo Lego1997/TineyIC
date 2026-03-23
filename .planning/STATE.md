@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: "Output Quality + Debate Robustness + Polish"
 status: executing
-last_updated: "2026-03-23T02:36:30Z"
+last_updated: "2026-03-23T05:08:00Z"
 progress:
   total_phases: 6
   completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
+  total_plans: 4
+  completed_plans: 3
 ---
 
 # State: openIC
@@ -21,8 +21,8 @@ progress:
 
 ## Current Position
 
-Phase: 07 (release-hardening) -- COMPLETE
-Plan: 2 of 2
+Phase: 08 (debate-quality-controls) -- IN PROGRESS
+Plan: 1 of 2 (08-01 complete)
 
 ## v1 Completion Summary
 
@@ -36,7 +36,7 @@ v1 milestone passed audit on 2026-03-22:
 | Phase | Name | Status | Depends On |
 |-------|------|--------|------------|
 | 7 | Release Hardening | Complete | — (gate) |
-| 8 | Debate Quality Controls | Pending | Phase 7 |
+| 8 | Debate Quality Controls | In Progress (1/2) | Phase 7 |
 | 9 | Memo & Disagreement Engine | Pending | Phase 7, 8 |
 | 10 | UI Delivery | Pending | Phase 7, 9 |
 | 11 | Model Selection | Pending | Phase 7 |
@@ -57,10 +57,10 @@ v1 milestone passed audit on 2026-03-22:
 
 | Metric | Value |
 |--------|-------|
-| Plans completed | 2/2 (Phase 7) |
+| Plans completed | 3/4 (Phase 7: 2/2, Phase 8: 1/2) |
 | Phases completed | 1/6 |
-| Requirements completed | 4/20 |
-| Total tests | 160 (+ 7 live API) |
+| Requirements completed | 6/20 |
+| Total tests | 175 (+ 7 live API) |
 
 ## Accumulated Context
 
@@ -79,6 +79,10 @@ v1 milestone passed audit on 2026-03-22:
 | Use latest.markdown() fallback over latest.text() | .text() triggers deprecated imports; .markdown() provides richer formatted output | Phase 7 |
 | Pre-import edgartools in conftest.py | Ensures import-level deprecation warnings fire outside per-test context; compatible with -W error flag | Phase 7 |
 | Regex section extraction from markdown | More robust than deprecated .obj() structured API for filing section access | Phase 7 |
+| Fallback philosophy hook for unknown personas | Generic "Stay true to your unique perspective." text for names not in PHILOSOPHY_HOOKS | Phase 8 |
+| Reinforcement via listen() not internalize_goal() | listen() adds to conversation memory; internalize_goal() would create conflicting goals | Phase 8 |
+| DA selection once before agent loop | Ensures exactly one DA per cross-exam phase, not per-agent selection | Phase 8 |
+| Role release before agent loop at REBUTTAL | DA gets clean release before any agent acts in rebuttal phase | Phase 8 |
 
 ### Key Risks (v1.1)
 
@@ -105,10 +109,10 @@ None currently.
 
 ## Session Continuity
 
-**Last action:** Completed Phase 7 (Release Hardening) -- both plans 07-01 and 07-02 executed successfully.
-**Next action:** Plan and execute Phase 8 (Debate Quality Controls) or Phase 11 (Model Selection) -- both depend only on Phase 7.
-**Context to preserve:** 160 tests passing (154 original + 6 cost stats). Zero deprecation warnings -- edgartools filing extraction migrated to HTMLParser + markdown() API, Pydantic ConfigDict fix applied in simulation_validator.py, import-level warnings pre-imported in conftest.py and filtered in pyproject.toml. DebateResult.cost_stats now populated by run_debate(). get_debate_cost_stats() convenience function available for UI consumption.
+**Last action:** Completed Phase 8 Plan 01 (anti-convergence controls + rotating devil's advocate).
+**Next action:** Execute Phase 8 Plan 02 (differentiation regression tests with TF-IDF cosine similarity).
+**Context to preserve:** 175 tests passing (160 from Phase 7 + 9 anti-convergence/DA + 6 from other). Zero deprecation warnings. Anti-convergence reinforcement injected before every agent.act() in all 4 phases. DA prompt confined to CROSS_EXAM only. Role release at REBUTTAL start. PHILOSOPHY_HOOKS has 6 known persona mappings with generic fallback.
 
 ---
 *State initialized: 2026-03-20*
-*Last updated: 2026-03-23 -- Phase 7 complete (2/2 plans)*
+*Last updated: 2026-03-23 -- Phase 8 Plan 01 complete (anti-convergence + DA)*

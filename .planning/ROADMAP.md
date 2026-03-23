@@ -144,7 +144,7 @@ Plans:
 **Plans:** 2 plans
 
 Plans:
-- [ ] 08-01-PLAN.md -- Anti-convergence reinforcement prompts + rotating devil's advocate role injection in orchestrator._step()
+- [x] 08-01-PLAN.md -- Anti-convergence reinforcement prompts + rotating devil's advocate role injection in orchestrator._step()
 - [ ] 08-02-PLAN.md -- Differentiation regression tests with TF-IDF cosine similarity on recorded debate fixtures
 
 ### Phase 9: Memo & Disagreement Engine
@@ -214,7 +214,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 7. Release Hardening | 2/2 | Complete | 2026-03-23 |
-| 8. Debate Quality Controls | 0/2 | Planned | — |
+| 8. Debate Quality Controls | 1/2 | In Progress | — |
 | 9. Memo & Disagreement Engine | 0/TBD | Pending | — |
 | 10. UI Delivery | 0/TBD | Pending | — |
 | 11. Model Selection | 0/TBD | Pending | — |
@@ -311,4 +311,4 @@ Orphaned: 0
 
 ---
 *Roadmap created: 2026-03-20*
-*Last updated: 2026-03-23 -- Phase 8 planned (2 plans)*
+*Last updated: 2026-03-23 -- Phase 8 Plan 01 complete (1/2 plans)*
