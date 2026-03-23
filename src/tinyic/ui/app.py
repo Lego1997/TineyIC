@@ -109,6 +109,12 @@ def init_state():
         "waiting_for_continue": False, # True when paused between phases
         "user_messages": [],           # User messages to display in chat log
         "incomplete_warning": False,   # True if debate ended with error (partial results)
+        "sidebar_financials": None,
+        "sidebar_description": None,
+        "sidebar_fetched_at": None,
+        "sidebar_warnings": [],
+        "sidebar_price_history": [],
+        "data_package": None,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -244,6 +250,20 @@ def _debate_worker(ticker, persona_names, ui_queue, stop_event, message_queue=No
 
         data_package = build_data_package(ticker)
 
+        # Fetch price history for sidebar chart (UI-only, not for LLM context)
+        from tinyic.data.financials import fetch_price_history
+        price_history = fetch_price_history(ticker)
+
+        # Signal UI with data package fields for sidebar (before debate starts)
+        ui_queue.put({
+            "type": "data_ready",
+            "financials": data_package.financials.model_dump() if data_package.financials else None,
+            "description": data_package.description,
+            "fetched_at": data_package.fetched_at.isoformat(),
+            "warnings": data_package.warnings,
+            "price_history": price_history,
+        })
+
         personas = [load_persona(name) for name in persona_names]
 
         orchestrator = DebateOrchestrator(
@@ -313,11 +333,13 @@ def _debate_worker(ticker, persona_names, ui_queue, stop_event, message_queue=No
             scorecard=scorecard,
             phases_completed=orchestrator._phase_history,
             transcript=transcript,
+            cost_stats=orchestrator.get_cost_stats(),
         )
 
         ui_queue.put({
             "type": "complete",
             "result": result,
+            "data_package": data_package,
             "data_package_text": data_package.to_context_string(),
         })
 
@@ -368,11 +390,18 @@ def _drain_queue():
             st.session_state.debate_log.append(msg)
         elif msg_type == "agent_start":
             st.session_state.current_agent = msg["agent"]
+        elif msg_type == "data_ready":
+            st.session_state.sidebar_financials = msg.get("financials")
+            st.session_state.sidebar_description = msg.get("description")
+            st.session_state.sidebar_fetched_at = msg.get("fetched_at")
+            st.session_state.sidebar_warnings = msg.get("warnings", [])
+            st.session_state.sidebar_price_history = msg.get("price_history", [])
         elif msg_type == "message":
             st.session_state.current_agent = ""
             st.session_state.debate_log.append(msg)
         elif msg_type == "complete":
             st.session_state.debate_result = msg["result"]
+            st.session_state.data_package = msg.get("data_package")
             st.session_state.data_package_text = msg.get("data_package_text", "")
             st.session_state.status = "complete"
         elif msg_type == "error":
