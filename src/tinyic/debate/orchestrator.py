@@ -9,7 +9,14 @@ from tinyic.constants import MAX_PERSONAS, MIN_PERSONAS
 from tinyic.data.models import DataPackage
 
 from .models import DebatePhase
-from .prompts import CONTEXT_PREAMBLE, PHASE_PROMPTS
+from .prompts import (
+    CONTEXT_PREAMBLE,
+    DEVILS_ADVOCATE_PROMPT,
+    PHASE_PROMPTS,
+    PHILOSOPHY_HOOKS,
+    REINFORCEMENT_TEMPLATE,
+    ROLE_RELEASE_PROMPT,
+)
 
 
 class DebateOrchestrator(TinyWorld):
@@ -61,6 +68,10 @@ class DebateOrchestrator(TinyWorld):
         # Optional phase gate for inter-phase pausing (set by UI)
         self.phase_gate = None     # Optional[threading.Event] -- if set, _step waits for it before proceeding
 
+        # Anti-convergence: devil's advocate rotation state
+        self._da_index = 0
+        self._current_devils_advocate = None
+
     # ------------------------------------------------------------------
     # Context injection
     # ------------------------------------------------------------------
@@ -73,6 +84,24 @@ class DebateOrchestrator(TinyWorld):
             context_data=self.data_package.to_context_string(),
         )
         self.broadcast(preamble)
+
+    # ------------------------------------------------------------------
+    # Anti-convergence helpers
+    # ------------------------------------------------------------------
+
+    def _get_reinforcement_prompt(self, agent) -> str:
+        """Build a persona-specific reinforcement prompt for *agent*."""
+        hook = PHILOSOPHY_HOOKS.get(
+            agent.name, "Stay true to your unique perspective."
+        )
+        return REINFORCEMENT_TEMPLATE.format(name=agent.name, philosophy_hook=hook)
+
+    def _select_devils_advocate(self):
+        """Pick the next devil's advocate via round-robin and store the result."""
+        da = self.agents[self._da_index % len(self.agents)]
+        self._da_index += 1
+        self._current_devils_advocate = da
+        return da
 
     # ------------------------------------------------------------------
     # Step override (replaces TinyWorld._step entirely)
@@ -100,11 +129,27 @@ class DebateOrchestrator(TinyWorld):
         prompt = PHASE_PROMPTS[phase].format(company=self.data_package.company_name)
         self.broadcast_internal_goal(prompt)
 
+        # Devil's advocate: select DA before agent loop in CROSS_EXAM
+        if phase == DebatePhase.CROSS_EXAM:
+            self._select_devils_advocate()
+
+        # Role release: notify previous DA at REBUTTAL start (before any agent acts)
+        if phase == DebatePhase.REBUTTAL and self._current_devils_advocate is not None:
+            self._current_devils_advocate.listen(ROLE_RELEASE_PROMPT)
+
         # Agents act sequentially in stable order
         agents_actions: dict = {}
         for agent in self.agents:
             # Drain message queue before each agent acts
             self._process_message_queue()
+
+            # Anti-convergence: inject persona-specific reinforcement (ALL phases)
+            reinforcement = self._get_reinforcement_prompt(agent)
+            agent.listen(reinforcement)
+
+            # Devil's advocate: inject DA prompt during CROSS_EXAM only
+            if phase == DebatePhase.CROSS_EXAM and agent == self._current_devils_advocate:
+                agent.listen(DEVILS_ADVOCATE_PROMPT)
 
             # Notify: agent about to act
             if self.on_agent_start:
