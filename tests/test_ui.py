@@ -295,3 +295,46 @@ class TestParseUserMessage:
         assert target == "Warren Buffett"
         _, target = parse_user_message("@Howard where are we in the cycle?")
         assert target == "Howard Marks"
+
+
+class TestFetchPriceHistory:
+    """Test price history fetching for data sidebar."""
+
+    def test_fetch_price_history_returns_list(self):
+        from unittest.mock import patch, MagicMock
+        import pandas as pd
+        from tinyic.data.financials import fetch_price_history
+
+        mock_hist = pd.DataFrame(
+            {"Close": [150.0, 152.5, 148.0]},
+            index=pd.to_datetime(["2025-01-01", "2025-01-02", "2025-01-03"]),
+        )
+        with patch("tinyic.data.financials.yf") as mock_yf:
+            mock_yf.Ticker.return_value.history.return_value = mock_hist
+            result = fetch_price_history("AAPL")
+
+        assert len(result) == 3
+        assert result[0]["date"] == "2025-01-01"
+        assert result[0]["close"] == 150.0
+        assert result[2]["close"] == 148.0
+
+    def test_fetch_price_history_empty_on_failure(self):
+        from unittest.mock import patch
+        from tinyic.data.financials import fetch_price_history
+
+        with patch("tinyic.data.financials.yf") as mock_yf:
+            mock_yf.Ticker.return_value.history.side_effect = Exception("Network error")
+            result = fetch_price_history("AAPL")
+
+        assert result == []
+
+    def test_fetch_price_history_handles_empty_dataframe(self):
+        from unittest.mock import patch
+        import pandas as pd
+        from tinyic.data.financials import fetch_price_history
+
+        with patch("tinyic.data.financials.yf") as mock_yf:
+            mock_yf.Ticker.return_value.history.return_value = pd.DataFrame()
+            result = fetch_price_history("AAPL")
+
+        assert result == []
