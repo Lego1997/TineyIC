@@ -99,7 +99,7 @@ v1 milestone passed audit on 2026-03-22:
 ### Todos
 
 - [x] Plan Phase 7: Release Hardening (2 plans created)
-- [ ] Plan Phase 8: Debate Quality Controls
+- [x] Plan Phase 8: Debate Quality Controls (2 plans executed)
 - [ ] Plan Phase 9: Memo & Disagreement Engine
 - [ ] Plan Phase 10: UI Delivery
 - [ ] Plan Phase 11: Model Selection
