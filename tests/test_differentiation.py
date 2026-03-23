@@ -27,7 +27,20 @@ def measure_differentiation(persona_texts: dict[str, str]) -> dict:
               (upper-triangle only, no self-comparisons)
             - "max_similarity": float, the highest pairwise similarity
     """
-    raise NotImplementedError("RED phase -- implementation pending")
+    names = list(persona_texts.keys())
+    texts = [persona_texts[name] for name in names]
+
+    vectorizer = TfidfVectorizer(stop_words="english", min_df=1)
+    tfidf_matrix = vectorizer.fit_transform(texts)
+    sim_matrix = cosine_similarity(tfidf_matrix)
+
+    pairs: list[tuple[str, str, float]] = []
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            pairs.append((names[i], names[j], float(sim_matrix[i][j])))
+
+    max_sim = max(sim for _, _, sim in pairs) if pairs else 0.0
+    return {"pairs": pairs, "max_similarity": max_sim}
 
 
 class TestMeasureDifferentiation:
