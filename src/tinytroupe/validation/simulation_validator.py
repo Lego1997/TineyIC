@@ -12,7 +12,7 @@ import json
 import csv
 from datetime import datetime
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 import pandas as pd
 
@@ -65,11 +65,8 @@ class SimulationExperimentDataset(BaseModel):
         description="Agent attributes loaded from CSV but not used in statistical comparisons (e.g., age, gender, etc.)"
     )
 
-    class Config:
-        """Pydantic configuration."""
-        extra = "forbid"  # Prevent accidental extra fields
-        validate_assignment = True  # Validate on assignment after creation
-    
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
     def __init__(self, **data):
         """Initialize with automatic data processing."""
         super().__init__(**data)
@@ -732,10 +729,7 @@ class SimulationExperimentEmpiricalValidationResult(BaseModel):
     summary: str = ""
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
 
-    class Config:
-        """Pydantic configuration."""
-        extra = "forbid"
-        validate_assignment = True
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
 
 class SimulationExperimentEmpiricalValidator:
