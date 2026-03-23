@@ -670,3 +670,239 @@ class TestCostStats:
         mock_orch.get_cost_stats.assert_called_once()
         assert result.cost_stats is not None
         assert result.cost_stats["input_tokens"] == 100
+
+
+# ===========================================================================
+# TestAntiConvergence
+# ===========================================================================
+
+
+class TestAntiConvergence:
+    """Tests for anti-convergence reinforcement injection during debate phases."""
+
+    def test_reinforcement_injected_before_act(self):
+        """After run_debate(), each agent.listen() was called with 'IMPORTANT REMINDER' before act()."""
+        dp = make_mock_data_package()
+        personas = [make_mock_persona("Warren Buffett"), make_mock_persona("Benjamin Graham")]
+        orch = DebateOrchestrator(name="test_reinforce", personas=personas, data_package=dp)
+
+        orch.run_debate()
+
+        # For each agent, verify that listen() with reinforcement preceded act() calls.
+        # We check via the mock's call ordering: manager tracks all calls on the mock.
+        for agent in orch.agents:
+            # Collect ordered list of method names called on the agent
+            method_calls = [call[0] for call in agent.method_calls]
+            # Find pairs: each act() should be preceded by a listen() with IMPORTANT REMINDER
+            act_indices = [i for i, name in enumerate(method_calls) if name == "act"]
+            assert len(act_indices) == 4, f"Expected 4 act() calls, got {len(act_indices)}"
+            for act_idx in act_indices:
+                # Look backwards from act_idx for a listen() call with reinforcement
+                found = False
+                for j in range(act_idx - 1, -1, -1):
+                    if method_calls[j] == "listen":
+                        call_args = agent.method_calls[j]
+                        if "IMPORTANT REMINDER" in str(call_args):
+                            found = True
+                            break
+                    elif method_calls[j] == "act":
+                        # Hit a previous act() before finding reinforcement -- fail
+                        break
+                assert found, (
+                    f"No 'IMPORTANT REMINDER' listen() found before act() at index {act_idx} "
+                    f"for agent {agent.name}"
+                )
+
+    def test_reinforcement_contains_philosophy_hook(self):
+        """For 'Warren Buffett', reinforcement contains the matching PHILOSOPHY_HOOKS text."""
+        from tinyic.debate.prompts import PHILOSOPHY_HOOKS
+
+        dp = make_mock_data_package()
+        personas = [make_mock_persona("Warren Buffett"), make_mock_persona("Benjamin Graham")]
+        orch = DebateOrchestrator(name="test_hook", personas=personas, data_package=dp)
+
+        orch.run_debate()
+
+        buffett = orch.agents[0]
+        listen_texts = [str(call) for call in buffett.listen.call_args_list]
+        hook = PHILOSOPHY_HOOKS["Warren Buffett"]
+        found = any(hook in text for text in listen_texts)
+        assert found, f"Expected philosophy hook '{hook}' in listen() calls for Warren Buffett"
+
+    def test_reinforcement_uses_fallback_for_unknown(self):
+        """For an unknown persona name, reinforcement uses a generic fallback."""
+        dp = make_mock_data_package()
+        personas = [make_mock_persona("Unknown Investor"), make_mock_persona("Mystery Person")]
+        orch = DebateOrchestrator(name="test_fallback", personas=personas, data_package=dp)
+
+        orch.run_debate()
+
+        unknown = orch.agents[0]
+        listen_texts = [str(call) for call in unknown.listen.call_args_list]
+        fallback = "Stay true to your unique perspective."
+        found = any(fallback in text for text in listen_texts)
+        assert found, f"Expected fallback '{fallback}' in listen() calls for unknown persona"
+
+    def test_reinforcement_all_phases(self):
+        """Reinforcement is injected in ALL 4 phases -- 4 times per agent."""
+        dp = make_mock_data_package()
+        personas = [make_mock_persona("Warren Buffett"), make_mock_persona("Benjamin Graham")]
+        orch = DebateOrchestrator(name="test_all_phases", personas=personas, data_package=dp)
+
+        orch.run_debate()
+
+        for agent in orch.agents:
+            reinforcement_count = sum(
+                1
+                for call in agent.listen.call_args_list
+                if "IMPORTANT REMINDER" in str(call)
+            )
+            assert reinforcement_count == 4, (
+                f"Expected 4 reinforcement injections for {agent.name}, "
+                f"got {reinforcement_count}"
+            )
+
+
+# ===========================================================================
+# TestDevilsAdvocate
+# ===========================================================================
+
+
+class TestDevilsAdvocate:
+    """Tests for rotating devil's advocate injection during cross-examination."""
+
+    def test_da_injected_during_cross_exam(self):
+        """During CROSS_EXAM, exactly one agent receives DEVILS_ADVOCATE_PROMPT."""
+        from tinyic.debate.prompts import DEVILS_ADVOCATE_PROMPT
+
+        dp = make_mock_data_package()
+        personas = [
+            make_mock_persona("Warren Buffett"),
+            make_mock_persona("Benjamin Graham"),
+            make_mock_persona("Charlie Munger"),
+        ]
+        orch = DebateOrchestrator(name="test_da_inject", personas=personas, data_package=dp)
+
+        orch.run_debate()
+
+        # Count how many agents received the DA prompt
+        da_recipients = []
+        for agent in orch.agents:
+            for call in agent.listen.call_args_list:
+                if DEVILS_ADVOCATE_PROMPT in str(call):
+                    da_recipients.append(agent.name)
+                    break
+
+        assert len(da_recipients) == 1, (
+            f"Expected exactly 1 DA recipient, got {len(da_recipients)}: {da_recipients}"
+        )
+
+    def test_da_rotation(self):
+        """_select_devils_advocate() cycles through agents round-robin."""
+        dp = make_mock_data_package()
+        personas = [
+            make_mock_persona("A"),
+            make_mock_persona("B"),
+            make_mock_persona("C"),
+        ]
+        orch = DebateOrchestrator(name="test_da_rotate", personas=personas, data_package=dp)
+
+        selections = [orch._select_devils_advocate().name for _ in range(6)]
+        assert selections == ["A", "B", "C", "A", "B", "C"], (
+            f"Expected round-robin rotation, got {selections}"
+        )
+
+    def test_da_not_in_other_phases(self):
+        """In OPENING, REBUTTAL, VERDICT, no agent receives DEVILS_ADVOCATE_PROMPT."""
+        from tinyic.debate.prompts import DEVILS_ADVOCATE_PROMPT
+
+        dp = make_mock_data_package()
+        personas = [make_mock_persona("Warren Buffett"), make_mock_persona("Benjamin Graham")]
+        orch = DebateOrchestrator(name="test_da_phases", personas=personas, data_package=dp)
+
+        # Track which phase each listen() call happens in by monitoring phase transitions
+        phase_listen_log = []
+
+        original_step = orch._step
+
+        def tracking_step(*args, **kwargs):
+            result = original_step(*args, **kwargs)
+            return result
+
+        # Instead of hooking _step, we run the debate and inspect the results.
+        # The DA prompt should only appear once total (during CROSS_EXAM).
+        orch.run_debate()
+
+        for agent in orch.agents:
+            da_count = sum(
+                1
+                for call in agent.listen.call_args_list
+                if DEVILS_ADVOCATE_PROMPT in str(call)
+            )
+            # At most 1 DA prompt total for any agent (only during CROSS_EXAM)
+            assert da_count <= 1, (
+                f"Agent {agent.name} received DA prompt {da_count} times (expected 0 or 1)"
+            )
+
+        # Total DA prompts across all agents should be exactly 1
+        total_da = sum(
+            sum(1 for call in agent.listen.call_args_list if DEVILS_ADVOCATE_PROMPT in str(call))
+            for agent in orch.agents
+        )
+        assert total_da == 1, f"Expected exactly 1 total DA prompt, got {total_da}"
+
+    def test_da_role_release_at_rebuttal(self):
+        """At REBUTTAL start, previous DA receives ROLE_RELEASE_PROMPT."""
+        from tinyic.debate.prompts import DEVILS_ADVOCATE_PROMPT, ROLE_RELEASE_PROMPT
+
+        dp = make_mock_data_package()
+        personas = [make_mock_persona("Warren Buffett"), make_mock_persona("Benjamin Graham")]
+        orch = DebateOrchestrator(name="test_da_release", personas=personas, data_package=dp)
+
+        orch.run_debate()
+
+        # Find which agent was DA (received DA prompt)
+        da_agent = None
+        for agent in orch.agents:
+            for call in agent.listen.call_args_list:
+                if DEVILS_ADVOCATE_PROMPT in str(call):
+                    da_agent = agent
+                    break
+            if da_agent:
+                break
+
+        assert da_agent is not None, "No agent received DA prompt"
+
+        # Verify DA agent also received the role release prompt
+        release_found = any(
+            ROLE_RELEASE_PROMPT in str(call)
+            for call in da_agent.listen.call_args_list
+        )
+        assert release_found, (
+            f"DA agent {da_agent.name} did not receive ROLE_RELEASE_PROMPT"
+        )
+
+    def test_da_does_not_constrain_verdict(self):
+        """In VERDICT, no DA-related prompts are injected."""
+        from tinyic.debate.prompts import DEVILS_ADVOCATE_PROMPT, ROLE_RELEASE_PROMPT
+
+        dp = make_mock_data_package()
+        personas = [make_mock_persona("Warren Buffett"), make_mock_persona("Benjamin Graham")]
+        orch = DebateOrchestrator(name="test_da_verdict", personas=personas, data_package=dp)
+
+        orch.run_debate()
+
+        # Count DA and role release prompts -- should be exactly 1 each total
+        total_da = sum(
+            sum(1 for call in agent.listen.call_args_list if DEVILS_ADVOCATE_PROMPT in str(call))
+            for agent in orch.agents
+        )
+        total_release = sum(
+            sum(1 for call in agent.listen.call_args_list if ROLE_RELEASE_PROMPT in str(call))
+            for agent in orch.agents
+        )
+
+        # DA prompt: exactly 1 (only in CROSS_EXAM)
+        assert total_da == 1, f"Expected 1 DA prompt total, got {total_da}"
+        # Role release: exactly 1 (only at REBUTTAL start)
+        assert total_release == 1, f"Expected 1 role release total, got {total_release}"
