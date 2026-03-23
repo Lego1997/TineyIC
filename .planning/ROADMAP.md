@@ -141,7 +141,11 @@ Plans:
   3. The devil's advocate assignment rotates and does not constrain final votes -- personas vote independently in the verdict phase
   4. An automated differentiation regression test exists that runs a debate on a fixed company fixture and asserts that persona analyses remain distinct (e.g., no two personas share >70% vocabulary overlap in key reasoning)
   5. The convergence detection test can be run as part of the standard `pytest` suite without API keys (using mocked responses or recorded fixtures)
-**Plans:** TBD
+**Plans:** 2 plans
+
+Plans:
+- [ ] 08-01-PLAN.md -- Anti-convergence reinforcement prompts + rotating devil's advocate role injection in orchestrator._step()
+- [ ] 08-02-PLAN.md -- Differentiation regression tests with TF-IDF cosine similarity on recorded debate fixtures
 
 ### Phase 9: Memo & Disagreement Engine
 **Goal**: The system produces a publishable investment memo and a structured disagreement analysis from every completed debate
@@ -210,7 +214,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 7. Release Hardening | 2/2 | Complete | 2026-03-23 |
-| 8. Debate Quality Controls | 0/TBD | Pending | — |
+| 8. Debate Quality Controls | 0/2 | Planned | — |
 | 9. Memo & Disagreement Engine | 0/TBD | Pending | — |
 | 10. UI Delivery | 0/TBD | Pending | — |
 | 11. Model Selection | 0/TBD | Pending | — |
@@ -307,4 +311,4 @@ Orphaned: 0
 
 ---
 *Roadmap created: 2026-03-20*
-*Last updated: 2026-03-23 -- Phase 7 complete (2/2 plans)*
+*Last updated: 2026-03-23 -- Phase 8 planned (2 plans)*
