@@ -76,6 +76,9 @@ v1 milestone passed audit on 2026-03-22:
 | Keep fact-checking (DEBT-06) in v2 | Transformational scope that would destabilize v1.1 timeline | v2 |
 | Keep test_live_aapl without has_api_key | Only needs network (yfinance+edgartools), not OPENAI_API_KEY; adding fixture would skip it unnecessarily | Phase 7 |
 | GPT-5.2 pricing for cost estimation | $2.50/M input, $10.00/M output as approximation in get_debate_cost_stats() | Phase 7 |
+| Use latest.markdown() fallback over latest.text() | .text() triggers deprecated imports; .markdown() provides richer formatted output | Phase 7 |
+| Pre-import edgartools in conftest.py | Ensures import-level deprecation warnings fire outside per-test context; compatible with -W error flag | Phase 7 |
+| Regex section extraction from markdown | More robust than deprecated .obj() structured API for filing section access | Phase 7 |
 
 ### Key Risks (v1.1)
 
@@ -104,7 +107,7 @@ None currently.
 
 **Last action:** Completed Phase 7 (Release Hardening) -- both plans 07-01 and 07-02 executed successfully.
 **Next action:** Plan and execute Phase 8 (Debate Quality Controls) or Phase 11 (Model Selection) -- both depend only on Phase 7.
-**Context to preserve:** 160 tests passing (154 original + 6 cost stats). edgartools deprecation warnings filtered via pyproject.toml. Pydantic ConfigDict fix applied in simulation_validator.py. DebateResult.cost_stats now populated by run_debate(). get_debate_cost_stats() convenience function available for UI consumption.
+**Context to preserve:** 160 tests passing (154 original + 6 cost stats). Zero deprecation warnings -- edgartools filing extraction migrated to HTMLParser + markdown() API, Pydantic ConfigDict fix applied in simulation_validator.py, import-level warnings pre-imported in conftest.py and filtered in pyproject.toml. DebateResult.cost_stats now populated by run_debate(). get_debate_cost_stats() convenience function available for UI consumption.
 
 ---
 *State initialized: 2026-03-20*
