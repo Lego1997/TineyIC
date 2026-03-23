@@ -4,6 +4,7 @@ import logging
 from typing import Optional
 
 import pandas as pd
+import yfinance as yf
 
 from .models import FinancialData
 
@@ -77,3 +78,31 @@ def fetch_financials(ticker: str) -> Optional[FinancialData]:
     except Exception as e:
         logger.warning("Failed to fetch financials for %s: %s", ticker, e)
         return None
+
+
+def fetch_price_history(ticker: str, period: str = "1y") -> list[dict]:
+    """Fetch daily closing prices from yfinance.
+
+    Args:
+        ticker: Stock ticker symbol.
+        period: yfinance period string (default "1y").
+
+    Returns:
+        List of {"date": "YYYY-MM-DD", "close": float} dicts, or empty list on failure.
+    """
+    try:
+        hist = yf.Ticker(ticker.upper().strip()).history(period=period)
+        if hist is None or hist.empty:
+            return []
+        result = []
+        for date, row in hist.iterrows():
+            close = row.get("Close")
+            if close is not None and not pd.isna(close):
+                result.append({
+                    "date": date.strftime("%Y-%m-%d"),
+                    "close": round(float(close), 2),
+                })
+        return result
+    except Exception as e:
+        logger.warning("Failed to fetch price history for %s: %s", ticker, e)
+        return []
