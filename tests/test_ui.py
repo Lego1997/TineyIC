@@ -7,6 +7,7 @@ from tinytroupe.environment.tiny_world import TinyWorld
 
 from tinyic.debate.orchestrator import DebateOrchestrator
 from tinyic.debate.models import DebatePhase
+from tinyic.ui.app import init_state, _debate_worker
 
 
 def make_mock_persona(name):
@@ -791,3 +792,60 @@ class TestModelSelectboxDisabled:
         assert disabled_values is not None
         for status in ("fetching", "debating", "extracting", "generating"):
             assert status in disabled_values
+
+
+class TestDeepResearchToggle:
+    """Tests for deep research UI toggle (Phase 12)."""
+
+    def test_init_state_includes_deep_research(self):
+        """init_state defaults include deep_research key."""
+        import ast
+        import inspect
+        source = inspect.getsource(init_state)
+        assert "deep_research" in source
+
+    def test_deep_research_default_true(self):
+        """deep_research defaults to True (research enabled by default)."""
+        import ast
+        import inspect
+        source = inspect.getsource(init_state)
+        # The defaults dict should have "deep_research": True
+        assert '"deep_research": True' in source or "'deep_research': True" in source
+
+    def test_debate_worker_accepts_deep_research(self):
+        """_debate_worker function accepts deep_research kwarg."""
+        import inspect
+        sig = inspect.signature(_debate_worker)
+        assert "deep_research" in sig.parameters
+
+    def test_debate_worker_deep_research_default(self):
+        """_debate_worker deep_research defaults to True."""
+        import inspect
+        sig = inspect.signature(_debate_worker)
+        param = sig.parameters["deep_research"]
+        assert param.default is True
+
+    def test_research_brief_model_importable(self):
+        """ResearchBrief model can be imported."""
+        from tinyic.data.models import ResearchBrief
+        rb = ResearchBrief()
+        assert hasattr(rb, "business_model")
+        assert hasattr(rb, "industry_trends")
+        assert hasattr(rb, "management")
+        assert hasattr(rb, "recent_catalysts")
+        assert hasattr(rb, "analyst_perspectives")
+
+    def test_build_research_brief_importable(self):
+        """build_research_brief function can be imported."""
+        from tinyic.data.research import build_research_brief
+        assert callable(build_research_brief)
+
+    def test_build_data_package_accepts_deep_research(self):
+        """build_data_package signature includes deep_research parameter."""
+        import inspect
+        from tinyic.data.pipeline import build_data_package
+        sig = inspect.signature(build_data_package)
+        assert "deep_research" in sig.parameters
+        # Default should be True
+        param = sig.parameters["deep_research"]
+        assert param.default is True

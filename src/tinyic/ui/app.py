@@ -279,6 +279,8 @@ def init_state():
         "sidebar_price_history": [],
         "data_package": None,
         "selected_model": "",
+        "deep_research": True,
+        "research_available": False,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -355,6 +357,17 @@ def render_sidebar():
             key="model_select",
         )
         st.session_state.selected_model = model_ids[selected_idx]
+
+        st.divider()
+
+        st.subheader("Research")
+        st.session_state.deep_research = st.checkbox(
+            "Deep Research",
+            value=st.session_state.deep_research,
+            disabled=disabled,
+            key="deep_research_toggle",
+            help="When enabled, performs web search + AI synthesis to produce a comprehensive research brief before the debate. Adds 15-30 seconds but significantly enriches persona context.",
+        )
 
         st.divider()
 
@@ -458,6 +471,10 @@ def render_data_sidebar():
     fetched_at = st.session_state.get("sidebar_fetched_at")
     if fetched_at:
         st.caption(f"Data fetched: {fetched_at[:19].replace('T', ' ')}")
+
+    # Research enrichment indicator
+    if st.session_state.get("research_available", False):
+        st.caption("Enhanced with deep research")
 
     # Warnings
     warnings = st.session_state.get("sidebar_warnings", [])
@@ -647,17 +664,18 @@ def _start_debate():
     message_queue = st.session_state.message_queue
     phase_gate = st.session_state.phase_gate
     selected_model = st.session_state.selected_model
+    deep_research = st.session_state.deep_research
 
     thread = threading.Thread(
         target=_debate_worker,
         args=(ticker, persona_names, ui_queue, stop_event, message_queue, phase_gate),
-        kwargs={"selected_model": selected_model},
+        kwargs={"selected_model": selected_model, "deep_research": deep_research},
         daemon=True,
     )
     thread.start()
 
 
-def _debate_worker(ticker, persona_names, ui_queue, stop_event, message_queue=None, phase_gate=None, selected_model=None):
+def _debate_worker(ticker, persona_names, ui_queue, stop_event, message_queue=None, phase_gate=None, selected_model=None, deep_research=True):
     """Background thread: fetch data -> run debate -> extract votes -> scorecard.
 
     IMPORTANT: This function NEVER reads or writes st.session_state.
@@ -677,7 +695,7 @@ def _debate_worker(ticker, persona_names, ui_queue, stop_event, message_queue=No
             from tinyic.debate.extraction import extract_votes, build_scorecard
             from tinyic.debate.models import DebateResult
 
-            data_package = build_data_package(ticker)
+            data_package = build_data_package(ticker, deep_research=deep_research)
 
             # Fetch price history for sidebar chart (UI-only, not for LLM context)
             from tinyic.data.financials import fetch_price_history
@@ -691,6 +709,7 @@ def _debate_worker(ticker, persona_names, ui_queue, stop_event, message_queue=No
                 "fetched_at": data_package.fetched_at.isoformat(),
                 "warnings": data_package.warnings,
                 "price_history": price_history,
+                "research_available": data_package.research_brief is not None,
             })
 
             personas = [load_persona(name) for name in persona_names]
@@ -838,6 +857,7 @@ def _drain_queue():
             st.session_state.sidebar_fetched_at = msg.get("fetched_at")
             st.session_state.sidebar_warnings = msg.get("warnings", [])
             st.session_state.sidebar_price_history = msg.get("price_history", [])
+            st.session_state.research_available = msg.get("research_available", False)
         elif msg_type == "message":
             st.session_state.current_agent = ""
             st.session_state.debate_log.append(msg)
@@ -887,7 +907,10 @@ def render_debate_section():
                 st.markdown(f"*{st.session_state.current_agent} is analyzing...*")
 
         if st.session_state.status == "fetching":
-            st.info("Fetching financial data, SEC filings, and market sentiment...")
+            if st.session_state.get("deep_research", False):
+                st.info("Fetching financial data, SEC filings, market sentiment, and performing deep research...")
+            else:
+                st.info("Fetching financial data, SEC filings, and market sentiment...")
         elif st.session_state.status == "extracting":
             st.info("Extracting final votes and building scorecard...")
         elif st.session_state.status == "generating":
