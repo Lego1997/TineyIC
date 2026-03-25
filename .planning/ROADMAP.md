@@ -19,7 +19,7 @@
 - [x] **Phase 7: Release Hardening** - Migrate deprecated APIs, fix test flakiness, eliminate warnings, expose cost stats
 - [x] **Phase 8: Debate Quality Controls** - Anti-convergence controls, rotating devil's advocate, differentiation regression tests
 - [x] **Phase 9: Memo & Disagreement Engine** - Full narrative investment memo, cross-persona disagreement extraction, Markdown/DOCX export
-- [ ] **Phase 10: UI Delivery** - Company data sidebar, memo/disagreement views, download buttons, per-debate cost display
+- [x] **Phase 10: UI Delivery** - Company data sidebar, memo/disagreement views, download buttons, per-debate cost display
 - [x] **Phase 11: Model Selection** - Runtime LLM model selection via UI dropdown, config override per debate session
 - [x] **Phase 12: Deep Research Pipeline** - Web search + LLM synthesis to produce comprehensive research brief for all personas
 
@@ -177,7 +177,7 @@ Plans:
 
 Plans:
 - [x] 10-01-PLAN.md -- Company data sidebar (financials, price chart, warnings) and per-debate cost display (token usage, estimated USD)
-- [ ] 10-02-PLAN.md -- Memo/disagreement views, download buttons, post-debate tabs
+- [x] 10-02-PLAN.md -- Memo/disagreement views, download buttons, post-debate tabs
 
 ### Phase 11: Model Selection
 **Goal**: Users can choose which LLM model powers the debate, with the selection applied at runtime without editing config files
@@ -231,7 +231,7 @@ Plans:
 | 7. Release Hardening | 2/2 | Complete | 2026-03-23 |
 | 8. Debate Quality Controls | 2/2 | Complete | 2026-03-23 |
 | 9. Memo & Disagreement Engine | 2/2 | Complete | 2026-03-23 |
-| 10. UI Delivery | 1/2 | In Progress | — |
+| 10. UI Delivery | 2/2 | Complete | 2026-03-25 |
 | 11. Model Selection | 1/1 | Complete | 2026-03-25 |
 | 12. Deep Research Pipeline | 2/2 | Complete | 2026-03-25 |
 
@@ -298,7 +298,7 @@ RESOLVE-01 -> Phase 6  [complete]
 RESOLVE-02 -> Phase 6  [complete]
 RESOLVE-03 -> Phase 6  [complete]
 
-# v1.1 (20/20 mapped, 4 complete)
+# v1.1 (20/20 mapped, 20 complete)
 HARD-01  -> Phase 7   [complete]
 HARD-02  -> Phase 7   [complete]
 HARD-03  -> Phase 7   [complete]
@@ -310,7 +310,7 @@ OUTP-03  -> Phase 9   [complete]
 OUTP-04  -> Phase 9   [complete]
 OUTP-05  -> Phase 9   [complete]
 UI-05    -> Phase 10  [complete]
-UI-07    -> Phase 10  [pending]
+UI-07    -> Phase 10  [complete]
 OPS-01    -> Phase 10  [complete]
 CONFIG-01 -> Phase 11  [complete]
 CONFIG-02 -> Phase 11  [complete]
