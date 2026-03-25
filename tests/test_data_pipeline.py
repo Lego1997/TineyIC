@@ -17,6 +17,7 @@ from tinyic.data.models import (
     FinancialData,
     FilingSummary,
     NewsSummary,
+    ResearchBrief,
     SocialSentiment,
 )
 from tinyic.data.ticker_resolver import resolve_ticker
@@ -759,6 +760,7 @@ class TestFetchSocialSentiment:
 class TestBuildDataPackage:
     """Mock all fetchers to test build_data_package orchestrator."""
 
+    @patch("tinyic.data.pipeline.build_research_brief")
     @patch("tinyic.data.pipeline.fetch_social_sentiment")
     @patch("tinyic.data.pipeline.fetch_news")
     @patch("tinyic.data.pipeline.fetch_filings")
@@ -766,7 +768,8 @@ class TestBuildDataPackage:
     @patch("tinyic.data.pipeline.resolve_ticker")
     @patch("tinyic.data.pipeline._fetch_description")
     def test_build_data_package_valid(
-        self, mock_desc, mock_resolve, mock_fin, mock_filings, mock_news, mock_social
+        self, mock_desc, mock_resolve, mock_fin, mock_filings, mock_news, mock_social,
+        mock_research,
     ):
         """All sources succeed -> DataPackage with all fields, no warnings."""
         mock_resolve.return_value = (True, "AAPL", "Apple Inc.")
@@ -782,6 +785,7 @@ class TestBuildDataPackage:
         mock_social.return_value = SocialSentiment(
             query="$AAPL", summary="Mixed sentiment"
         )
+        mock_research.return_value = ResearchBrief(business_model="Ecosystem moat")
 
         pkg = build_data_package("AAPL")
         assert pkg.ticker == "AAPL"
@@ -791,6 +795,7 @@ class TestBuildDataPackage:
         assert pkg.filing_10q is not None
         assert pkg.news is not None
         assert pkg.social is not None
+        assert pkg.research_brief is not None
         assert len(pkg.warnings) == 0
 
     @patch("tinyic.data.pipeline.resolve_ticker")
@@ -801,6 +806,7 @@ class TestBuildDataPackage:
         with pytest.raises(ValueError, match="Invalid ticker"):
             build_data_package("XYZNOTREAL")
 
+    @patch("tinyic.data.pipeline.build_research_brief", return_value=None)
     @patch("tinyic.data.pipeline.fetch_social_sentiment")
     @patch("tinyic.data.pipeline.fetch_news")
     @patch("tinyic.data.pipeline.fetch_filings")
@@ -808,7 +814,8 @@ class TestBuildDataPackage:
     @patch("tinyic.data.pipeline.resolve_ticker")
     @patch("tinyic.data.pipeline._fetch_description")
     def test_build_data_package_partial_failure(
-        self, mock_desc, mock_resolve, mock_fin, mock_filings, mock_news, mock_social
+        self, mock_desc, mock_resolve, mock_fin, mock_filings, mock_news, mock_social,
+        mock_research,
     ):
         """Some sources fail -> DataPackage has warnings for failed sources."""
         mock_resolve.return_value = (True, "AAPL", "Apple Inc.")
@@ -828,12 +835,14 @@ class TestBuildDataPackage:
         assert pkg.filing_10q is None
         assert pkg.news is None
         assert pkg.social is None
-        # 3 warnings: 10-Q, news, social
-        assert len(pkg.warnings) == 3
+        # 4 warnings: 10-Q, news, social, deep research
+        assert len(pkg.warnings) == 4
         assert any("10-Q" in w for w in pkg.warnings)
         assert any("news" in w.lower() for w in pkg.warnings)
         assert any("sentiment" in w.lower() or "twitter" in w.lower() for w in pkg.warnings)
+        assert any("research" in w.lower() for w in pkg.warnings)
 
+    @patch("tinyic.data.pipeline.build_research_brief", return_value=None)
     @patch("tinyic.data.pipeline.fetch_social_sentiment")
     @patch("tinyic.data.pipeline.fetch_news")
     @patch("tinyic.data.pipeline.fetch_filings")
@@ -841,9 +850,10 @@ class TestBuildDataPackage:
     @patch("tinyic.data.pipeline.resolve_ticker")
     @patch("tinyic.data.pipeline._fetch_description")
     def test_build_data_package_all_sources_fail(
-        self, mock_desc, mock_resolve, mock_fin, mock_filings, mock_news, mock_social
+        self, mock_desc, mock_resolve, mock_fin, mock_filings, mock_news, mock_social,
+        mock_research,
     ):
-        """All data sources fail -> DataPackage has 5 warnings but doesn't crash."""
+        """All data sources fail -> DataPackage has 6 warnings but doesn't crash."""
         mock_resolve.return_value = (True, "AAPL", "Apple Inc.")
         mock_desc.return_value = None
         mock_fin.return_value = None
@@ -859,9 +869,10 @@ class TestBuildDataPackage:
         assert pkg.filing_10q is None
         assert pkg.news is None
         assert pkg.social is None
-        # 5 warnings: financials, 10-K, 10-Q, news, social
-        assert len(pkg.warnings) == 5
+        # 6 warnings: financials, 10-K, 10-Q, news, social, deep research
+        assert len(pkg.warnings) == 6
 
+    @patch("tinyic.data.pipeline.build_research_brief")
     @patch("tinyic.data.pipeline.fetch_social_sentiment")
     @patch("tinyic.data.pipeline.fetch_news")
     @patch("tinyic.data.pipeline.fetch_filings")
@@ -869,11 +880,13 @@ class TestBuildDataPackage:
     @patch("tinyic.data.pipeline.resolve_ticker")
     @patch("tinyic.data.pipeline._fetch_description")
     def test_build_data_package_context_string_budget(
-        self, mock_desc, mock_resolve, mock_fin, mock_filings, mock_news, mock_social
+        self, mock_desc, mock_resolve, mock_fin, mock_filings, mock_news, mock_social,
+        mock_research,
     ):
-        """Full DataPackage.to_context_string() is under 12000 chars."""
+        """Full DataPackage.to_context_string() is under 20000 chars."""
         mock_resolve.return_value = (True, "AAPL", "Apple Inc.")
         mock_desc.return_value = "Apple designs consumer electronics." * 5
+        mock_research.return_value = ResearchBrief(business_model="Ecosystem moat" * 50)
         mock_fin.return_value = FinancialData(
             pe_ratio=28.5, pb_ratio=48.2, profit_margin=0.246,
             roe=1.56, debt_to_equity=178.7, market_cap=2_800_000_000_000,
@@ -899,7 +912,7 @@ class TestBuildDataPackage:
 
         pkg = build_data_package("AAPL")
         ctx = pkg.to_context_string()
-        assert len(ctx) < 12000, f"Context string is {len(ctx)} chars, should be under 12000"
+        assert len(ctx) < 20000, f"Context string is {len(ctx)} chars, should be under 20000"
 
 
 # ---------------------------------------------------------------------------
@@ -929,7 +942,7 @@ class TestLiveAPIIntegration:
         assert pkg.financials is not None
         assert pkg.financials.pe_ratio is not None
         ctx = pkg.to_context_string()
-        assert len(ctx) < 12000, f"Context string is {len(ctx)} chars, should be under 12000"
+        assert len(ctx) < 20000, f"Context string is {len(ctx)} chars, should be under 20000"
         # Print for manual inspection
         print(f"\n--- DataPackage for AAPL ---")
         print(f"Company: {pkg.company_name}")

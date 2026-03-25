@@ -10,6 +10,7 @@ from .financials import fetch_financials
 from .news import fetch_news
 from .filings import fetch_filings
 from .social import fetch_social_sentiment
+from .research import build_research_brief
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ def _fetch_description(ticker: str) -> Optional[str]:
         return None
 
 
-def build_data_package(ticker: str) -> DataPackage:
+def build_data_package(ticker: str, deep_research: bool = True) -> DataPackage:
     """Build complete DataPackage for a stock ticker.
 
     Fetches data from all available sources (yfinance, edgartools, xAI).
@@ -34,6 +35,8 @@ def build_data_package(ticker: str) -> DataPackage:
 
     Args:
         ticker: Stock ticker symbol (e.g., "AAPL").
+        deep_research: If True (default), run web search + LLM synthesis
+            to produce a ResearchBrief. Set False to skip (v1 behavior).
 
     Returns:
         DataPackage with all available data.
@@ -77,7 +80,14 @@ def build_data_package(ticker: str) -> DataPackage:
     if social is None:
         warnings.append("X/Twitter sentiment unavailable")
 
-    # Step 7: Assemble DataPackage
+    # Step 7: Deep research (DATA-06) -- optional, default enabled
+    research_brief = None
+    if deep_research:
+        research_brief = build_research_brief(resolved_ticker, company_name, description)
+        if research_brief is None:
+            warnings.append("Deep research unavailable")
+
+    # Step 8: Assemble DataPackage
     package = DataPackage(
         ticker=resolved_ticker,
         company_name=company_name,
@@ -88,6 +98,7 @@ def build_data_package(ticker: str) -> DataPackage:
         filing_10q=filing_10q,
         news=news,
         social=social,
+        research_brief=research_brief,
         warnings=warnings,
     )
 
