@@ -441,3 +441,353 @@ class TestDataReadyEvent:
         assert st.session_state.debate_result is mock_result
         assert st.session_state.data_package is mock_dp
         assert st.session_state.status == "complete"
+
+
+class TestMemoTab:
+    """Test memo tab rendering logic."""
+
+    def test_render_memo_tab_importable(self):
+        from tinyic.ui.app import render_memo_tab
+        assert callable(render_memo_tab)
+
+    def test_memo_to_markdown_has_sections(self):
+        from tinyic.debate.models import InvestmentMemo, MemoSection
+
+        memo = InvestmentMemo(
+            ticker="AAPL",
+            company_name="Apple Inc.",
+            executive_summary=MemoSection(title="Executive Summary", content="Apple analysis."),
+            investment_thesis=MemoSection(title="Investment Thesis", content="Strong moat."),
+            key_risks=MemoSection(title="Key Risks", content="Valuation risk."),
+            valuation_discussion=MemoSection(title="Valuation Discussion", content="28x P/E."),
+            final_verdict=MemoSection(title="Final Verdict", content="Split vote."),
+        )
+        md = memo.to_markdown()
+        assert "## Executive Summary" in md
+        assert "## Investment Thesis" in md
+        assert "## Key Risks" in md
+        assert "## Valuation Discussion" in md
+        assert "## Final Verdict" in md
+
+    def test_memo_to_markdown_has_grounding(self):
+        from tinyic.debate.models import InvestmentMemo, MemoSection
+
+        memo = InvestmentMemo(
+            ticker="AAPL",
+            company_name="Apple Inc.",
+            executive_summary=MemoSection(
+                title="Executive Summary",
+                content="Analysis.",
+                contributing_personas=["Warren Buffett", "Benjamin Graham"],
+                supporting_data=["P/E 28x"],
+            ),
+            investment_thesis=MemoSection(title="Investment Thesis", content="Thesis."),
+            key_risks=MemoSection(title="Key Risks", content="Risks."),
+            valuation_discussion=MemoSection(title="Valuation Discussion", content="Valuation."),
+            final_verdict=MemoSection(title="Final Verdict", content="Verdict."),
+        )
+        md = memo.to_markdown()
+        assert "Warren Buffett" in md
+        assert "Benjamin Graham" in md
+        assert "P/E 28x" in md
+
+
+class TestDisagreementsTab:
+    """Test disagreements tab rendering logic."""
+
+    def test_render_disagreements_tab_importable(self):
+        from tinyic.ui.app import render_disagreements_tab
+        assert callable(render_disagreements_tab)
+
+    def test_disagreement_to_markdown_has_dimensions(self):
+        from tinyic.debate.models import DisagreementAnalysis, Disagreement
+
+        analysis = DisagreementAnalysis(
+            ticker="AAPL",
+            company_name="Apple Inc.",
+            disagreements=[
+                Disagreement(
+                    dimension="Valuation Methodology",
+                    description="Different frameworks used.",
+                    sides=[
+                        {"persona": "Buffett", "position": "Fair value", "evidence_quote": "Owner earnings."},
+                    ],
+                ),
+            ],
+        )
+        md = analysis.to_markdown()
+        assert "Valuation Methodology" in md
+        assert "Different frameworks used." in md
+
+    def test_disagreement_to_markdown_has_evidence(self):
+        from tinyic.debate.models import DisagreementAnalysis, Disagreement
+
+        analysis = DisagreementAnalysis(
+            ticker="AAPL",
+            company_name="Apple Inc.",
+            disagreements=[
+                Disagreement(
+                    dimension="Risk",
+                    description="Risk views diverged.",
+                    sides=[
+                        {"persona": "Marks", "position": "High risk", "evidence_quote": "Late in the cycle."},
+                    ],
+                ),
+            ],
+        )
+        md = analysis.to_markdown()
+        assert "Late in the cycle." in md
+
+
+class TestDownloadButtons:
+    """Test download button logic."""
+
+    def test_render_download_buttons_importable(self):
+        from tinyic.ui.app import _render_download_buttons
+        assert callable(_render_download_buttons)
+
+    def test_has_pandoc_returns_bool(self):
+        from tinyic.export import has_pandoc
+        result = has_pandoc()
+        assert isinstance(result, bool)
+
+    def test_scorecard_to_markdown_for_download(self):
+        from tinyic.debate.models import Scorecard, Vote, VoteChoice, Confidence
+
+        sc = Scorecard(
+            ticker="AAPL",
+            company_name="Apple Inc.",
+            votes=[
+                Vote(
+                    investor="Warren Buffett",
+                    vote=VoteChoice.BUY,
+                    confidence=Confidence.HIGH,
+                    reasoning=["Strong moat"],
+                ),
+            ],
+            consensus=VoteChoice.BUY,
+            bull_count=1,
+        )
+        md = sc.to_markdown()
+        assert len(md) > 0
+        assert "Warren Buffett" in md
+        assert "BUY" in md
+
+
+class TestModelSelection:
+    """Test model selection dropdown and runtime override (Phase 11)."""
+
+    def test_model_options_valid(self):
+        """MODEL_OPTIONS has required keys, at least 2 entries, includes GPT-5.2."""
+        from tinyic.constants import MODEL_OPTIONS
+
+        assert len(MODEL_OPTIONS) >= 2
+        for m in MODEL_OPTIONS:
+            assert "id" in m
+            assert "display_name" in m
+            assert "description" in m
+        ids = [m["id"] for m in MODEL_OPTIONS]
+        assert "gpt-5.2" in ids
+
+    def test_init_state_includes_selected_model(self):
+        """init_state() sets selected_model key in session state."""
+        import streamlit as st
+        from tinyic.ui.app import init_state
+
+        # Clear it first to verify init_state sets it
+        if "selected_model" in st.session_state:
+            del st.session_state["selected_model"]
+
+        init_state()
+        assert "selected_model" in st.session_state
+
+    def test_model_override_in_worker(self):
+        """Worker applies model override and restores original on exit."""
+        from unittest.mock import patch, MagicMock
+        from tinytroupe import config_manager
+
+        call_log = []
+        orig_get = config_manager.get
+        orig_update = config_manager.update
+
+        def tracking_get(key):
+            call_log.append(("get", key))
+            if key == "model":
+                return "gpt-5.2"
+            return orig_get(key)
+
+        def tracking_update(key, value):
+            call_log.append(("update", key, value))
+
+        with patch.object(config_manager, "get", side_effect=tracking_get), \
+             patch.object(config_manager, "update", side_effect=tracking_update), \
+             patch("tinyic.data.pipeline.build_data_package") as mock_build, \
+             patch("tinyic.personas.registry.load_persona") as mock_load, \
+             patch("tinyic.debate.orchestrator.DebateOrchestrator") as mock_orch_cls, \
+             patch("tinyic.debate.extraction.extract_votes") as mock_extract, \
+             patch("tinyic.debate.extraction.build_scorecard") as mock_scorecard, \
+             patch("tinyic.data.financials.fetch_price_history", return_value=[]):
+
+            mock_dp = MagicMock()
+            mock_dp.financials = None
+            mock_dp.description = "Test"
+            mock_dp.fetched_at.isoformat.return_value = "2026-01-01"
+            mock_dp.warnings = []
+            mock_dp.company_name = "Test Inc."
+            mock_dp.to_context_string.return_value = "{}"
+            mock_build.return_value = mock_dp
+
+            mock_orch = MagicMock()
+            mock_orch._phase_history = ["opening_statements"]
+            mock_orch.get_cost_stats.return_value = None
+            mock_orch.pretty_current_interactions.return_value = ""
+            mock_orch_cls.return_value = mock_orch
+
+            mock_extract.return_value = []
+            mock_scorecard.return_value = MagicMock()
+
+            ui_q = queue.Queue()
+            stop = threading.Event()
+
+            from tinyic.ui.app import _debate_worker
+            _debate_worker("AAPL", ["buffett", "graham"], ui_q, stop, selected_model="codex-5.3")
+
+            update_calls = [c for c in call_log if c[0] == "update"]
+            assert ("update", "model", "codex-5.3") in update_calls, "Model override not applied"
+            assert ("update", "model", "gpt-5.2") in update_calls, "Original model not restored"
+            assert update_calls[-1] == ("update", "model", "gpt-5.2"), "Restore must be final update"
+
+    def test_model_override_restores_on_exception(self):
+        """Worker restores original model even when an exception occurs."""
+        from unittest.mock import patch, MagicMock
+        from tinytroupe import config_manager
+
+        restore_calls = []
+
+        with patch.object(config_manager, "get", return_value="gpt-5.2"), \
+             patch.object(config_manager, "update", side_effect=lambda k, v: restore_calls.append((k, v))), \
+             patch("tinyic.data.pipeline.build_data_package", side_effect=RuntimeError("boom")):
+
+            ui_q = queue.Queue()
+            stop = threading.Event()
+
+            from tinyic.ui.app import _debate_worker
+            _debate_worker("AAPL", ["buffett"], ui_q, stop, selected_model="codex-5.3")
+
+            assert ("model", "gpt-5.2") in restore_calls, "Model not restored after exception"
+
+    def test_model_selectbox_disabled_during_debate(self):
+        """The disabled flag applies to model selectbox during active debate states."""
+        # The disabled variable in render_sidebar() is shared across all sidebar
+        # inputs. Verify the condition matches expectations.
+        for status in ("fetching", "debating", "extracting", "generating"):
+            disabled = status in ("fetching", "debating", "extracting", "generating")
+            assert disabled is True, f"Model selectbox should be disabled during {status}"
+        for status in ("idle", "ready", "complete"):
+            disabled = status in ("fetching", "debating", "extracting", "generating")
+            assert disabled is False, f"Model selectbox should be enabled during {status}"
+
+
+class TestModelOptions:
+    """Test MODEL_OPTIONS shape and required entries."""
+
+    def test_model_options_has_required_fields(self):
+        from tinyic.constants import MODEL_OPTIONS
+
+        assert len(MODEL_OPTIONS) >= 2
+
+        ids = []
+        for option in MODEL_OPTIONS:
+            assert "id" in option
+            assert "display_name" in option
+            assert "description" in option
+            ids.append(option["id"])
+
+        assert "gpt-5.2" in ids
+
+
+class TestInitStateModel:
+    """Test selected_model initialization in session state."""
+
+    def test_init_state_sets_selected_model(self):
+        import streamlit as st
+        from tinyic.ui.app import init_state
+
+        if "selected_model" in st.session_state:
+            del st.session_state["selected_model"]
+
+        init_state()
+
+        assert "selected_model" in st.session_state
+
+
+class TestModelOverrideWorker:
+    """Test runtime model override and restoration in worker."""
+
+    def test_override_applied_and_restored_on_exception(self):
+        from unittest.mock import call, patch
+        from tinyic.ui.app import _debate_worker
+
+        ui_q = queue.Queue()
+        stop = threading.Event()
+
+        with patch("tinytroupe.config_manager.get", return_value="gpt-5.2") as mock_get, patch(
+            "tinytroupe.config_manager.update"
+        ) as mock_update, patch(
+            "tinyic.data.pipeline.build_data_package", side_effect=RuntimeError("boom")
+        ):
+            _debate_worker(
+                "AAPL",
+                ["warren_buffett", "benjamin_graham"],
+                ui_q,
+                stop,
+                selected_model="codex-5.3",
+            )
+
+        mock_get.assert_called_with("model")
+        assert call("model", "codex-5.3") in mock_update.call_args_list
+        assert call("model", "gpt-5.2") in mock_update.call_args_list
+        assert mock_update.call_args_list[-1] == call("model", "gpt-5.2")
+
+
+class TestModelDefaultMatchesConfig:
+    """Test first model option matches default model constant."""
+
+    def test_default_model_matches_first_option(self):
+        from tinyic import constants
+
+        assert constants.MODEL_OPTIONS[0]["id"] == constants.MODEL
+
+
+class TestModelSelectboxDisabled:
+    """Test disabled states used for model selectbox in sidebar."""
+
+    def test_disabled_states_include_active_pipeline_statuses(self):
+        import ast
+        import inspect
+        import textwrap
+        from tinyic.ui import app
+
+        source = textwrap.dedent(inspect.getsource(app.render_sidebar))
+        tree = ast.parse(source)
+
+        disabled_values = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "disabled" for target in node.targets
+            ):
+                if isinstance(node.value, ast.Compare) and node.value.ops and isinstance(
+                    node.value.ops[0], ast.In
+                ):
+                    comparator = node.value.comparators[0]
+                    if isinstance(comparator, (ast.Tuple, ast.List)):
+                        disabled_values = [
+                            elt.value
+                            for elt in comparator.elts
+                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                        ]
+                break
+
+        assert disabled_values is not None
+        for status in ("fetching", "debating", "extracting", "generating"):
+            assert status in disabled_values

@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: "Output Quality + Debate Robustness + Polish"
 status: executing
-last_updated: "2026-03-23T11:12:00Z"
+last_updated: "2026-03-25T00:00:00Z"
 progress:
   total_phases: 6
-  completed_phases: 3
-  total_plans: 8
-  completed_plans: 7
+  completed_phases: 5
+  total_plans: 9
+  completed_plans: 9
 ---
 
 # State: openIC
@@ -17,12 +17,12 @@ progress:
 
 **Core Value:** Investor personas must be convincingly distinct and philosophically accurate -- each argues from their real-world framework, producing genuinely differentiated perspectives.
 
-**Current Focus:** Phase 10 — ui-delivery
+**Current Focus:** Phase 11 complete — next: Phase 12 (Deep Research Pipeline)
 
 ## Current Position
 
-Phase: 10 (ui-delivery) -- IN PROGRESS
-Plan: 1 of 2 complete (10-01 data sidebar + cost display done)
+Phase: 11 (model-selection) -- COMPLETE
+Plan: 1 of 1 complete
 
 ## v1 Completion Summary
 
@@ -39,8 +39,8 @@ v1 milestone passed audit on 2026-03-22:
 | 7 | Release Hardening | Complete | — (gate) |
 | 8 | Debate Quality Controls | Complete | Phase 7 |
 | 9 | Memo & Disagreement Engine | Complete | Phase 7, 8 |
-| 10 | UI Delivery | In Progress (1/2) | Phase 7, 9 |
-| 11 | Model Selection | Pending | Phase 7 |
+| 10 | UI Delivery | Complete | Phase 7, 9 |
+| 11 | Model Selection | Complete | Phase 7 |
 | 12 | Deep Research Pipeline | Pending | Phase 7, 11 |
 
 ## Performance Metrics
@@ -59,10 +59,10 @@ v1 milestone passed audit on 2026-03-22:
 
 | Metric | Value |
 |--------|-------|
-| Plans completed | 7/8 (Phase 7: 2/2, Phase 8: 2/2, Phase 9: 2/2, Phase 10: 1/2) |
-| Phases completed | 3/6 |
-| Requirements completed | 12/20 |
-| Total tests | 215 (+ 7 live API) |
+| Plans completed | 9/9 (Phase 7: 2/2, Phase 8: 2/2, Phase 9: 2/2, Phase 10: 2/2, Phase 11: 1/1) |
+| Phases completed | 5/6 |
+| Requirements completed | 18/20 |
+| Total tests | 228 (+ 8 live API) |
 
 ## Accumulated Context
 
@@ -110,7 +110,7 @@ v1 milestone passed audit on 2026-03-22:
 - [x] Plan Phase 8: Debate Quality Controls (2 plans executed)
 - [x] Plan Phase 9: Memo & Disagreement Engine (2 plans created)
 - [x] Plan Phase 10: UI Delivery (2 plans created)
-- [ ] Plan Phase 11: Model Selection
+- [x] Plan Phase 11: Model Selection (1 plan)
 - [ ] Plan Phase 12: Deep Research Pipeline
 
 ### Blockers
@@ -119,10 +119,10 @@ None currently.
 
 ## Session Continuity
 
-**Last action:** Executed Phase 10 Plan 01 (Data Sidebar + Cost Display) -- data sidebar with financials, price chart, warnings; per-debate cost display with token counts.
-**Next action:** Execute Phase 10 Plan 02 (Memo/Disagreement Views + Download Buttons).
-**Context to preserve:** 215 tests passing. fetch_price_history() in financials.py. render_data_sidebar() and _render_cost_display() in app.py. data_ready event from worker thread stores sidebar data in session state. data_package stored in session_state for Plan 10-02 memo generation. 2:1 column layout (debate left, data right). cost_stats flows orchestrator.get_cost_stats() -> DebateResult -> get_debate_cost_stats() -> st.metric.
+**Last action:** Executed Phase 11 (Model Selection) -- model dropdown in sidebar with runtime config override, 5 new tests.
+**Next action:** Plan Phase 12 (Deep Research Pipeline).
+**Context to preserve:** 228 tests passing. Phase 11 complete (CONFIG-01, CONFIG-02, CONFIG-03). MODEL_OPTIONS in constants.py. Sidebar dropdown with model selection. Worker applies config_manager.update("model", selected_model) with finally-block restore. Model locked during active debate via shared disabled flag.
 
 ---
 *State initialized: 2026-03-20*
-*Last updated: 2026-03-23 -- Phase 10 Plan 01 executed (data sidebar + cost display)*
+*Last updated: 2026-03-25 -- Phase 11 complete (model selection dropdown + runtime override)*

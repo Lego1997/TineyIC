@@ -20,7 +20,7 @@
 - [x] **Phase 8: Debate Quality Controls** - Anti-convergence controls, rotating devil's advocate, differentiation regression tests
 - [x] **Phase 9: Memo & Disagreement Engine** - Full narrative investment memo, cross-persona disagreement extraction, Markdown/DOCX export
 - [ ] **Phase 10: UI Delivery** - Company data sidebar, memo/disagreement views, download buttons, per-debate cost display
-- [ ] **Phase 11: Model Selection** - Runtime LLM model selection via UI dropdown, config override per debate session
+- [x] **Phase 11: Model Selection** - Runtime LLM model selection via UI dropdown, config override per debate session
 - [ ] **Phase 12: Deep Research Pipeline** - Web search + LLM synthesis to produce comprehensive research brief for all personas
 
 ## Phase Details
@@ -189,7 +189,10 @@ Plans:
   3. Each model option displays a brief description of its strengths to help users choose (e.g., reasoning depth, speed, cost)
   4. The default selection matches the current `config.ini` MODEL value so existing behavior is preserved when no change is made
   5. Model selection is locked during an active debate (consistent with existing sidebar lock behavior) and only takes effect on the next debate
-**Plans:** TBD
+**Plans:** 1 plan
+
+Plans:
+- [x] 11-01-PLAN.md -- Model dropdown in sidebar with runtime config override and tests
 
 ### Phase 12: Deep Research Pipeline
 **Goal**: Every debate is informed by a comprehensive, LLM-synthesized research brief that covers the target company's business, competition, industry, management, and analyst perspectives -- not just raw financial data
@@ -225,7 +228,7 @@ Plans:
 | 8. Debate Quality Controls | 2/2 | Complete | 2026-03-23 |
 | 9. Memo & Disagreement Engine | 2/2 | Complete | 2026-03-23 |
 | 10. UI Delivery | 1/2 | In Progress | — |
-| 11. Model Selection | 0/TBD | Pending | — |
+| 11. Model Selection | 1/1 | Complete | 2026-03-25 |
 | 12. Deep Research Pipeline | 0/TBD | Pending | — |
 
 ## Dependency Graph
@@ -305,9 +308,9 @@ OUTP-05  -> Phase 9   [complete]
 UI-05    -> Phase 10  [complete]
 UI-07    -> Phase 10  [pending]
 OPS-01    -> Phase 10  [complete]
-CONFIG-01 -> Phase 11  [pending]
-CONFIG-02 -> Phase 11  [pending]
-CONFIG-03 -> Phase 11  [pending]
+CONFIG-01 -> Phase 11  [complete]
+CONFIG-02 -> Phase 11  [complete]
+CONFIG-03 -> Phase 11  [complete]
 DATA-06   -> Phase 12  [pending]
 DATA-07   -> Phase 12  [pending]
 DATA-08   -> Phase 12  [pending]
@@ -319,4 +322,4 @@ Orphaned: 0
 
 ---
 *Roadmap created: 2026-03-20*
-*Last updated: 2026-03-23 -- Phase 10 Plan 01 complete (data sidebar + cost display)*
+*Last updated: 2026-03-25 -- Phase 11 complete (model selection dropdown with runtime override)*

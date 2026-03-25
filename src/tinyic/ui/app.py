@@ -115,6 +115,7 @@ def init_state():
         "sidebar_warnings": [],
         "sidebar_price_history": [],
         "data_package": None,
+        "selected_model": "",
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -127,7 +128,7 @@ def render_sidebar():
         st.title("openIC")
         st.caption("AI Investment Committee Simulator")
 
-        disabled = st.session_state.status in ("fetching", "debating", "extracting")
+        disabled = st.session_state.status in ("fetching", "debating", "extracting", "generating")
 
         query = st.text_input(
             "Company or Ticker",
@@ -169,6 +170,28 @@ def render_sidebar():
 
         if len(selected) < 2:
             st.warning("Select at least 2 committee members")
+
+        st.divider()
+
+        st.subheader("Model")
+        from tinyic.constants import MODEL_OPTIONS
+        from tinytroupe import config_manager
+
+        model_labels = [f"{m['display_name']} — {m['description']}" for m in MODEL_OPTIONS]
+        model_ids = [m["id"] for m in MODEL_OPTIONS]
+
+        current_model = config_manager.get("model")
+        default_idx = model_ids.index(current_model) if current_model in model_ids else 0
+
+        selected_idx = st.selectbox(
+            "LLM Model",
+            range(len(model_labels)),
+            format_func=lambda i: model_labels[i],
+            index=default_idx,
+            disabled=disabled,
+            key="model_select",
+        )
+        st.session_state.selected_model = model_ids[selected_idx]
 
         st.divider()
 
@@ -300,6 +323,127 @@ def _render_cost_display():
         st.metric("Estimated Cost", f"${stats['estimated_cost_usd']:.4f}")
 
 
+def render_memo_tab():
+    """Render the investment memo with section-by-section display and grounding metadata."""
+    result = st.session_state.get("debate_result")
+    if not result or not result.memo:
+        st.info("Memo not available. Generation may have been skipped or failed.")
+        return
+
+    memo = result.memo
+
+    sections = [
+        memo.executive_summary,
+        memo.investment_thesis,
+        memo.key_risks,
+        memo.valuation_discussion,
+        memo.final_verdict,
+    ]
+
+    for section in sections:
+        st.markdown(f"### {section.title}")
+        st.markdown(section.content)
+
+        if section.contributing_personas:
+            st.caption(f"Contributors: {', '.join(section.contributing_personas)}")
+        if section.supporting_data:
+            st.caption(f"Data references: {', '.join(section.supporting_data)}")
+
+        st.divider()
+
+
+def render_disagreements_tab():
+    """Render the disagreement analysis with dimensions, sides, and evidence quotes."""
+    result = st.session_state.get("debate_result")
+    if not result or not result.disagreement_analysis:
+        st.info("Disagreement analysis not available.")
+        return
+
+    analysis = result.disagreement_analysis
+
+    if not analysis.disagreements:
+        st.info("No significant disagreements identified.")
+        return
+
+    for i, d in enumerate(analysis.disagreements, 1):
+        st.markdown(f"### {i}. {d.dimension}")
+        st.markdown(d.description)
+
+        for side in d.sides:
+            persona = side.get("persona", "Unknown")
+            position = side.get("position", "")
+            quote = side.get("evidence_quote", "")
+
+            st.markdown(f"**{persona}:** {position}")
+            if quote:
+                st.markdown(f'> "{quote}"')
+
+        if d.resolution:
+            st.markdown(f"**Resolution:** {d.resolution}")
+
+        st.divider()
+
+
+def _render_download_buttons():
+    """Render download buttons for all debate artifacts."""
+    result = st.session_state.get("debate_result")
+    if not result:
+        return
+
+    st.divider()
+    st.subheader("Downloads")
+
+    ticker = result.ticker
+
+    # Scorecard (Markdown) -- always available
+    st.download_button(
+        label="Scorecard (Markdown)",
+        data=result.scorecard.to_markdown(),
+        file_name=f"{ticker}_scorecard.md",
+        mime="text/markdown",
+        key="dl_scorecard",
+    )
+
+    # Investment Memo (Markdown) -- available if memo was generated
+    if result.memo:
+        memo_md = result.memo.to_markdown()
+        st.download_button(
+            label="Investment Memo (Markdown)",
+            data=memo_md,
+            file_name=f"{ticker}_memo.md",
+            mime="text/markdown",
+            key="dl_memo_md",
+        )
+
+        # Investment Memo (DOCX) -- only if pandoc available
+        from tinyic.export import has_pandoc
+        if has_pandoc():
+            import tempfile
+            from tinyic.export import ExportManager
+            with tempfile.TemporaryDirectory() as tmpdir:
+                mgr = ExportManager(tmpdir)
+                docx_path = mgr.export_docx(memo_md, f"{ticker}_memo")
+                if docx_path and docx_path.exists():
+                    st.download_button(
+                        label="Investment Memo (DOCX)",
+                        data=docx_path.read_bytes(),
+                        file_name=f"{ticker}_memo.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        key="dl_memo_docx",
+                    )
+
+    # Transcript (Markdown) -- available if transcript exists
+    if result.transcript:
+        transcript_md = f"# Debate Transcript: {result.company_name} ({ticker})\n\n{result.transcript}"
+        st.download_button(
+            label="Transcript (Markdown)",
+            data=transcript_md,
+            file_name=f"{ticker}_transcript.md",
+            mime="text/markdown",
+            key="dl_transcript",
+        )
+
+
 def _start_debate():
     """Launch the debate in a background thread."""
     st.session_state.status = "fetching"
@@ -324,122 +468,144 @@ def _start_debate():
     stop_event = st.session_state.stop_event
     message_queue = st.session_state.message_queue
     phase_gate = st.session_state.phase_gate
+    selected_model = st.session_state.selected_model
 
     thread = threading.Thread(
         target=_debate_worker,
         args=(ticker, persona_names, ui_queue, stop_event, message_queue, phase_gate),
+        kwargs={"selected_model": selected_model},
         daemon=True,
     )
     thread.start()
 
 
-def _debate_worker(ticker, persona_names, ui_queue, stop_event, message_queue=None, phase_gate=None):
+def _debate_worker(ticker, persona_names, ui_queue, stop_event, message_queue=None, phase_gate=None, selected_model=None):
     """Background thread: fetch data -> run debate -> extract votes -> scorecard.
 
     IMPORTANT: This function NEVER reads or writes st.session_state.
     All communication with the UI thread is via ui_queue.put().
     """
     try:
-        from tinyic.data.pipeline import build_data_package
-        from tinyic.personas.registry import load_persona
-        from tinyic.debate.orchestrator import DebateOrchestrator
-        from tinyic.debate.extraction import extract_votes, build_scorecard
-        from tinyic.debate.models import DebateResult
+        from tinytroupe import config_manager
 
-        data_package = build_data_package(ticker)
+        original_model = config_manager.get("model")
+        if selected_model:
+            config_manager.update("model", selected_model)
 
-        # Fetch price history for sidebar chart (UI-only, not for LLM context)
-        from tinyic.data.financials import fetch_price_history
-        price_history = fetch_price_history(ticker)
+        try:
+            from tinyic.data.pipeline import build_data_package
+            from tinyic.personas.registry import load_persona
+            from tinyic.debate.orchestrator import DebateOrchestrator
+            from tinyic.debate.extraction import extract_votes, build_scorecard
+            from tinyic.debate.models import DebateResult
 
-        # Signal UI with data package fields for sidebar (before debate starts)
-        ui_queue.put({
-            "type": "data_ready",
-            "financials": data_package.financials.model_dump() if data_package.financials else None,
-            "description": data_package.description,
-            "fetched_at": data_package.fetched_at.isoformat(),
-            "warnings": data_package.warnings,
-            "price_history": price_history,
-        })
+            data_package = build_data_package(ticker)
 
-        personas = [load_persona(name) for name in persona_names]
+            # Fetch price history for sidebar chart (UI-only, not for LLM context)
+            from tinyic.data.financials import fetch_price_history
+            price_history = fetch_price_history(ticker)
 
-        orchestrator = DebateOrchestrator(
-            name=f"IC-{ticker}",
-            personas=personas,
-            data_package=data_package,
-        )
-
-        # Set message queue and phase gate for steering
-        orchestrator.message_queue = message_queue
-        orchestrator.phase_gate = phase_gate
-
-        # Track agents done per phase for phase_complete events
-        agent_count_in_phase = [0]
-        num_personas = len(persona_names)
-
-        def on_phase_start(phase_value):
+            # Signal UI with data package fields for sidebar (before debate starts)
             ui_queue.put({
-                "type": "phase",
-                "phase": phase_value,
-                "timestamp": datetime.now().isoformat(),
+                "type": "data_ready",
+                "financials": data_package.financials.model_dump() if data_package.financials else None,
+                "description": data_package.description,
+                "fetched_at": data_package.fetched_at.isoformat(),
+                "warnings": data_package.warnings,
+                "price_history": price_history,
             })
 
-        def on_agent_start(agent_name, phase_value):
+            personas = [load_persona(name) for name in persona_names]
+
+            orchestrator = DebateOrchestrator(
+                name=f"IC-{ticker}",
+                personas=personas,
+                data_package=data_package,
+            )
+
+            # Set message queue and phase gate for steering
+            orchestrator.message_queue = message_queue
+            orchestrator.phase_gate = phase_gate
+
+            # Track agents done per phase for phase_complete events
+            agent_count_in_phase = [0]
+            num_personas = len(persona_names)
+
+            def on_phase_start(phase_value):
+                ui_queue.put({
+                    "type": "phase",
+                    "phase": phase_value,
+                    "timestamp": datetime.now().isoformat(),
+                })
+
+            def on_agent_start(agent_name, phase_value):
+                ui_queue.put({
+                    "type": "agent_start",
+                    "agent": agent_name,
+                    "phase": phase_value,
+                })
+
+            def on_agent_done(agent_name, phase_value, actions):
+                content = extract_talk_content(actions)
+                ui_queue.put({
+                    "type": "message",
+                    "agent": agent_name,
+                    "phase": phase_value,
+                    "content": content,
+                    "timestamp": datetime.now().isoformat(),
+                })
+                agent_count_in_phase[0] += 1
+                if agent_count_in_phase[0] >= num_personas:
+                    agent_count_in_phase[0] = 0
+                    # Don't pause after VERDICT (last phase)
+                    if phase_value != "final_verdict":
+                        ui_queue.put({"type": "phase_complete", "phase": phase_value})
+
+            orchestrator.on_phase_start = on_phase_start
+            orchestrator.on_agent_start = on_agent_start
+            orchestrator.on_agent_done = on_agent_done
+
+            ui_queue.put({"type": "status", "status": "debating"})
+            orchestrator.run_debate()
+
+            if stop_event.is_set():
+                ui_queue.put({"type": "status", "status": "error"})
+                ui_queue.put({"type": "error", "message": "Debate cancelled"})
+                return
+
+            ui_queue.put({"type": "status", "status": "extracting"})
+            votes = extract_votes(orchestrator)
+            scorecard = build_scorecard(votes, ticker, data_package.company_name)
+            transcript = orchestrator.pretty_current_interactions()
+
+            result = DebateResult(
+                ticker=ticker,
+                company_name=data_package.company_name,
+                scorecard=scorecard,
+                phases_completed=orchestrator._phase_history,
+                transcript=transcript,
+                cost_stats=orchestrator.get_cost_stats(),
+            )
+
+            # Generate memo and disagreement analysis (post-debate LLM calls)
+            ui_queue.put({"type": "status", "status": "generating"})
+            try:
+                from tinyic.debate.memo import generate_memo, extract_disagreements
+                result.memo = generate_memo(result, data_package)
+                result.disagreement_analysis = extract_disagreements(result)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning("Post-debate generation failed: %s", e)
+                # Memo/disagreement stay None -- UI handles gracefully
+
             ui_queue.put({
-                "type": "agent_start",
-                "agent": agent_name,
-                "phase": phase_value,
+                "type": "complete",
+                "result": result,
+                "data_package": data_package,
+                "data_package_text": data_package.to_context_string(),
             })
-
-        def on_agent_done(agent_name, phase_value, actions):
-            content = extract_talk_content(actions)
-            ui_queue.put({
-                "type": "message",
-                "agent": agent_name,
-                "phase": phase_value,
-                "content": content,
-                "timestamp": datetime.now().isoformat(),
-            })
-            agent_count_in_phase[0] += 1
-            if agent_count_in_phase[0] >= num_personas:
-                agent_count_in_phase[0] = 0
-                # Don't pause after VERDICT (last phase)
-                if phase_value != "final_verdict":
-                    ui_queue.put({"type": "phase_complete", "phase": phase_value})
-
-        orchestrator.on_phase_start = on_phase_start
-        orchestrator.on_agent_start = on_agent_start
-        orchestrator.on_agent_done = on_agent_done
-
-        ui_queue.put({"type": "status", "status": "debating"})
-        orchestrator.run_debate()
-
-        if stop_event.is_set():
-            ui_queue.put({"type": "status", "status": "error"})
-            ui_queue.put({"type": "error", "message": "Debate cancelled"})
-            return
-
-        ui_queue.put({"type": "status", "status": "extracting"})
-        votes = extract_votes(orchestrator)
-        scorecard = build_scorecard(votes, ticker, data_package.company_name)
-        transcript = orchestrator.pretty_current_interactions()
-
-        result = DebateResult(
-            ticker=ticker,
-            company_name=data_package.company_name,
-            scorecard=scorecard,
-            phases_completed=orchestrator._phase_history,
-            transcript=transcript,
-            cost_stats=orchestrator.get_cost_stats(),
-        )
-
-        ui_queue.put({
-            "type": "complete",
-            "result": result,
-            "data_package": data_package,
-            "data_package_text": data_package.to_context_string(),
-        })
+        finally:
+            config_manager.update("model", original_model)
 
     except Exception as e:
         # Try to build partial scorecard from whatever we have
@@ -516,7 +682,7 @@ def _drain_queue():
 
 def render_debate_section():
     """Render the debate section. Uses st.fragment for auto-polling during debate."""
-    is_active = st.session_state.status in ("fetching", "debating", "extracting")
+    is_active = st.session_state.status in ("fetching", "debating", "extracting", "generating")
     run_every = 2 if is_active else None
 
     @st.fragment(run_every=run_every)
@@ -546,6 +712,8 @@ def render_debate_section():
             st.info("Fetching financial data, SEC filings, and market sentiment...")
         elif st.session_state.status == "extracting":
             st.info("Extracting final votes and building scorecard...")
+        elif st.session_state.status == "generating":
+            st.info("Generating investment memo and disagreement analysis...")
 
     debate_fragment()
 
@@ -615,14 +783,6 @@ def render_scorecard():
         with st.expander("View raw data package"):
             st.text(data_text)
 
-    # Download scorecard
-    st.download_button(
-        label="Download Scorecard (Markdown)",
-        data=sc.to_markdown(),
-        file_name=f"{result.ticker}_scorecard.md",
-        mime="text/markdown",
-    )
-
     # Re-run button
     if st.button("Re-run with same ticker"):
         st.session_state.status = "ready"
@@ -661,7 +821,7 @@ def main():
             "Select your committee members and click **Start Debate**."
         )
 
-    elif st.session_state.status in ("fetching", "debating", "extracting"):
+    elif st.session_state.status in ("fetching", "debating", "extracting", "generating"):
         st.title(f"Investment Committee: {st.session_state.company_name}")
 
         # Two-column layout: debate (left, wider) + data sidebar (right)
@@ -723,7 +883,21 @@ def main():
         with results_col:
             _drain_queue()
             render_debate_section()
-            render_scorecard()
+
+            # Tabbed results view
+            tab_scorecard, tab_memo, tab_disagreements = st.tabs(
+                ["Scorecard", "Investment Memo", "Disagreements"]
+            )
+
+            with tab_scorecard:
+                render_scorecard()
+            with tab_memo:
+                render_memo_tab()
+            with tab_disagreements:
+                render_disagreements_tab()
+
+            # Downloads and cost (below tabs)
+            _render_download_buttons()
             _render_cost_display()
 
         if data_col is not None:
