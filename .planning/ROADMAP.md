@@ -205,7 +205,11 @@ Plans:
   4. The research step is toggleable via a UI checkbox or parameter (default: enabled) -- when disabled, the pipeline behaves exactly as in v1 with no performance penalty
   5. When web search or LLM synthesis fails, the system logs a warning and continues with existing data sources (graceful degradation, consistent with the pipeline's existing pattern)
   6. Unit tests verify `ResearchBrief` model, pipeline integration, toggle behavior, and failure handling without requiring API keys
-**Plans:** TBD
+**Plans:** 2 plans
+
+Plans:
+- [x] 12-01-PLAN.md -- ResearchBrief model, web search + LLM synthesis pipeline, pipeline integration with deep_research toggle
+- [ ] 12-02-PLAN.md -- UI checkbox for deep research toggle, research brief display in data sidebar
 
 ## Progress
 
@@ -229,7 +233,7 @@ Plans:
 | 9. Memo & Disagreement Engine | 2/2 | Complete | 2026-03-23 |
 | 10. UI Delivery | 1/2 | In Progress | — |
 | 11. Model Selection | 1/1 | Complete | 2026-03-25 |
-| 12. Deep Research Pipeline | 0/TBD | Pending | — |
+| 12. Deep Research Pipeline | 1/2 | In Progress | — |
 
 ## Dependency Graph
 
