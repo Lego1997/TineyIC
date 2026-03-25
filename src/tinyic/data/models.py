@@ -46,6 +46,19 @@ class SocialSentiment(BaseModel):
     bearish_points: list[str] = Field(default_factory=list)
 
 
+class ResearchBrief(BaseModel):
+    """LLM-synthesized research brief from web search results.
+
+    Each field covers one dimension of the investment research:
+    business model, industry context, management, catalysts, and analyst views.
+    """
+    business_model: str = ""       # Competitive moat, revenue model, key advantages
+    industry_trends: str = ""      # Macro tailwinds/headwinds, sector dynamics
+    management: str = ""           # Track record, capital allocation, insider activity
+    recent_catalysts: str = ""     # Last 6 months: product launches, deals, earnings surprises
+    analyst_perspectives: str = "" # Bull/bear cases from public analyst commentary
+
+
 class DataPackage(BaseModel):
     """Complete data bundle for persona consumption.
 
@@ -61,20 +74,25 @@ class DataPackage(BaseModel):
     filing_10q: Optional[FilingSummary] = None
     news: Optional[NewsSummary] = None
     social: Optional[SocialSentiment] = None
+    research_brief: Optional[ResearchBrief] = None
     warnings: list[str] = Field(default_factory=list)
 
     def to_context_string(self) -> str:
         """Format as a string suitable for LLM context injection.
 
-        Returns JSON excluding None fields, capped at ~12K chars.
+        Returns JSON excluding None fields, capped at ~20K chars.
         """
         json_str = self.model_dump_json(indent=2, exclude_none=True)
-        if len(json_str) > 12000:
-            # Truncate social and filing text to fit budget
+        if len(json_str) > 20000:
+            # Truncate to fit budget
             data = self.model_dump(exclude_none=True)
-            for key in ["social", "filing_10q", "filing_10k"]:
-                if key in data and len(json_str) > 12000:
-                    if isinstance(data[key], dict) and "text_summary" in data[key]:
+            for key in ["research_brief", "social", "filing_10q", "filing_10k"]:
+                if key in data and len(json_str) > 20000:
+                    if key == "research_brief" and isinstance(data[key], dict):
+                        for field in data[key]:
+                            if isinstance(data[key][field], str) and len(data[key][field]) > 800:
+                                data[key][field] = data[key][field][:800] + "..."
+                    elif isinstance(data[key], dict) and "text_summary" in data[key]:
                         data[key]["text_summary"] = data[key]["text_summary"][:1500] + "..."
                     elif isinstance(data[key], dict) and "summary" in data[key]:
                         data[key]["summary"] = data[key]["summary"][:1000] + "..."
