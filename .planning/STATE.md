@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: "Output Quality + Debate Robustness + Polish"
-status: complete
-last_updated: "2026-03-25T13:30:00Z"
+status: archived
+last_updated: "2026-03-26T00:00:00Z"
 progress:
   total_phases: 6
   completed_phases: 6
-  total_plans: 10
-  completed_plans: 10
+  total_plans: 11
+  completed_plans: 11
 ---
 
 # State: openIC
@@ -17,7 +17,7 @@ progress:
 
 **Core Value:** Investor personas must be convincingly distinct and philosophically accurate -- each argues from their real-world framework, producing genuinely differentiated perspectives.
 
-**Current Focus:** Phase 12 complete -- v1.1 milestone complete.
+**Current Focus:** v1.1 milestone archived. Next milestone not yet planned.
 
 ## Current Position
 
@@ -59,7 +59,7 @@ v1 milestone passed audit on 2026-03-22:
 
 | Metric | Value |
 |--------|-------|
-| Plans completed | 10/10 (Phase 7: 2/2, Phase 8: 2/2, Phase 9: 2/2, Phase 10: 2/2, Phase 11: 1/1, Phase 12: 2/2) |
+| Plans completed | 11/11 (Phase 7: 2/2, Phase 8: 2/2, Phase 9: 2/2, Phase 10: 2/2, Phase 11: 1/1, Phase 12: 2/2) |
 | Phases completed | 6/6 |
 | Requirements completed | 20/20 |
 | Total tests | 261 (+ 7 live API) |
@@ -127,10 +127,10 @@ None currently.
 
 ## Session Continuity
 
-**Last action:** Executed Phase 12 Plan 2 -- Deep Research checkbox in sidebar, worker wiring, research status messaging, 7 new tests.
-**Next action:** v1.1 milestone complete. All 6 phases, 10 plans done. 261 tests passing. Consider v2 planning.
-**Context to preserve:** 261 tests passing. All v1.1 requirements complete (20/20). Deep research pipeline end-to-end: checkbox -> session state -> _start_debate -> _debate_worker -> build_data_package(deep_research=True) -> ResearchBrief. All sidebar controls disabled during debate. data_ready event carries research_available flag.
+**Last action:** v1.1 milestone archived (audit passed, 20/20 requirements, 6/6 integration seams).
+**Next action:** Run `/gsd:new-milestone` to start v2 planning.
+**Context to preserve:** 261 tests passing. 48/48 requirements across v1 + v1.1. Archives at `.planning/milestones/v1.1-ROADMAP.md` and `v1.1-REQUIREMENTS.md`.
 
 ---
 *State initialized: 2026-03-20*
-*Last updated: 2026-03-25 -- Phase 12 Plan 2 complete (Deep Research UI toggle + worker wiring). v1.1 milestone complete.*
+*Last updated: 2026-03-26 -- v1.1 milestone archived.*

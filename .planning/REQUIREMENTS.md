@@ -75,21 +75,21 @@ Output quality, debate robustness, and polish. Makes the output worth reading an
 
 ### Memo & Disagreement
 
-- [ ] **OUTP-03**: Full narrative investment memo with structured sections (thesis, risks, valuation, verdict) synthesized from debate transcript, scorecard, and data package via LLM
-- [ ] **OUTP-04**: Cross-persona disagreement extraction identifying key dimensions where personas diverge most, with evidence from debate transcript
-- [ ] **OUTP-05**: Export investment memo and scorecard as Markdown and DOCX via ArtifactExporter with pandoc
+- [x] **OUTP-03**: Full narrative investment memo with structured sections (thesis, risks, valuation, verdict) synthesized from debate transcript, scorecard, and data package via LLM
+- [x] **OUTP-04**: Cross-persona disagreement extraction identifying key dimensions where personas diverge most, with evidence from debate transcript
+- [x] **OUTP-05**: Export investment memo and scorecard as Markdown and DOCX via ArtifactExporter with pandoc
 
 ### UI Delivery
 
-- [ ] **UI-05**: Company data sidebar panel showing key financials, price chart, data freshness indicators, and source warnings -- visible during debate
-- [ ] **UI-07**: Download buttons for memo, scorecard, and transcript in Markdown and DOCX formats
-- [ ] **OPS-01**: Per-debate token usage and estimated cost displayed in UI after debate completes
+- [x] **UI-05**: Company data sidebar panel showing key financials, price chart, data freshness indicators, and source warnings -- visible during debate
+- [x] **UI-07**: Download buttons for memo, scorecard, and transcript in Markdown and DOCX formats
+- [x] **OPS-01**: Per-debate token usage and estimated cost displayed in UI after debate completes
 
 ### Model Selection
 
-- [ ] **CONFIG-01**: User can select the LLM model for a debate from a dropdown in the Streamlit sidebar, with available models populated from a configurable list (default: GPT-5.2, Codex 5.3)
-- [ ] **CONFIG-02**: Selected model overrides `config.ini` at runtime and is passed through `DebateOrchestrator` to all `TinyPerson.act()` calls for that debate session
-- [ ] **CONFIG-03**: Model selection includes a brief description of each model's strengths (e.g., "GPT-5.2: deep reasoning", "Codex 5.3: fast, code-oriented") to help users choose
+- [x] **CONFIG-01**: User can select the LLM model for a debate from a dropdown in the Streamlit sidebar, with available models populated from a configurable list (default: GPT-5.2, Codex 5.3)
+- [x] **CONFIG-02**: Selected model overrides `config.ini` at runtime and is passed through `DebateOrchestrator` to all `TinyPerson.act()` calls for that debate session
+- [x] **CONFIG-03**: Model selection includes a brief description of each model's strengths (e.g., "GPT-5.2: deep reasoning", "Codex 5.3: fast, code-oriented") to help users choose
 
 ### Deep Research Pipeline
 
@@ -178,12 +178,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DEBT-04 | Phase 8: Debate Quality Controls | Complete |
 | DEBT-05 | Phase 8: Debate Quality Controls | Complete |
 | PERS-08 | Phase 8: Debate Quality Controls | Complete |
-| OUTP-03 | Phase 9: Memo & Disagreement Engine | Pending |
-| OUTP-04 | Phase 9: Memo & Disagreement Engine | Pending |
-| OUTP-05 | Phase 9: Memo & Disagreement Engine | Pending |
-| UI-05 | Phase 10: UI Delivery | Pending |
-| UI-07 | Phase 10: UI Delivery | Pending |
-| OPS-01 | Phase 10: UI Delivery | Pending |
+| OUTP-03 | Phase 9: Memo & Disagreement Engine | Complete |
+| OUTP-04 | Phase 9: Memo & Disagreement Engine | Complete |
+| OUTP-05 | Phase 9: Memo & Disagreement Engine | Complete |
+| UI-05 | Phase 10: UI Delivery | Complete |
+| UI-07 | Phase 10: UI Delivery | Complete |
+| OPS-01 | Phase 10: UI Delivery | Complete |
 | CONFIG-01 | Phase 11: Model Selection | Complete |
 | CONFIG-02 | Phase 11: Model Selection | Complete |
 | CONFIG-03 | Phase 11: Model Selection | Complete |
@@ -194,10 +194,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 **Coverage:**
 - v1 requirements: 28 total, 28 complete
-- v1.1 requirements: 20 total, 7 complete
+- v1.1 requirements: 20 total, 20 complete
 - Mapped to phases: 48/48
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-20*
-*Last updated: 2026-03-23 -- Phase 8 complete (DEBT-04, DEBT-05, PERS-08)*
+*Last updated: 2026-03-26 -- v1.1 milestone archived, all 20 requirements validated*
