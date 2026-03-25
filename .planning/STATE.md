@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: "Output Quality + Debate Robustness + Polish"
-status: executing
-last_updated: "2026-03-25T00:00:00Z"
+status: complete
+last_updated: "2026-03-25T13:30:00Z"
 progress:
   total_phases: 6
-  completed_phases: 5
-  total_plans: 9
-  completed_plans: 9
+  completed_phases: 6
+  total_plans: 10
+  completed_plans: 10
 ---
 
 # State: openIC
@@ -17,12 +17,12 @@ progress:
 
 **Core Value:** Investor personas must be convincingly distinct and philosophically accurate -- each argues from their real-world framework, producing genuinely differentiated perspectives.
 
-**Current Focus:** Phase 12 Plan 1 complete -- next: Phase 12 Plan 2 (UI toggle + research display)
+**Current Focus:** Phase 12 complete -- v1.1 milestone complete.
 
 ## Current Position
 
-Phase: 12 (deep-research-pipeline) -- IN PROGRESS
-Plan: 1 of 2 complete
+Phase: 12 (deep-research-pipeline) -- COMPLETE
+Plan: 2 of 2 complete
 
 ## v1 Completion Summary
 
@@ -41,7 +41,7 @@ v1 milestone passed audit on 2026-03-22:
 | 9 | Memo & Disagreement Engine | Complete | Phase 7, 8 |
 | 10 | UI Delivery | Complete | Phase 7, 9 |
 | 11 | Model Selection | Complete | Phase 7 |
-| 12 | Deep Research Pipeline | In Progress (1/2) | Phase 7, 11 |
+| 12 | Deep Research Pipeline | Complete (2/2) | Phase 7, 11 |
 
 ## Performance Metrics
 
@@ -59,10 +59,11 @@ v1 milestone passed audit on 2026-03-22:
 
 | Metric | Value |
 |--------|-------|
-| Plans completed | 9/9 (Phase 7: 2/2, Phase 8: 2/2, Phase 9: 2/2, Phase 10: 2/2, Phase 11: 1/1) |
-| Phases completed | 5/6 |
-| Requirements completed | 18/20 |
-| Total tests | 254 (+ 7 live API) |
+| Plans completed | 10/10 (Phase 7: 2/2, Phase 8: 2/2, Phase 9: 2/2, Phase 10: 2/2, Phase 11: 1/1, Phase 12: 2/2) |
+| Phases completed | 6/6 |
+| Requirements completed | 20/20 |
+| Total tests | 261 (+ 7 live API) |
+| Phase 12 P02 | 24min | 5 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -98,6 +99,8 @@ v1 milestone passed audit on 2026-03-22:
 | TinyTroupe client for research synthesis | Consistent with memo.py pattern; respects runtime model selection from Phase 11 | Phase 12 |
 | Context budget 12K -> 20K chars | Research brief adds ~3K chars; 20K still fits within LLM context windows | Phase 12 |
 | deep_research=True by default | Research enrichment is valuable enough to be opt-out, not opt-in | Phase 12 |
+| Research checkbox between Model and Start | Logical sidebar grouping; uses same disabled flag as other controls | Phase 12 |
+| research_available via data_ready event | Avoids UI thread reading DataPackage directly; consistent with event-driven pattern | Phase 12 |
 
 ### Key Risks (v1.1)
 
@@ -116,7 +119,7 @@ v1 milestone passed audit on 2026-03-22:
 - [x] Plan Phase 9: Memo & Disagreement Engine (2 plans created)
 - [x] Plan Phase 10: UI Delivery (2 plans created)
 - [x] Plan Phase 11: Model Selection (1 plan)
-- [x] Plan Phase 12: Deep Research Pipeline (Plan 1 complete, Plan 2 pending)
+- [x] Plan Phase 12: Deep Research Pipeline (2/2 complete)
 
 ### Blockers
 
@@ -124,10 +127,10 @@ None currently.
 
 ## Session Continuity
 
-**Last action:** Executed Phase 12 Plan 1 -- ResearchBrief model, web search + LLM synthesis pipeline, pipeline integration with deep_research toggle.
-**Next action:** Execute Phase 12 Plan 2 (UI checkbox for deep research toggle, research brief display in data sidebar).
-**Context to preserve:** 254 tests passing. Phase 12 Plan 1 complete (DATA-06 partial, DATA-07, DATA-08). ResearchBrief model in models.py. research.py with _web_search() and build_research_brief(). Pipeline deep_research=True by default. Context budget 20K chars. build_research_brief exported from tinyic.data.
+**Last action:** Executed Phase 12 Plan 2 -- Deep Research checkbox in sidebar, worker wiring, research status messaging, 7 new tests.
+**Next action:** v1.1 milestone complete. All 6 phases, 10 plans done. 261 tests passing. Consider v2 planning.
+**Context to preserve:** 261 tests passing. All v1.1 requirements complete (20/20). Deep research pipeline end-to-end: checkbox -> session state -> _start_debate -> _debate_worker -> build_data_package(deep_research=True) -> ResearchBrief. All sidebar controls disabled during debate. data_ready event carries research_available flag.
 
 ---
 *State initialized: 2026-03-20*
-*Last updated: 2026-03-25 -- Phase 12 Plan 1 complete (ResearchBrief model + web search + LLM synthesis pipeline)*
+*Last updated: 2026-03-25 -- Phase 12 Plan 2 complete (Deep Research UI toggle + worker wiring). v1.1 milestone complete.*

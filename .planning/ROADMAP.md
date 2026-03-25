@@ -21,7 +21,7 @@
 - [x] **Phase 9: Memo & Disagreement Engine** - Full narrative investment memo, cross-persona disagreement extraction, Markdown/DOCX export
 - [ ] **Phase 10: UI Delivery** - Company data sidebar, memo/disagreement views, download buttons, per-debate cost display
 - [x] **Phase 11: Model Selection** - Runtime LLM model selection via UI dropdown, config override per debate session
-- [ ] **Phase 12: Deep Research Pipeline** - Web search + LLM synthesis to produce comprehensive research brief for all personas
+- [x] **Phase 12: Deep Research Pipeline** - Web search + LLM synthesis to produce comprehensive research brief for all personas
 
 ## Phase Details
 
@@ -209,7 +209,7 @@ Plans:
 
 Plans:
 - [x] 12-01-PLAN.md -- ResearchBrief model, web search + LLM synthesis pipeline, pipeline integration with deep_research toggle
-- [ ] 12-02-PLAN.md -- UI checkbox for deep research toggle, research brief display in data sidebar
+- [x] 12-02-PLAN.md -- UI checkbox for deep research toggle, research brief display in data sidebar
 
 ## Progress
 
@@ -233,7 +233,7 @@ Plans:
 | 9. Memo & Disagreement Engine | 2/2 | Complete | 2026-03-23 |
 | 10. UI Delivery | 1/2 | In Progress | — |
 | 11. Model Selection | 1/1 | Complete | 2026-03-25 |
-| 12. Deep Research Pipeline | 1/2 | In Progress | — |
+| 12. Deep Research Pipeline | 2/2 | Complete | 2026-03-25 |
 
 ## Dependency Graph
 
@@ -315,10 +315,10 @@ OPS-01    -> Phase 10  [complete]
 CONFIG-01 -> Phase 11  [complete]
 CONFIG-02 -> Phase 11  [complete]
 CONFIG-03 -> Phase 11  [complete]
-DATA-06   -> Phase 12  [pending]
-DATA-07   -> Phase 12  [pending]
-DATA-08   -> Phase 12  [pending]
-DATA-09   -> Phase 12  [pending]
+DATA-06   -> Phase 12  [complete]
+DATA-07   -> Phase 12  [complete]
+DATA-08   -> Phase 12  [complete]
+DATA-09   -> Phase 12  [complete]
 
 Mapped: 48/48
 Orphaned: 0
@@ -326,4 +326,4 @@ Orphaned: 0
 
 ---
 *Roadmap created: 2026-03-20*
-*Last updated: 2026-03-25 -- Phase 12 Plan 1 complete (ResearchBrief model + web search + LLM synthesis pipeline)*
+*Last updated: 2026-03-25 -- Phase 12 Plan 2 complete. v1.1 milestone complete (6/6 phases, 10/10 plans, 20/20 requirements).*
