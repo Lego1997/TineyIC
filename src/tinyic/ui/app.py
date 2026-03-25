@@ -35,6 +35,169 @@ PHASE_LABELS = {
 }
 
 
+def _inject_custom_css():
+    """Inject custom CSS for a premium financial editorial aesthetic.
+
+    Typography: Newsreader (serif headings) + DM Sans (body) + JetBrains Mono (data).
+    Palette: Deep navy sidebar, warm paper tones, copper/gold accents.
+    """
+    st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,400&family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+    /* ── Base typography ────────────────────────────────── */
+    .stApp, .stApp p, .stApp li, .stApp span {
+        font-family: 'DM Sans', -apple-system, sans-serif !important;
+    }
+
+    .stApp h1, .stApp h2, .stApp h3, .stApp h4 {
+        font-family: 'Newsreader', Georgia, serif !important;
+        letter-spacing: -0.025em;
+        color: #0a1628 !important;
+    }
+
+    .stApp h1 { font-weight: 700; font-size: 2.2rem !important; }
+    .stApp h2 { font-weight: 600; font-size: 1.6rem !important; }
+    .stApp h3 { font-weight: 600; font-size: 1.25rem !important; }
+
+    /* ── Sidebar ── dark financial terminal ──────────────── */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0a1628 0%, #111d35 50%, #0d1829 100%) !important;
+    }
+
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3,
+    [data-testid="stSidebar"] h4 {
+        color: #f0ece4 !important;
+        font-family: 'Newsreader', Georgia, serif !important;
+    }
+
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] span {
+        color: #c4bfb4 !important;
+    }
+
+    [data-testid="stSidebar"] hr {
+        border-color: rgba(255,255,255,0.08) !important;
+    }
+
+    [data-testid="stSidebar"] input {
+        background: rgba(255,255,255,0.06) !important;
+        border-color: rgba(255,255,255,0.12) !important;
+        color: #f0ece4 !important;
+    }
+
+    [data-testid="stSidebar"] [data-baseweb="select"] {
+        background: rgba(255,255,255,0.06) !important;
+    }
+
+    [data-testid="stSidebar"] [data-baseweb="select"] * {
+        color: #d4cfc4 !important;
+    }
+
+    [data-testid="stSidebar"] [data-testid="stAlertContainer"] p {
+        color: inherit !important;
+    }
+
+    /* ── Primary button ── gold accent ──────────────────── */
+    button[data-testid="stBaseButton-primary"] {
+        background: linear-gradient(135deg, #b8860b 0%, #d4a843 100%) !important;
+        color: #0a1628 !important;
+        border: none !important;
+        font-weight: 700 !important;
+        font-family: 'DM Sans', sans-serif !important;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        transition: all 0.2s ease !important;
+    }
+
+    button[data-testid="stBaseButton-primary"]:hover {
+        background: linear-gradient(135deg, #d4a843 0%, #e6c05c 100%) !important;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(184, 134, 11, 0.3) !important;
+    }
+
+    /* ── Metric cards ──────────────────────────────────── */
+    [data-testid="stMetric"] {
+        background: #f8f7f4;
+        border: 1px solid #e8e4da;
+        border-radius: 8px;
+        padding: 14px 16px !important;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    [data-testid="stMetric"]:hover {
+        border-color: #d4cfc4;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    }
+
+    [data-testid="stMetricLabel"] {
+        font-family: 'DM Sans', sans-serif !important;
+        font-size: 0.72rem !important;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #6b6560 !important;
+        font-weight: 600 !important;
+    }
+
+    [data-testid="stMetricValue"] {
+        font-family: 'JetBrains Mono', monospace !important;
+        font-weight: 500 !important;
+        color: #0a1628 !important;
+    }
+
+    /* ── Tabs ──────────────────────────────────────────── */
+    button[data-baseweb="tab"] {
+        font-family: 'DM Sans', sans-serif !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.01em;
+    }
+
+    /* ── Download buttons ── dark premium ───────────────── */
+    .stDownloadButton > button {
+        background: #0a1628 !important;
+        color: #f0ece4 !important;
+        border: none !important;
+        font-family: 'DM Sans', sans-serif !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.02em;
+        transition: all 0.2s ease !important;
+    }
+
+    .stDownloadButton > button:hover {
+        background: #162a4a !important;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(10, 22, 40, 0.2) !important;
+    }
+
+    /* ── Chat messages ── warm paper ───────────────────── */
+    [data-testid="stChatMessage"] {
+        border-radius: 8px !important;
+        border: 1px solid #eae6de !important;
+        background: #fdfcfa !important;
+    }
+
+    /* ── Expanders ─────────────────────────────────────── */
+    [data-testid="stExpander"] {
+        border: 1px solid #e8e4da !important;
+        border-radius: 8px !important;
+    }
+
+    /* ── Dividers, alerts, captions ────────────────────── */
+    hr { border-color: #e8e4da !important; }
+
+    .stAlert { border-radius: 8px !important; }
+
+    .stCaption p {
+        font-size: 0.8rem !important;
+        color: #8a857d !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+
 def extract_talk_content(actions):
     """Extract TALK content from a list of agent actions.
 
@@ -235,7 +398,12 @@ def render_data_sidebar():
     if financials is None:
         return  # No data yet
 
-    st.markdown("#### Company Data")
+    st.markdown(
+        '<p style="font-family:\'DM Sans\',sans-serif;font-size:0.7rem;font-weight:700;'
+        'text-transform:uppercase;letter-spacing:0.1em;color:#6b6560;margin:0 0 4px 0;">'
+        'Company Data</p>',
+        unsafe_allow_html=True,
+    )
 
     # Description
     desc = st.session_state.get("sidebar_description")
@@ -312,7 +480,12 @@ def _render_cost_display():
     stats = get_debate_cost_stats(result)
 
     st.divider()
-    st.subheader("Debate Cost")
+    st.markdown(
+        '<p style="font-family:\'DM Sans\',sans-serif;font-size:0.7rem;font-weight:700;'
+        'text-transform:uppercase;letter-spacing:0.1em;color:#6b6560;margin:0 0 12px 0;">'
+        'Debate Cost</p>',
+        unsafe_allow_html=True,
+    )
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -391,7 +564,12 @@ def _render_download_buttons():
         return
 
     st.divider()
-    st.subheader("Downloads")
+    st.markdown(
+        '<p style="font-family:\'DM Sans\',sans-serif;font-size:0.7rem;font-weight:700;'
+        'text-transform:uppercase;letter-spacing:0.1em;color:#6b6560;margin:0 0 12px 0;">'
+        'Downloads</p>',
+        unsafe_allow_html=True,
+    )
 
     ticker = result.ticker
 
@@ -729,49 +907,91 @@ def render_scorecard():
     st.divider()
     st.header("Investment Scorecard")
 
-    # Consensus banner
-    if sc.consensus:
-        color_map = {"BUY": "#2e7d32", "HOLD": "#f57f17", "SELL": "#c62828"}
-        bg = color_map.get(sc.consensus.value, "#616161")
-        count_map = {"BUY": sc.bull_count, "HOLD": sc.hold_count, "SELL": sc.bear_count}
-        count = count_map[sc.consensus.value]
-        total = len(sc.votes)
-        st.markdown(
-            f'<div style="background-color:{bg};color:white;padding:1.5rem;'
-            f'border-radius:0.5rem;text-align:center;margin:1rem 0;">'
-            f'<h2 style="margin:0;color:white;">CONSENSUS: {sc.consensus.value}</h2>'
-            f'<p style="margin:0.5rem 0 0 0;color:white;">{count}/{total} committee members</p>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            '<div style="background-color:#616161;color:white;padding:1.5rem;'
-            'border-radius:0.5rem;text-align:center;margin:1rem 0;">'
-            '<h2 style="margin:0;color:white;">NO CONSENSUS</h2>'
-            '<p style="margin:0.5rem 0 0 0;color:white;">Split vote among committee members</p>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+    # Consensus banner -- premium gradient with vote breakdown
+    _gradient_map = {
+        "BUY":  ("#15803d", "#166534", "rgba(21,128,61,0.25)"),
+        "HOLD": ("#b45309", "#92400e", "rgba(180,83,9,0.25)"),
+        "SELL": ("#dc2626", "#991b1b", "rgba(220,38,38,0.25)"),
+    }
+    _fallback_gradient = ("#4b5563", "#374151", "rgba(75,85,99,0.25)")
 
-    # Vote table
+    total = len(sc.votes)
+    # Build vote pill HTML for banner
+    _pill_data = []
+    if sc.bull_count:
+        _pill_data.append(("BUY", sc.bull_count, "#dcfce7", "#15803d"))
+    if getattr(sc, "hold_count", 0):
+        _pill_data.append(("HOLD", getattr(sc, "hold_count", 0), "#fef3c7", "#92400e"))
+    if getattr(sc, "bear_count", 0):
+        _pill_data.append(("SELL", getattr(sc, "bear_count", 0), "#fee2e2", "#991b1b"))
+    pills_html = "".join(
+        f'<span style="display:inline-block;background:{bg};color:{fg};'
+        f'padding:3px 14px;border-radius:100px;font-family:\'DM Sans\',sans-serif;'
+        f'font-weight:700;font-size:0.72rem;letter-spacing:0.04em;">'
+        f'{count} {label}</span>'
+        for label, count, bg, fg in _pill_data
+    )
+
+    if sc.consensus:
+        g1, g2, shadow = _gradient_map.get(sc.consensus.value, _fallback_gradient)
+        verdict_text = sc.consensus.value
+    else:
+        g1, g2, shadow = _fallback_gradient
+        verdict_text = "NO CONSENSUS"
+
+    st.markdown(f'''
+    <div style="
+        background:linear-gradient(135deg,{g1} 0%,{g2} 100%);
+        color:white;padding:2rem 2.5rem;border-radius:12px;text-align:center;
+        margin:1.5rem 0;box-shadow:0 8px 32px {shadow};position:relative;overflow:hidden;
+    ">
+        <div style="position:absolute;top:0;left:0;right:0;bottom:0;
+            background:radial-gradient(circle at 30% 50%,rgba(255,255,255,0.1) 0%,transparent 70%);
+            pointer-events:none;"></div>
+        <p style="margin:0;font-family:'DM Sans',sans-serif;font-size:0.7rem;
+            text-transform:uppercase;letter-spacing:0.2em;opacity:0.85;color:white;">
+            Committee Verdict</p>
+        <h2 style="margin:0.3rem 0 0.6rem;font-family:'Newsreader',serif;font-size:2.4rem;
+            font-weight:700;color:white;letter-spacing:-0.02em;">
+            {verdict_text}</h2>
+        <div style="display:flex;justify-content:center;gap:12px;margin-top:0.5rem;">
+            {pills_html}
+        </div>
+    </div>
+    ''', unsafe_allow_html=True)
+
+    # Vote cards -- accent-bordered cards with badge + reasoning
     st.subheader("Individual Votes")
-    vote_emoji = {"BUY": "🟢", "HOLD": "🟡", "SELL": "🔴"}
+    _vote_style = {
+        "BUY":  {"border": "#15803d", "badge_bg": "#dcfce7", "badge_fg": "#15803d"},
+        "HOLD": {"border": "#d97706", "badge_bg": "#fef3c7", "badge_fg": "#92400e"},
+        "SELL": {"border": "#dc2626", "badge_bg": "#fee2e2", "badge_fg": "#991b1b"},
+    }
+    _default_style = {"border": "#6b7280", "badge_bg": "#f3f4f6", "badge_fg": "#374151"}
 
     for vote in sc.votes:
-        cols = st.columns([2, 1, 1, 4])
-        with cols[0]:
-            st.markdown(f"**{vote.investor}**")
-        with cols[1]:
-            emoji = vote_emoji.get(vote.vote.value, "⚪")
-            st.markdown(f"{emoji} **{vote.vote.value}**")
-        with cols[2]:
-            st.markdown(vote.confidence.value)
-        with cols[3]:
-            if vote.reasoning:
-                st.markdown("; ".join(vote.reasoning[:3]))
-            else:
-                st.markdown("--")
+        vs = _vote_style.get(vote.vote.value, _default_style)
+        reasoning = "; ".join(vote.reasoning[:3]) if vote.reasoning else "\u2014"
+        st.markdown(f'''
+        <div style="display:flex;align-items:center;gap:16px;
+            border:1px solid #e8e4da;border-left:4px solid {vs["border"]};
+            border-radius:8px;padding:14px 18px;margin:8px 0;background:#fdfcfa;">
+            <div style="flex:0 0 160px;">
+                <div style="font-family:'Newsreader',serif;font-weight:600;font-size:1rem;color:#0a1628;">
+                    {vote.investor}</div>
+            </div>
+            <div style="flex:0 0 80px;text-align:center;">
+                <span style="display:inline-block;background:{vs["badge_bg"]};color:{vs["badge_fg"]};
+                    padding:2px 12px;border-radius:100px;font-family:'DM Sans',sans-serif;
+                    font-weight:700;font-size:0.72rem;letter-spacing:0.05em;">
+                    {vote.vote.value}</span>
+                <div style="font-size:0.68rem;color:#8a857d;margin-top:3px;
+                    font-family:'DM Sans',sans-serif;">{vote.confidence.value}</div>
+            </div>
+            <div style="flex:1;font-size:0.85rem;color:#4a4540;line-height:1.5;
+                font-family:'DM Sans',sans-serif;">{reasoning}</div>
+        </div>
+        ''', unsafe_allow_html=True)
 
     # Transcript expander
     with st.expander("View full debate transcript"):
@@ -805,13 +1025,20 @@ def _reset_state():
 
 def main():
     init_state()
+    _inject_custom_css()
     render_sidebar()
 
     if st.session_state.status == "idle":
-        st.title("openIC")
         st.markdown(
-            "Enter a stock ticker in the sidebar to start an investment committee debate. "
-            "Six legendary investors will analyze the company and deliver their verdicts."
+            '<div style="margin:3rem 0 1.5rem;">'
+            '<h1 style="font-family:\'Newsreader\',serif;font-size:3rem;font-weight:700;'
+            'color:#0a1628;letter-spacing:-0.03em;margin:0;">open<span style="color:#b8860b;">IC</span></h1>'
+            '<p style="font-family:\'DM Sans\',sans-serif;font-size:1rem;color:#6b6560;'
+            'margin:0.5rem 0 0;max-width:520px;line-height:1.6;">'
+            'Enter a stock ticker to convene your investment committee. '
+            'Six legendary investors will analyze the company and deliver their verdicts.</p>'
+            '</div>',
+            unsafe_allow_html=True,
         )
 
     elif st.session_state.status == "ready":
