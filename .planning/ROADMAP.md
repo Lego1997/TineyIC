@@ -326,4 +326,4 @@ Orphaned: 0
 
 ---
 *Roadmap created: 2026-03-20*
-*Last updated: 2026-03-25 -- Phase 11 complete (model selection dropdown with runtime override)*
+*Last updated: 2026-03-25 -- Phase 12 Plan 1 complete (ResearchBrief model + web search + LLM synthesis pipeline)*

@@ -17,12 +17,12 @@ progress:
 
 **Core Value:** Investor personas must be convincingly distinct and philosophically accurate -- each argues from their real-world framework, producing genuinely differentiated perspectives.
 
-**Current Focus:** Phase 11 complete — next: Phase 12 (Deep Research Pipeline)
+**Current Focus:** Phase 12 Plan 1 complete -- next: Phase 12 Plan 2 (UI toggle + research display)
 
 ## Current Position
 
-Phase: 11 (model-selection) -- COMPLETE
-Plan: 1 of 1 complete
+Phase: 12 (deep-research-pipeline) -- IN PROGRESS
+Plan: 1 of 2 complete
 
 ## v1 Completion Summary
 
@@ -41,7 +41,7 @@ v1 milestone passed audit on 2026-03-22:
 | 9 | Memo & Disagreement Engine | Complete | Phase 7, 8 |
 | 10 | UI Delivery | Complete | Phase 7, 9 |
 | 11 | Model Selection | Complete | Phase 7 |
-| 12 | Deep Research Pipeline | Pending | Phase 7, 11 |
+| 12 | Deep Research Pipeline | In Progress (1/2) | Phase 7, 11 |
 
 ## Performance Metrics
 
@@ -62,7 +62,7 @@ v1 milestone passed audit on 2026-03-22:
 | Plans completed | 9/9 (Phase 7: 2/2, Phase 8: 2/2, Phase 9: 2/2, Phase 10: 2/2, Phase 11: 1/1) |
 | Phases completed | 5/6 |
 | Requirements completed | 18/20 |
-| Total tests | 228 (+ 8 live API) |
+| Total tests | 254 (+ 7 live API) |
 
 ## Accumulated Context
 
@@ -93,6 +93,11 @@ v1 milestone passed audit on 2026-03-22:
 | Module-level yfinance import in financials.py | Enables mock patching at tinyic.data.financials.yf; local import would create unpatchable function-scoped name | Phase 10 |
 | Data sidebar in main content columns, not Streamlit sidebar | Streamlit sidebar already full with ticker input and persona checkboxes; 2:1 column ratio preserves debate width | Phase 10 |
 | Price history is UI-only data | Not added to DataPackage model (designed for LLM context); fetched and stored separately for chart rendering | Phase 10 |
+| OpenAI Responses API for web search | Leverages existing OPENAI_API_KEY; web_search_preview tool provides grounded results | Phase 12 |
+| Two-stage search (company + environment) | Separate queries for company fundamentals and market/analyst context gives better coverage | Phase 12 |
+| TinyTroupe client for research synthesis | Consistent with memo.py pattern; respects runtime model selection from Phase 11 | Phase 12 |
+| Context budget 12K -> 20K chars | Research brief adds ~3K chars; 20K still fits within LLM context windows | Phase 12 |
+| deep_research=True by default | Research enrichment is valuable enough to be opt-out, not opt-in | Phase 12 |
 
 ### Key Risks (v1.1)
 
@@ -111,7 +116,7 @@ v1 milestone passed audit on 2026-03-22:
 - [x] Plan Phase 9: Memo & Disagreement Engine (2 plans created)
 - [x] Plan Phase 10: UI Delivery (2 plans created)
 - [x] Plan Phase 11: Model Selection (1 plan)
-- [ ] Plan Phase 12: Deep Research Pipeline
+- [x] Plan Phase 12: Deep Research Pipeline (Plan 1 complete, Plan 2 pending)
 
 ### Blockers
 
@@ -119,10 +124,10 @@ None currently.
 
 ## Session Continuity
 
-**Last action:** Executed Phase 11 (Model Selection) -- model dropdown in sidebar with runtime config override, 5 new tests.
-**Next action:** Plan Phase 12 (Deep Research Pipeline).
-**Context to preserve:** 228 tests passing. Phase 11 complete (CONFIG-01, CONFIG-02, CONFIG-03). MODEL_OPTIONS in constants.py. Sidebar dropdown with model selection. Worker applies config_manager.update("model", selected_model) with finally-block restore. Model locked during active debate via shared disabled flag.
+**Last action:** Executed Phase 12 Plan 1 -- ResearchBrief model, web search + LLM synthesis pipeline, pipeline integration with deep_research toggle.
+**Next action:** Execute Phase 12 Plan 2 (UI checkbox for deep research toggle, research brief display in data sidebar).
+**Context to preserve:** 254 tests passing. Phase 12 Plan 1 complete (DATA-06 partial, DATA-07, DATA-08). ResearchBrief model in models.py. research.py with _web_search() and build_research_brief(). Pipeline deep_research=True by default. Context budget 20K chars. build_research_brief exported from tinyic.data.
 
 ---
 *State initialized: 2026-03-20*
-*Last updated: 2026-03-25 -- Phase 11 complete (model selection dropdown + runtime override)*
+*Last updated: 2026-03-25 -- Phase 12 Plan 1 complete (ResearchBrief model + web search + LLM synthesis pipeline)*
