@@ -1,4 +1,4 @@
-"""openIC -- AI Investment Committee Simulator (Streamlit app)."""
+"""TineyIC -- AI Investment Committee Simulator (Streamlit app)."""
 
 import streamlit as st
 import threading
@@ -9,7 +9,7 @@ import re
 _TESTING = False
 try:
     st.set_page_config(
-        page_title="openIC | Investment Committee",
+        page_title="TineyIC | Investment Committee",
         page_icon="📊",
         layout="wide",
     )
@@ -290,7 +290,7 @@ def init_state():
 def render_sidebar():
     """Render the sidebar with ticker input, persona selection, and controls."""
     with st.sidebar:
-        st.title("openIC")
+        st.title("TineyIC")
         st.caption("AI Investment Committee Simulator")
 
         disabled = st.session_state.status in ("fetching", "debating", "extracting", "generating")

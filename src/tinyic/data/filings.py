@@ -25,7 +25,7 @@ def _ensure_identity():
     global _identity_set
     if not _identity_set:
         from edgar import set_identity
-        set_identity("openIC research@example.com")
+        set_identity("TineyIC research@example.com")
         _identity_set = True
 
 

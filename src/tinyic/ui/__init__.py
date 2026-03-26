@@ -1,1 +1,1 @@
-"""Phase 5: Streamlit UI for openIC investment committee debates."""
+"""Streamlit UI for TineyIC investment committee debates."""
