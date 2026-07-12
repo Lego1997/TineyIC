@@ -30,6 +30,7 @@ _COUNTER_FIELDS = (
     "total_tokens",
     "model_calls",
     "cached_calls",
+    "cached_tokens",
 )
 
 

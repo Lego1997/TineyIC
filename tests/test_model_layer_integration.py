@@ -68,7 +68,7 @@ EXTRACTION_SSE = (
     '"finish_reason":"stop"}]}\n'
     '\n'
     'data: {"choices":[],"usage":{"prompt_tokens":50,"completion_tokens":30,'
-    '"total_tokens":80}}\n'
+    '"total_tokens":80,"prompt_tokens_details":{"cached_tokens":4}}}\n'
     '\n'
     'data: [DONE]\n'
 ).split("\n")
@@ -451,8 +451,21 @@ def test_binding_client_returns_legacy_shape_and_captures_usage():
             "total_tokens": 28,
             "model_calls": 1,
             "cached_calls": 0,
+            "cached_tokens": 0,
         }
     }
+
+
+def test_binding_client_accumulates_cached_tokens_wherever_input_output_accrue():
+    """Finding 4: provider cached-input tokens accumulate like input/output."""
+    client = _binding_client("anthropic/claude-opus-4-8")  # fixture: cached 5/call
+    client.send_message([{"role": "user", "content": "hi"}])
+    client.send_message([{"role": "user", "content": "again"}])
+    stats = client.get_cost_stats()
+    assert stats["input_tokens"] == 2 * 25
+    assert stats["output_tokens"] == 2 * 14
+    assert stats["cached_tokens"] == 2 * 5
+    assert stats["by_model"]["anthropic/claude-opus-4-8"]["cached_tokens"] == 2 * 5
 
 
 def test_binding_client_streams_reasoning_and_text_to_sinks():
@@ -745,11 +758,14 @@ def test_mixed_committee_debate_routes_extraction_through_aggregator(
         e for e in events if e.type == "usage" and e.payload["purpose"] == "extraction"
     ]
     assert len(extraction_usage) == 1
-    # Three agents extracted through the aggregator binding: 3 x (50 in / 30 out).
+    # Three agents extracted through the aggregator binding: 3 x (50 in / 30 out
+    # / 4 cached). The extraction usage event carries the real cached tokens now
+    # (finding 4), not a hardcoded 0.
     payload = extraction_usage[0].payload
     assert payload["model_ref"] == "deepseek/deepseek-reasoner"
     assert payload["input_tokens"] == 150
     assert payload["output_tokens"] == 90
+    assert payload["cached_tokens"] == 12
 
     # The aggregator returned real BUY verdicts, so the scorecard is a consensus.
     scorecard = next(e for e in events if e.type == "scorecard")
@@ -765,6 +781,12 @@ def test_mixed_committee_debate_routes_extraction_through_aggregator(
         "deepseek/deepseek-reasoner",
     }
     assert by_model["deepseek/deepseek-reasoner"]["input_tokens"] == 150
+    # Cached tokens roll up per model alongside input/output (finding 4):
+    # aggregator 3x4, Graham 4x5 (anthropic), Munger 4x6 (responses), Buffett 0.
+    assert by_model["deepseek/deepseek-reasoner"]["cached_tokens"] == 12
+    assert by_model["anthropic/claude-opus-4-8"]["cached_tokens"] == 20
+    assert by_model["openai/gpt-5.6-sol"]["cached_tokens"] == 24
+    assert by_model["openai/gpt-5.2"]["cached_tokens"] == 0
 
 
 def test_mixed_committee_debate_completes_cleanly(tmp_path, _mocked_committee_debate):

@@ -205,12 +205,29 @@ def _vote_payload(vote: Vote) -> dict:
     }
 
 
+def _client_cached_tokens(client) -> int:
+    """Provider cached-input tokens a binding client has accumulated, if any.
+
+    The legacy snapshot/diff counters (``usage.COUNTER_FIELDS``) do not carry
+    cached tokens, so the binding-routed aggregate/extraction path reads them
+    straight off the client's own model-attributed stats.
+    """
+    getter = getattr(client, "get_cost_stats", None)
+    if not callable(getter):
+        return 0
+    stats = getter()
+    if not isinstance(stats, dict):
+        return 0
+    return int(stats.get("cached_tokens", 0) or 0)
+
+
 def _emit_aggregate_usage(
     event_log: EventLog,
     *,
     purpose: str,
     usage_delta: dict,
     model_ref: str | None = None,
+    cached_tokens: int = 0,
 ) -> None:
     if not any(
         usage_delta.get(field, 0)
@@ -232,7 +249,7 @@ def _emit_aggregate_usage(
         "model_ref": model_ref,
         "input_tokens": int(usage_delta.get("input_tokens", 0)),
         "output_tokens": int(usage_delta.get("output_tokens", 0)),
-        "cached_tokens": 0,
+        "cached_tokens": int(cached_tokens),
     }
     if cost is not None:
         payload["cost_usd"] = round(cost, 8)
@@ -386,9 +403,11 @@ def run_debate(
 
             aggregator_client = resolved_committee.aggregator
             extraction_before = snapshot_cost_counters(aggregator_client)
+            cached_before = _client_cached_tokens(aggregator_client)
             with _activate_binding(aggregator_client):
                 votes = extract_votes(orchestrator)
             extraction_after = snapshot_cost_counters(aggregator_client)
+            cached_after = _client_cached_tokens(aggregator_client)
             extraction_usage = diff_cost_counters(
                 extraction_after, extraction_before
             )
@@ -397,6 +416,7 @@ def run_debate(
                 purpose="extraction",
                 usage_delta=extraction_usage,
                 model_ref=resolved_committee.aggregator_binding.model_ref,
+                cached_tokens=max(0, cached_after - cached_before),
             )
         else:
             extraction_before = snapshot_cost_counters(resolved_client)
@@ -562,6 +582,7 @@ def get_debate_cost_stats(result: DebateResult) -> dict:
             "total_tokens": 0,
             "model_calls": 0,
             "cached_calls": 0,
+            "cached_tokens": 0,
             "estimated_cost_usd": 0.0,
         }
 
@@ -599,6 +620,7 @@ def get_debate_cost_stats(result: DebateResult) -> dict:
         "total_tokens": base.get("total_tokens", 0),
         "model_calls": base.get("model_calls", 0),
         "cached_calls": base.get("cached_calls", 0),
+        "cached_tokens": base.get("cached_tokens", 0),
         "estimated_cost_usd": (
             round(estimated_cost, 4) if estimated_cost is not None else None
         ),

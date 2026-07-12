@@ -63,6 +63,7 @@ _COUNTER_FIELDS = (
     "total_tokens",
     "model_calls",
     "cached_calls",
+    "cached_tokens",
 )
 
 
@@ -270,6 +271,7 @@ class BindingClient:
             self._stats["input_tokens"] += usage.input_tokens
             self._stats["output_tokens"] += usage.output_tokens
             self._stats["total_tokens"] += usage.total_tokens
+            self._stats["cached_tokens"] += usage.cached_tokens
             self._stats["model_calls"] += 1
         if self.on_usage is not None:
             self.on_usage(usage, self.binding.model_ref)
