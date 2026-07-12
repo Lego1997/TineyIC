@@ -1,0 +1,7 @@
+data: {"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Weighing the numbers."},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"A measured judgment on AAPL."},"finish_reason":"stop"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":15,"completion_tokens":7,"total_tokens":22,"prompt_tokens_details":{"cached_tokens":3}}}
+
+data: [DONE]
