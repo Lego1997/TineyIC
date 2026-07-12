@@ -13,11 +13,26 @@ Public surface::
 from __future__ import annotations
 
 from .binding import ModelBinding, ModelRefError, parse_model_ref
+from .binding_client import BindingClient, DeltaSink, UsageSink, build_transport
+from .committee import Committee, TransportFactory as CommitteeTransportFactory
+from .committee import build_committee
 from .credentials import (
     CredentialProvider,
     EnvCredentialProvider,
     StaticCredentialProvider,
 )
+from .presets import (
+    BUILTIN_DEFAULT_MODEL,
+    BUILTIN_DEFAULT_THINKING,
+    BindingSpec,
+    DEFAULT_PRESET_NAME,
+    Preset,
+    PresetError,
+    builtin_default_preset,
+    load_config,
+    load_preset,
+)
+from .routing import activate, active_client, install_client_resolver
 from .registry import (
     ModelSpec,
     Provider,
@@ -112,4 +127,25 @@ __all__ = [
     "resolve_binding_thinking",
     "build_default_registry",
     "default_registry",
+    # binding client + routing (M2 stage 3 engine integration)
+    "BindingClient",
+    "DeltaSink",
+    "UsageSink",
+    "build_transport",
+    "activate",
+    "active_client",
+    "install_client_resolver",
+    # presets + committee (FR-1.4)
+    "BindingSpec",
+    "Preset",
+    "PresetError",
+    "BUILTIN_DEFAULT_MODEL",
+    "BUILTIN_DEFAULT_THINKING",
+    "DEFAULT_PRESET_NAME",
+    "builtin_default_preset",
+    "load_config",
+    "load_preset",
+    "Committee",
+    "CommitteeTransportFactory",
+    "build_committee",
 ]
