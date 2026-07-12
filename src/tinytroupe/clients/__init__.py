@@ -4,7 +4,7 @@ from tinytroupe import config_manager, utils
 
 from .azure_client import AzureClient
 from .ollama_client import OllamaClient
-from .openai_client import OpenAIClient
+from .openai_client import LLMCacheBase, OpenAIClient
 
 logger = logging.getLogger("tinytroupe")
 

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from tinytroupe.agent import TinyPerson
+from tinytroupe.session import Session
 
 
 class InvestorPersona(TinyPerson):
@@ -18,13 +19,20 @@ class InvestorPersona(TinyPerson):
         self,
         name: str,
         philosophy_config_path: str | None = None,
+        session: Session | None = None,
         **kwargs,
     ):
-        super().__init__(name=name, **kwargs)
+        super().__init__(name=name, session=session, **kwargs)
         self._philosophy_config_path = philosophy_config_path
 
-        if philosophy_config_path:
-            self._load_philosophy(philosophy_config_path)
+        try:
+            if philosophy_config_path:
+                self._load_philosophy(philosophy_config_path)
+        except Exception:
+            # TinyPerson registration occurs in ``super().__init__``. Keep
+            # persona construction atomic when config loading or merging fails.
+            self.session.unregister_agent(self)
+            raise
 
     def _load_philosophy(self, config_path: str) -> None:
         """Load persona definitions from a .agent.json file and merge into this persona.

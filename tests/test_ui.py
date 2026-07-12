@@ -33,9 +33,9 @@ def make_mock_data_package():
 @pytest.fixture(autouse=True)
 def _clear_environments():
     """Clean up TinyWorld global state between tests."""
-    TinyWorld.all_environments = {}
+    TinyWorld.all_environments.clear()
     yield
-    TinyWorld.all_environments = {}
+    TinyWorld.all_environments.clear()
 
 
 class TestOrchestratorCallbacks:

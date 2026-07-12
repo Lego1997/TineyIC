@@ -9,10 +9,9 @@ build/
 .env
 .venv/
 venv/
-uv.lock
 .pytest_cache/
 .mypy_cache/
-openai_api_cache.pickle
+openai_api_cache.json
 *.pickle
 tinytroupe.*.log
 .claude/

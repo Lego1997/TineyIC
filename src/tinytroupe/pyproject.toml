@@ -1,7 +1,16 @@
 [project]
 name = "tinytroupe"
-version = "0.6.0"
+version = "0.7.0"
+authors = [
+    { name = "Paulo Salem", email = "paulo.salem@microsoft.com" },
+]
+description = "LLM-based people simulation for design, validation and insight generation in business."
 requires-python = ">=3.12"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
 dependencies = [
     "pandas",
     "pytest",
@@ -20,15 +29,18 @@ dependencies = [
     "llama-index-readers-web",
     "llama-index-embeddings-azure-openai",
     "pypandoc",
-    "docx",
+    "python-docx",
     "markdown",
+    "jupyter",
     "matplotlib",
+    "seaborn",
     "pydantic>=2.5.0",
     "textdistance",
     "scipy",
-    "python-dotenv",
-    "ipython",
 ]
+
+[project.urls]
+Homepage = "https://github.com/microsoft/TinyTroupe"
 
 [build-system]
 requires = ["setuptools>=61.0"]

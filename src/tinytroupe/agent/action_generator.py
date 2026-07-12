@@ -126,6 +126,11 @@ class ActionGenerator(JsonSerializableRegistry):
             for msg in current_messages
         ]
 
+        # ----- Vision / multimodal injection ------------------------------------------------
+        # If any user message contains stimuli with image IDs, resolve them to actual
+        # multimodal content arrays so the LLM can *see* the images when deciding how to act.
+        self._inject_multimodal_images(agent, current_messages)
+
         # starts with no feedback
         cur_feedback = None
         all_negative_feedbacks = []
@@ -375,8 +380,18 @@ class ActionGenerator(JsonSerializableRegistry):
                 response_format = CognitiveActionsModel
             else:
                 response_format = CognitiveActionModel
+
+            # If messages contain multimodal content, we must use the vision model and
+            # disable dedenting (because content is a list, not a string).
+            has_multimodal = self._has_multimodal_content(current_messages_context)
+            send_kwargs = {"response_format": response_format}
+            if has_multimodal:
+                from tinytroupe import config_manager as _cm
+                send_kwargs["model"] = _cm.get_with_fallback("vision_model", "model")
+                send_kwargs["dedent_messages"] = False
+
             next_message = client().send_message(
-                current_messages_context, response_format=response_format
+                current_messages_context, **send_kwargs
             )
 
         else:
@@ -390,9 +405,17 @@ class ActionGenerator(JsonSerializableRegistry):
                 response_format = CognitiveActionsModelWithReasoning
             else:
                 response_format = CognitiveActionModelWithReasoning
+
+            has_multimodal = self._has_multimodal_content(current_messages_context)
+            send_kwargs = {"response_format": response_format}
+            if has_multimodal:
+                from tinytroupe import config_manager as _cm
+                send_kwargs["model"] = _cm.get_with_fallback("vision_model", "model")
+                send_kwargs["dedent_messages"] = False
+
             next_message = client().send_message(
                 current_messages_context,
-                response_format=response_format,
+                **send_kwargs,
             )
 
         logger.debug(f"[{agent.name}] Received message: {next_message}")
@@ -402,15 +425,85 @@ class ActionGenerator(JsonSerializableRegistry):
         )
 
         # Support both single-action and multi-action payloads
-        if "actions" in content and isinstance(content.get("actions"), list):
-            actions = content["actions"]
+        if "actions" in content:
+            actions_val = content["actions"]
+            if isinstance(actions_val, list):
+                actions = actions_val
+            elif isinstance(actions_val, dict):
+                # LLM returned a single action dict instead of a list
+                actions = [actions_val]
+            else:
+                logger.warning(f"[{agent.name}] 'actions' key present but not a list or dict: {type(actions_val)}. Falling back to DONE.")
+                actions = [{"type": "DONE", "content": "", "target": ""}]
             # Ensure the sequence ends with DONE
             if not actions or actions[-1].get("type") != "DONE":
                 actions.append({"type": "DONE", "content": "", "target": ""})
             return actions, role, content
-        else:
+        elif "action" in content:
             action = content["action"]
             return action, role, content
+        else:
+            # Neither key present — log and raise so @repeat_on_error can retry
+            logger.warning(f"[{agent.name}] Response missing both 'actions' and 'action' keys. Content keys: {list(content.keys())}")
+            raise KeyError(f"Response missing both 'actions' and 'action' keys: {list(content.keys())}")
+
+    ###############################################################################################
+    # Multimodal / vision helpers
+    ###############################################################################################
+
+    @staticmethod
+    def _inject_multimodal_images(agent, messages: list) -> None:
+        """
+        Scan *messages* for user messages whose JSON content contains stimuli with
+        image IDs.  When found, resolve the IDs via the agent's ``_image_registry``
+        and replace the message ``content`` with an OpenAI multimodal content array
+        (text + image_url parts).
+
+        The method mutates *messages* in-place.
+        """
+        from tinytroupe.utils.media import build_multimodal_content_array
+        from tinytroupe import config_manager as _cm
+
+        vision_detail = _cm.get("vision_detail", "auto")
+
+        for msg in messages:
+            if msg.get("role") != "user":
+                continue
+
+            # msg["content"] is a JSON string at this point
+            text_content = msg["content"]
+            try:
+                parsed = json.loads(text_content) if isinstance(text_content, str) else text_content
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            if not isinstance(parsed, dict):
+                continue
+
+            stimuli = parsed.get("stimuli", [])
+            if not isinstance(stimuli, list):
+                continue
+
+            # Collect image refs from all stimuli in this message
+            image_refs: list[str] = []
+            for s in stimuli:
+                for img_id in (s.get("images") or []):
+                    ref = agent._image_registry.get(img_id)
+                    if ref is not None:
+                        image_refs.append(ref)
+
+            if image_refs:
+                # Convert to multimodal content array
+                msg["content"] = build_multimodal_content_array(
+                    text=text_content if isinstance(text_content, str) else json.dumps(parsed),
+                    image_refs=image_refs,
+                    detail=vision_detail,
+                )
+
+    @staticmethod
+    def _has_multimodal_content(messages: list) -> bool:
+        """Return True if any message has list-typed (multimodal) content."""
+        return any(isinstance(m.get("content"), list) for m in messages)
 
     ###############################################################################################
     # Quality evaluation methods
