@@ -95,6 +95,8 @@ class StatusHeader(Static):
         if st.finished:
             line1.append("   ✓ complete" if not st.errored else "   ✗ error",
                          style="green" if not st.errored else "red")
+        elif st.truncated:
+            line1.append("   ⚠ incomplete (truncated log)", style="bold yellow")
 
         line2 = Text()
         line2.append("phase ", style="dim")

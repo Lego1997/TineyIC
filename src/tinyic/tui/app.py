@@ -47,7 +47,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Input, Static
 
-from .events import Event, read_events
+from .events import Event, is_replayable, read_events
 from .state import TownHallState, TurnState
 from .steering import ReplaySink, SteeringSink, parse_steering_input
 from .widgets import (
@@ -392,6 +392,11 @@ class TownHallApp(App):
     def on_mount(self) -> None:
         self.sub_title = self._log_label()
         self._replay_complete = asyncio.Event()
+        # A recorded log is "truncated" (a mid-debate crash) when it never reaches
+        # a terminal event. Derived purely from the parsed event stream so the
+        # header can surface an explicit incomplete indicator without importing any
+        # engine internals (FR-5.1; schema promise #2 — handle truncated logs).
+        self.state.truncated = bool(self.events) and not is_replayable(self.events)
         self._sync_controls()
         if not self.events:
             self.query_one("#transcript", VerticalScroll).mount(

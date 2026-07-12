@@ -194,6 +194,11 @@ class TownHallState:
         self.phases_completed: list[str] = []
         self.finished: bool = False
         self.errored: bool = False
+        # Log-level flag: the recorded stream ended without a terminal event (a
+        # mid-debate crash). Not folded per-event — the app sets it once from the
+        # whole parsed log (see ``TownHallApp.on_mount``) so the header can show
+        # an explicit "incomplete" indicator for a truncated replay.
+        self.truncated: bool = False
         self.duration_s: float | None = None
 
         # Data package
