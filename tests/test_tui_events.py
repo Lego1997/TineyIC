@@ -127,9 +127,11 @@ def test_blank_and_non_object_lines_are_skipped():
     assert [e.type for e in events] == ["debate_started"]
 
 
-def test_empty_iterable_and_missing_file_yield_empty():
+def test_empty_iterable_and_missing_file_yield_empty(tmp_path):
     assert E.read_events([]) == []
     assert E.read_events("/no/such/path/does-not-exist.jsonl") == []
+    # A directory path (e.g. the runs/ dir fat-fingered) reads as empty, not a crash.
+    assert E.read_events(tmp_path) == []
 
 
 def test_parse_event_accepts_a_decoded_mapping():

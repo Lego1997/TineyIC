@@ -363,7 +363,7 @@ def read_events(source: str | Path | Iterable[str]) -> list[Event]:
     """
     if isinstance(source, (str, Path)):
         path = Path(source)
-        if not path.exists():
+        if not path.is_file():  # missing path or a directory -> empty, never raise
             return []
         with path.open("r", encoding="utf-8") as handle:
             events = list(iter_raw_events(handle))
