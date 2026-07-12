@@ -1,16 +1,17 @@
-"""Tests for the Town Hall TUI skeleton (``tinyic.tui.app``).
+"""Tests for the Town Hall TUI (``tinyic.tui.app``).
 
 Covers the pure, loop-free load path, the event-line formatter's tolerance, and
-a Textual ``run_test`` pilot proving the app mounts and renders a recorded log
-end to end (the M5 replay entry point) without any LLM calls.
+Textual ``run_test`` pilots proving the app mounts and renders a recorded log
+end to end across its panes (the M5 replay entry point) without any LLM calls.
 """
 
 from __future__ import annotations
 
-from textual.widgets import RichLog
+import asyncio
 
 from tinyic.tui.app import TownHallApp, format_event_line, run_replay, summarize_event
 from tinyic.tui.events import Event, read_events
+from tinyic.tui.widgets import PersonaCard, PhaseBanner, StatusHeader, SteeringNote, TurnCard
 
 from tests.support import synthetic_events as G
 
@@ -79,17 +80,56 @@ def test_run_replay_constructs_app_and_runs(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# Textual pilot: the app mounts and renders the whole log
+# Textual pilot: the app mounts and renders the whole log across its panes
 # --------------------------------------------------------------------------- #
 
 async def test_pilot_renders_recorded_log():
-    app = TownHallApp(G.FIXTURE_PATH)
+    # Fast pacing so the batched timer drains quickly under the test loop.
+    app = TownHallApp(G.FIXTURE_PATH, tick=0.005, batch_size=8)
     async with app.run_test() as pilot:
+        await asyncio.wait_for(app.wait_for_replay(), 5)
         await pilot.pause()
         assert len(app.events) == 172
-        log = app.query_one("#event-log", RichLog)
-        assert len(log.lines) > 0  # something was written and laid out
         assert G.DEBATE_ID in app.sub_title
+        # Transcript pane: one card per committed turn (opening 6 + xexam 4 +
+        # rebuttal 6 + verdict 6 = 22), four phase banners, two steering notes.
+        assert len(app.query(TurnCard)) == 22
+        assert len(app.query(PhaseBanner)) == 4
+        assert len(app.query(SteeringNote)) == 2
+        # Committee sidebar: six persona cards.
+        assert len(app.query(PersonaCard)) == 6
+        # Header reflects the debate.
+        header_text = str(app.query_one(StatusHeader).render())
+        assert "AAPL" in header_text and "verdict" in header_text
+
+
+async def test_pilot_renders_progressively_not_all_at_once():
+    # With auto_replay off, mounting must not fold any events; draining then
+    # renders them — proving replay is progressive, not a single mount-time dump.
+    app = TownHallApp(G.FIXTURE_PATH, auto_replay=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.state.applied_count == 0
+        assert len(app.query(TurnCard)) == 0
+        app.replay_all_now()
+        await pilot.pause()
+        assert app.state.applied_count == 172
+        assert len(app.query(TurnCard)) == 22
+
+
+async def test_pilot_toggle_thinking_expands_all_rows():
+    from textual.widgets import Collapsible
+
+    app = TownHallApp(G.FIXTURE_PATH, auto_replay=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.replay_all_now()
+        await pilot.pause()
+        collapsibles = list(app.query(Collapsible))
+        assert collapsibles and all(c.collapsed for c in collapsibles)
+        app.action_toggle_thinking()
+        await pilot.pause()
+        assert all(not c.collapsed for c in app.query(Collapsible))
 
 
 async def test_pilot_handles_empty_log():
@@ -97,5 +137,7 @@ async def test_pilot_handles_empty_log():
     async with app.run_test() as pilot:
         await pilot.pause()
         assert app.events == []
-        log = app.query_one("#event-log", RichLog)
-        assert len(log.lines) > 0  # the "(no events ...)" placeholder line
+        # A placeholder is shown in the transcript instead of turn cards.
+        note = app.query_one("#empty-note")
+        assert "no events" in str(note.render())
+        assert len(app.query(TurnCard)) == 0
