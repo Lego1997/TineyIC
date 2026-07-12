@@ -12,6 +12,7 @@ Public surface::
 
 from __future__ import annotations
 
+from .action_stream import StreamingActionScanner
 from .binding import ModelBinding, ModelRefError, parse_model_ref
 from .binding_client import BindingClient, DeltaSink, UsageSink, build_transport
 from .committee import Committee, TransportFactory as CommitteeTransportFactory
@@ -130,6 +131,7 @@ __all__ = [
     "default_registry",
     # binding client + routing (M2 stage 3 engine integration)
     "BindingClient",
+    "StreamingActionScanner",
     "DeltaSink",
     "UsageSink",
     "build_transport",

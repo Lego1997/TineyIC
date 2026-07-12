@@ -1,6 +1,6 @@
 data: {"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Weighing the numbers."},"finish_reason":null}]}
 
-data: {"choices":[{"index":0,"delta":{"content":"A measured judgment on AAPL."},"finish_reason":"stop"}]}
+data: {"choices":[{"index":0,"delta":{"content":"{\"action\": {\"type\": \"TALK\", \"content\": \"A measured judgment on AAPL.\", \"target\": \"\"}}"},"finish_reason":"stop"}]}
 
 data: {"choices":[],"usage":{"prompt_tokens":17,"completion_tokens":9,"total_tokens":26}}
 

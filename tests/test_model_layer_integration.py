@@ -18,6 +18,7 @@ there is zero network.  Coverage:
 from __future__ import annotations
 
 import importlib
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -75,6 +76,35 @@ EXTRACTION_SSE = (
 
 def sse_lines(name: str) -> list[str]:
     return (FIXTURES / name).read_text().split("\n")
+
+
+def _sse(*data_objects) -> list[str]:
+    """Build ``data: <json>`` SSE lines (blank-line separated), then ``[DONE]``.
+
+    Using ``json.dumps`` keeps the embedded JSON action envelope correctly
+    escaped without hand-written backslashes.
+    """
+    lines: list[str] = []
+    for obj in data_objects:
+        lines.append("data: " + json.dumps(obj))
+        lines.append("")
+    lines.append("data: [DONE]")
+    lines.append("")
+    return lines
+
+
+# Buffett's turn on the openai-chat fixture: native reasoning streams "Let me" +
+# " think." (2 ReasoningDeltas), and the visible completion is the act-loop JSON
+# action envelope streamed in two fragments so the scanner emits the TALK content
+# "Answer: 42" as two talk_deltas ("Answer" + ": 42") — proving prose extraction,
+# not raw-envelope leakage (finding 3).
+_BUFFETT_ENVELOPE_SSE = _sse(
+    {"choices": [{"index": 0, "delta": {"role": "assistant", "reasoning_content": "Let me"}, "finish_reason": None}]},
+    {"choices": [{"index": 0, "delta": {"reasoning_content": " think."}, "finish_reason": None}]},
+    {"choices": [{"index": 0, "delta": {"content": '{"action": {"type": "TALK", "content": "Answer'}, "finish_reason": None}]},
+    {"choices": [{"index": 0, "delta": {"content": ': 42", "target": ""}}'}, "finish_reason": "stop"}]},
+    {"choices": [], "usage": {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28}},
+)
 
 
 @dataclass
@@ -498,6 +528,27 @@ def _mixed_preset() -> Preset:
     )
 
 
+def _debate_adapter_for(binding, creds):
+    """Transport factory for the routed *debate*.
+
+    Buffett (openai/gpt-5.2) speaks the act-loop JSON action envelope so the
+    streaming scanner is exercised end to end; every other role reuses the plain
+    fixtures via :func:`_adapter_for` (whose raw-fragment prose still drives the
+    ``BindingClient`` sink unit tests unchanged).
+    """
+    if binding.model_ref == "openai/gpt-5.2":
+        return OpenAIChatAdapter(
+            binding,
+            creds,
+            base_url="https://api.openai.com/v1",
+            credential_ref=None,
+            retry=None,
+            sleep=lambda _d: None,
+            http=RepeatingTransport(_BUFFETT_ENVELOPE_SSE),
+        )
+    return _adapter_for(binding, creds)
+
+
 def _mixed_committee() -> Committee:
     personas = [
         ("warren_buffett", "Warren Buffett"),
@@ -508,7 +559,7 @@ def _mixed_committee() -> Committee:
         _mixed_preset(),
         personas,
         credentials=StaticCredentialProvider({}),
-        transport_factory=_adapter_for,
+        transport_factory=_debate_adapter_for,
     )
 
 
@@ -536,11 +587,20 @@ def test_build_committee_keys_clients_by_display_name_and_resolves_roles():
 
 
 def _act_via_binding(self, *, return_actions=False, **_kwargs):
-    """A mocked act that routes one call through the active binding client."""
+    """A mocked act that routes one call through the active binding client.
+
+    Like the real act loop, the visible completion is a JSON action envelope, so
+    the spoken text is the action's ``content`` (not the raw envelope). Falls
+    back to the raw content for any non-envelope fixture.
+    """
     response = clients_module.client().send_message(
         [{"role": "user", "content": f"{self.name}, give your view."}]
     )
-    talk = response["content"]
+    raw = response["content"]
+    try:
+        talk = json.loads(raw)["action"]["content"]
+    except (ValueError, KeyError, TypeError):
+        talk = raw
     cognitive_state = {
         "goals": f"Evaluate AAPL as {self.name}",
         "attention": "Valuation and downside risk",

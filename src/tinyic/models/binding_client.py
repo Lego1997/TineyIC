@@ -13,9 +13,20 @@ heterogeneity from configuration into real behavior.
 Usage is captured **at the adapter boundary** — from the provider's own
 terminal ``Usage`` event — and surfaced through the ``on_usage`` callback, so the
 engine attributes tokens per call without diffing a shared process-global
-counter (closing M1's concurrent-contamination handoff).  Streaming reasoning
-and text fragments surface through ``on_reasoning`` / ``on_text`` so the
-orchestrator can emit ``think_delta`` / ``talk_delta`` events for a routed turn.
+counter (closing M1's concurrent-contamination handoff).
+
+Streaming surfaces two layers of callbacks:
+
+* ``on_reasoning`` / ``on_text`` receive the **raw** provider fragments (native
+  reasoning tokens and the raw visible completion — which for the act loop is a
+  JSON action envelope);
+* ``on_talk`` / ``on_think`` receive extracted action **prose** — a per-call
+  :class:`~tinyic.models.action_stream.StreamingActionScanner` folds the raw
+  visible-text stream into just the ``content`` of TALK/THINK actions, so the
+  orchestrator can emit ``talk_delta`` / ``think_delta`` without leaking the raw
+  JSON envelope (finding 3).  When the completion is not a recognizable envelope
+  the scanner emits nothing (the ``*_completed`` events still carry full text).
+
 The callbacks are plain attributes the orchestrator rebinds per turn; a client
 serves one persona sequentially across the debate.
 """
@@ -28,6 +39,7 @@ from typing import Any
 
 from tinytroupe import utils as _tt_utils
 
+from .action_stream import StreamingActionScanner
 from .binding import ModelBinding
 from .credentials import CredentialProvider
 from .types import (
@@ -118,14 +130,20 @@ class BindingClient:
         stream: bool = True,
         on_reasoning: DeltaSink | None = None,
         on_text: DeltaSink | None = None,
+        on_talk: DeltaSink | None = None,
+        on_think: DeltaSink | None = None,
         on_usage: UsageSink | None = None,
     ) -> None:
         self.binding = binding
         self._transport = transport
         self._stream = stream
         #: Rebound per turn by the orchestrator; ``None`` outside a routed turn.
+        #: ``on_reasoning``/``on_text`` receive raw provider fragments;
+        #: ``on_talk``/``on_think`` receive scanner-extracted action prose.
         self.on_reasoning = on_reasoning
         self.on_text = on_text
+        self.on_talk = on_talk
+        self.on_think = on_think
         self.on_usage = on_usage
         self._lock = threading.Lock()
         self._stats = {field: 0 for field in _COUNTER_FIELDS}
@@ -162,6 +180,14 @@ class BindingClient:
             stream=self._stream,
         )
 
+        # A fresh scanner per call: each send_message is one JSON action
+        # document, so the extractor must not carry state across calls.
+        scanner: StreamingActionScanner | None = None
+        if self.on_talk is not None or self.on_think is not None:
+            scanner = StreamingActionScanner(
+                on_talk=self.on_talk, on_think=self.on_think
+            )
+
         text_parts: list[str] = []
         final: FinalMessage | None = None
         streamed_usage: Usage | None = None
@@ -174,11 +200,15 @@ class BindingClient:
                     text_parts.append(event.text)
                     if self.on_text is not None:
                         self.on_text(event.text)
+                    if scanner is not None:
+                        scanner.feed(event.text)
             elif isinstance(event, Usage):
                 streamed_usage = event
             elif isinstance(event, FinalMessage):
                 final = event
 
+        if scanner is not None:
+            scanner.close()
         text = final.text if final is not None else "".join(text_parts)
         usage = (final.usage if final is not None else None) or streamed_usage
         self._record_usage(usage)

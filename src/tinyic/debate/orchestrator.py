@@ -270,12 +270,16 @@ class DebateOrchestrator(TinyWorld):
     def _run_bound_turn(self, agent, binding_client, turn_id: str):
         """Route one persona turn through its binding client.
 
-        Wires the client's per-turn sinks so the adapter's streamed reasoning
-        and text fragments surface as ``think_delta`` / ``talk_delta`` events
-        (turn-scoped, between ``turn_started`` and the completed events) and the
-        provider's terminal usage is aggregated for this turn, then activates
-        the client so the vendored act loop's ``client()`` calls resolve to it.
-        Returns ``(committed_actions, latest_actions, binding_usage)``.
+        Wires the client's per-turn sinks so the turn streams as ``think_delta``
+        / ``talk_delta`` events (turn-scoped, between ``turn_started`` and the
+        completed events): ``on_talk``/``on_think`` carry the scanner-extracted
+        action *prose* (never the raw JSON envelope), while ``on_reasoning``
+        carries the provider's native reasoning tokens — both THINK sources map
+        to ``think_delta`` per the event schema.  ``on_text`` is deliberately
+        left unset so the raw completion envelope never leaks into an event.
+        The provider's terminal usage is aggregated for this turn, then the
+        client is activated so the vendored act loop's ``client()`` calls resolve
+        to it.  Returns ``(committed_actions, latest_actions, binding_usage)``.
         """
         from tinyic.models import routing
 
@@ -286,8 +290,11 @@ class DebateOrchestrator(TinyWorld):
         binding_client.on_reasoning = lambda text: self._emit_event(
             "think_delta", {"turn_id": turn_id, "text": text}
         )
-        binding_client.on_text = lambda text: self._emit_event(
+        binding_client.on_talk = lambda text: self._emit_event(
             "talk_delta", {"turn_id": turn_id, "text": text}
+        )
+        binding_client.on_think = lambda text: self._emit_event(
+            "think_delta", {"turn_id": turn_id, "text": text}
         )
         try:
             with routing.activate(binding_client):
@@ -295,7 +302,8 @@ class DebateOrchestrator(TinyWorld):
         finally:
             binding_client.on_usage = None
             binding_client.on_reasoning = None
-            binding_client.on_text = None
+            binding_client.on_talk = None
+            binding_client.on_think = None
 
         latest = agent.pop_latest_actions()
         self._handle_actions(agent, latest)
