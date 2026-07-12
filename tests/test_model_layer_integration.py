@@ -38,7 +38,9 @@ from tinyic.models import (
     activate,
     active_client,
     build_committee,
+    load_config,
     load_preset,
+    validate_preset_thinking,
 )
 from tinyic.models.adapters._http import HttpRequest
 from tinyic.models.adapters.anthropic_messages import AnthropicMessagesAdapter
@@ -206,7 +208,7 @@ def test_preset_resolution_inheritance_and_overrides(tmp_path):
 
         [presets.mixed.moderator]
         model = "openai/gpt-5.2"
-        thinking = "off"
+        thinking = "minimal"
 
         [presets.mixed.personas.benjamin_graham]
         model = "deepseek/deepseek-reasoner"
@@ -235,8 +237,9 @@ def test_preset_resolution_inheritance_and_overrides(tmp_path):
     assert aggregator.model_ref == "anthropic/claude-opus-4-8"
     assert aggregator.thinking_level.value == "high"
 
-    # moderator overrides thinking
-    assert preset.moderator_binding().thinking_level.value == "off"
+    # moderator overrides thinking (a gpt-5.2-supported level; "off" is rejected
+    # at config time by FR-1.3 validation)
+    assert preset.moderator_binding().thinking_level.value == "minimal"
 
 
 def test_preset_with_overrides_forces_model_and_thinking_across_roles(tmp_path):
@@ -300,6 +303,96 @@ def test_repo_sample_tinyic_toml_default_matches_builtin():
         heterogeneous.aggregator_binding().model_ref
         == "anthropic/claude-opus-4-8"
     )
+
+
+def test_every_shipped_sample_preset_passes_strict_thinking_validation():
+    """Finding 2: all presets in the repo's ``tinyic.toml`` must be valid.
+
+    Guards against shipping a preset that pins a level the model rejects (like
+    the pre-fix ``heterogeneous`` moderator ``gpt-5.2`` + ``off``), which
+    config-time validation (FR-1.3) now refuses at load.
+    """
+    root = Path(__file__).resolve().parents[1] / "tinyic.toml"
+    presets = load_config(root)["presets"]
+    assert set(presets) >= {"default", "heterogeneous"}
+    for preset in presets.values():
+        # Must not raise: every role/persona level is model-supported.
+        validate_preset_thinking(preset)
+
+
+def test_load_preset_rejects_unsupported_thinking_naming_preset_role_model_level(
+    tmp_path,
+):
+    """Finding 1: a config-time level a model rejects fails fast at load."""
+    path = _write_config(
+        tmp_path,
+        """
+        default_preset = "bad"
+
+        [presets.bad]
+        model = "openai/gpt-5.2"
+        thinking = "high"
+
+        [presets.bad.moderator]
+        thinking = "off"
+        """,
+    )
+    with pytest.raises(PresetError) as excinfo:
+        load_preset("bad", path=path)
+    message = str(excinfo.value)
+    # The error names the preset, the offending role, the model, and the level,
+    # plus the valid set (so `tinyic doctor` and users can act on it).
+    assert "bad" in message
+    assert "moderator" in message
+    assert "openai/gpt-5.2" in message
+    assert "off" in message
+    for level in ("minimal", "low", "medium", "high", "xhigh"):
+        assert level in message
+
+
+def test_build_committee_rejects_unsupported_thinking_level():
+    """Finding 1: committee build strict-validates a programmatic preset too."""
+    preset = Preset(
+        name="bad-committee",
+        default=BindingSpec(model="openai/gpt-5.2", thinking="high"),
+        personas={
+            # gpt-5.2 does not support "max" (tops out at xhigh).
+            "warren_buffett": BindingSpec(thinking="max"),
+        },
+    )
+    with pytest.raises(PresetError) as excinfo:
+        build_committee(
+            preset,
+            [("warren_buffett", "Warren Buffett")],
+            credentials=StaticCredentialProvider({}),
+            transport_factory=_adapter_for,
+        )
+    message = str(excinfo.value)
+    assert "warren_buffett" in message and "max" in message
+
+
+def test_build_committee_skips_validation_for_runtime_override():
+    """Finding 1: a per-debate override keeps runtime remap (never config-raise).
+
+    ``validate_thinking=False`` is how the product path lets a ``--thinking``
+    override that a model would reject at config time be remapped per call by the
+    adapter instead of failing the build.
+    """
+    preset = Preset(
+        name="override",
+        default=BindingSpec(model="openai/gpt-5.2", thinking="high"),
+    ).with_overrides(thinking="off")  # off is unsupported by gpt-5.2 at config time
+
+    committee = build_committee(
+        preset,
+        [("warren_buffett", "Warren Buffett"), ("charlie_munger", "Charlie Munger")],
+        credentials=StaticCredentialProvider({}),
+        transport_factory=_adapter_for,
+        validate_thinking=False,
+    )
+    # Built without raising; the binding still carries the requested off level
+    # (the adapter remaps it to the nearest supported level at call time).
+    assert committee.persona_bindings["Warren Buffett"].thinking_level.value == "off"
 
 
 # ==========================================================================

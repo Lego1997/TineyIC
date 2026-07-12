@@ -612,7 +612,7 @@ temperature = 0.3
 model = "anthropic/claude-opus-4-8"
 
 [presets.p.moderator]
-thinking = "off"
+thinking = "minimal"
 
 [presets.p.personas.benjamin_graham]
 model = "deepseek/deepseek-reasoner"
@@ -650,14 +650,15 @@ def test_preset_field_precedence_role_and_persona_override_committee_default(tmp
         aggregator.params,
     ) == ("anthropic/claude-opus-4-8", "high", "openai:work", {"temperature": 0.3})
 
-    # Moderator: thinking wins; model/auth/params inherited.
+    # Moderator: thinking wins; model/auth/params inherited. (A supported level
+    # for gpt-5.2 -- "off" is now rejected by config-time validation, FR-1.3.)
     moderator = preset.moderator_binding()
     assert (
         moderator.model_ref,
         moderator.thinking_level.value,
         moderator.auth_profile,
         moderator.params,
-    ) == ("openai/gpt-5.2", "off", "openai:work", {"temperature": 0.3})
+    ) == ("openai/gpt-5.2", "minimal", "openai:work", {"temperature": 0.3})
 
 
 def test_per_debate_override_is_highest_precedence(tmp_path):

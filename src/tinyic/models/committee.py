@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from .binding import ModelBinding
 from .binding_client import BindingClient, build_transport
 from .credentials import CredentialProvider, EnvCredentialProvider
-from .presets import Preset
+from .presets import Preset, validate_preset_thinking
 from .types import Transport
 
 #: Builds a bound transport for a binding; overridable in tests.
@@ -90,6 +90,7 @@ def build_committee(
     registry: object | None = None,
     transport_factory: TransportFactory | None = None,
     stream: bool = True,
+    validate_thinking: bool = True,
 ) -> Committee:
     """Realize ``preset`` for ``personas`` into a :class:`Committee`.
 
@@ -98,8 +99,17 @@ def build_committee(
     the resulting client (so the orchestrator can look it up by ``agent.name``).
     ``transport_factory`` defaults to the provider-registry transport builder;
     tests pass one returning scripted transports for an offline debate.
+
+    ``validate_thinking`` runs strict config-time thinking validation (FR-1.3)
+    before any transport is built, so an unsupported preset level fails fast with
+    a role-named error. Callers applying a per-debate ``--model``/``--thinking``
+    override pass ``False`` to keep runtime remap semantics (the config was
+    already validated at load; the override is remapped per call by the adapter).
     """
     creds = credentials if credentials is not None else EnvCredentialProvider()
+
+    if validate_thinking:
+        validate_preset_thinking(preset, registry=registry)
 
     def make_transport(binding: ModelBinding) -> Transport:
         if transport_factory is not None:

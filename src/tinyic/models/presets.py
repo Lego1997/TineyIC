@@ -36,7 +36,7 @@ FR-1.4) by overriding individual roles on top of a committee-wide default.
 
     [presets.mixed.moderator]
     model = "openai/gpt-5.2"
-    thinking = "off"
+    thinking = "minimal"           # config-time levels must be model-supported
 
     # Persona overrides are keyed by snake_case registry name; unlisted personas
     # fall back to the committee default binding.
@@ -58,7 +58,7 @@ from pathlib import Path
 from typing import Any
 
 from .binding import ModelBinding
-from .thinking import ThinkingLevel
+from .thinking import ThinkingLevel, UnsupportedThinkingLevelError
 
 #: Built-in fallback when no ``tinyic.toml`` is present: one strong model
 #: everywhere (FR-1.4's ``default`` preset), so a committee always resolves.
@@ -244,6 +244,65 @@ def builtin_default_preset() -> Preset:
     )
 
 
+def _preset_role_bindings(preset: Preset) -> list[tuple[str, ModelBinding]]:
+    """Every concrete role binding a preset can produce, with a role label.
+
+    Covers the committee default (used by unlisted personas), each explicitly
+    listed persona, the aggregator, and the moderator — i.e. every binding whose
+    ``thinking`` level a config could get wrong.
+    """
+    roles: list[tuple[str, ModelBinding]] = []
+    if preset.default.model:
+        roles.append(
+            (
+                "committee default",
+                preset.default.to_binding(where=f"preset {preset.name!r} default"),
+            )
+        )
+    for persona_name in preset.personas:
+        roles.append(
+            (f"persona {persona_name!r}", preset.persona_binding(persona_name))
+        )
+    roles.append(("aggregator", preset.aggregator_binding()))
+    roles.append(("moderator", preset.moderator_binding()))
+    return roles
+
+
+def validate_preset_thinking(preset: Preset, *, registry: Any | None = None) -> None:
+    """Strict, config-time thinking validation for ``preset`` (FR-1.3).
+
+    Resolves every role/persona binding's thinking level against its model's
+    capability profile at *config time* (``runtime=False`` — no nearest-level
+    remap): an unsupported level raises :class:`PresetError` naming the preset,
+    role, model, and level plus the valid set, so a bad ``tinyic.toml`` fails
+    fast at load or committee build instead of being silently remapped mid-debate
+    by the per-call adapter. Runtime ``--model``/``--thinking`` overrides keep the
+    remap semantics and must therefore bypass this (see ``build_committee``).
+
+    Unknown providers/models are skipped: their capability is unknown here, and
+    an unusable provider surfaces at transport construction / ``tinyic doctor``.
+    """
+    if registry is None:
+        from .registry import default_registry
+
+        registry = default_registry()
+
+    for role_label, binding in _preset_role_bindings(preset):
+        try:
+            registry.resolve_thinking(binding, runtime=False)
+        except KeyError:
+            # Unknown provider: capability profile is not knowable at config time.
+            continue
+        except UnsupportedThinkingLevelError as exc:
+            valid = ", ".join(level.value for level in exc.supported) or "(none)"
+            raise PresetError(
+                f"preset {preset.name!r} {role_label} pins model "
+                f"{binding.model_ref!r} at thinking "
+                f"{binding.thinking_level.value!r}, which that model does not "
+                f"support; valid levels: {valid}"
+            ) from exc
+
+
 def _config_path(path: str | Path | None) -> Path | None:
     if path is not None:
         return Path(path).expanduser()
@@ -294,12 +353,16 @@ def load_preset(name: str | None = None, path: str | Path | None = None) -> Pres
     presets: dict[str, Preset] = config["presets"]
     chosen = name or config["default_preset"]
     try:
-        return presets[chosen]
+        preset = presets[chosen]
     except KeyError:
         known = ", ".join(sorted(presets)) or "(none)"
         raise PresetError(
             f"unknown preset {chosen!r}; defined presets: {known}"
         ) from None
+    # Fail fast on a config-time thinking mismatch (FR-1.3): a bad tinyic.toml
+    # raises at load rather than being silently remapped mid-debate.
+    validate_preset_thinking(preset)
+    return preset
 
 
 __all__ = [
@@ -314,4 +377,5 @@ __all__ = [
     "builtin_default_preset",
     "load_config",
     "load_preset",
+    "validate_preset_thinking",
 ]

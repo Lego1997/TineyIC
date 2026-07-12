@@ -34,9 +34,9 @@ auth_profile = "openai:default"
 temperature = 0.7
 
 # A mixed-provider committee showing per-persona heterogeneity: a shared default,
-# an Anthropic aggregator for synthesis, a cheap non-thinking moderator, and two
-# personas pinned to their own models. Personas not listed here (Munger, Lynch,
-# Marks, Li Lu) inherit the committee default binding above.
+# an Anthropic aggregator for synthesis, a cheap minimal-reasoning moderator, and
+# two personas pinned to their own models. Personas not listed here (Munger,
+# Lynch, Marks, Li Lu) inherit the committee default binding above.
 [presets.heterogeneous]
 model = "openai/gpt-5.2"
 thinking = "high"
@@ -50,7 +50,7 @@ thinking = "high"
 
 [presets.heterogeneous.moderator]
 model = "openai/gpt-5.2"
-thinking = "off"
+thinking = "minimal"
 
 [presets.heterogeneous.personas.warren_buffett]
 model = "openai/gpt-5.2"

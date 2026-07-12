@@ -31,6 +31,7 @@ from .presets import (
     builtin_default_preset,
     load_config,
     load_preset,
+    validate_preset_thinking,
 )
 from .routing import activate, active_client, install_client_resolver
 from .registry import (
@@ -145,6 +146,7 @@ __all__ = [
     "builtin_default_preset",
     "load_config",
     "load_preset",
+    "validate_preset_thinking",
     "Committee",
     "CommitteeTransportFactory",
     "build_committee",

@@ -321,7 +321,8 @@ def run_debate(
             from tinyic.models import build_committee, load_preset
 
             resolved_preset = load_preset(preset, config_path)
-            if model is not None or thinking is not None:
+            has_runtime_override = model is not None or thinking is not None
+            if has_runtime_override:
                 resolved_preset = resolved_preset.with_overrides(
                     model=model, thinking=thinking
                 )
@@ -329,7 +330,13 @@ def run_debate(
                 zip(persona_names, [persona.name for persona in personas])
             )
             resolved_committee = build_committee(
-                resolved_preset, persona_pairs, credentials=credentials
+                resolved_preset,
+                persona_pairs,
+                credentials=credentials,
+                # The config was strict-validated at load_preset; a per-debate
+                # --model/--thinking override is a runtime choice the adapter
+                # remaps per call (FR-1.3), so it must not fail committee build.
+                validate_thinking=not has_runtime_override,
             )
 
         if data_package is None:
