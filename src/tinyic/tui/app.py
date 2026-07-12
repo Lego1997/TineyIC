@@ -21,6 +21,17 @@ recorded events into ``self._pending`` and a batched timer drains them
 progressively (FR-5.5: batched ~30 ms UI updates, never a single dump). A live
 producer would call :meth:`TownHallApp.feed` (via ``call_from_thread``) to push
 onto the same queue, and the same pump renders it.
+
+**Interaction (FR-5.2/5.3/5.4).** A bottom composer bar is always visible with a
+mode chip (``Steer`` / ``Queue``, toggled by ``tab``); submitting a line pushes a
+steering message through a :class:`~tinyic.tui.steering.SteeringSink` (in replay,
+a :class:`~tinyic.tui.steering.ReplaySink` echoes it into the transcript as a
+``queued`` note — the real engine hookup lands in M1/M6). Keys: ``enter`` compose
+/ send · ``tab`` mode toggle · ``esc`` hard interrupt (in replay: skip to the
+next turn boundary) · ``t`` toggle thinking on the selected turn · ``T`` toggle
+all · ``space`` pause/resume auto-advance · ``n`` next phase when paused · ``q``
+quit (confirmed while a debate is still running). Auto-advance is the default;
+paused mode holds at each phase banner until ``n``.
 """
 
 from __future__ import annotations
@@ -29,12 +40,16 @@ import asyncio
 from collections import deque
 from pathlib import Path
 
+from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, VerticalScroll
-from textual.widgets import Footer, Static
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen
+from textual.widgets import Footer, Input, Static
 
 from .events import Event, read_events
-from .state import TownHallState
+from .state import TownHallState, TurnState
+from .steering import ReplaySink, SteeringSink, parse_steering_input
 from .widgets import (
     ArtifactCard,
     PersonaCard,
@@ -44,7 +59,13 @@ from .widgets import (
     TurnCard,
 )
 
-__all__ = ["TownHallApp", "run_replay", "summarize_event", "format_event_line"]
+__all__ = [
+    "TownHallApp",
+    "QuitConfirmScreen",
+    "run_replay",
+    "summarize_event",
+    "format_event_line",
+]
 
 
 # --------------------------------------------------------------------------- #
@@ -159,6 +180,35 @@ def format_event_line(event: Event) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Quit confirmation (FR-5.2: `q` confirms while a debate is still running)
+# --------------------------------------------------------------------------- #
+
+class QuitConfirmScreen(ModalScreen[bool]):
+    """A tiny modal asking to confirm quitting a still-running debate."""
+
+    BINDINGS = [
+        ("y", "confirm", "Quit"),
+        ("n", "cancel", "Stay"),
+        ("escape", "cancel", "Stay"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="quit-dialog"):
+            yield Static("Quit the debate?", id="quit-title")
+            yield Static(
+                "A debate is still running.\n"
+                "Press  y  to quit  ·  n / esc  to keep watching.",
+                id="quit-body",
+            )
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
+# --------------------------------------------------------------------------- #
 # The app
 # --------------------------------------------------------------------------- #
 
@@ -166,6 +216,10 @@ class TownHallApp(App):
     """Render a TinyIC debate as a live town hall (replay or, later, live feed)."""
 
     TITLE = "TinyIC Town Hall"
+    # Drive-mode is the default: nothing is auto-focused, so single-key controls
+    # (t/T/space/n/q) reach the app instead of typing into the composer. The
+    # composer Input is focused only on demand (click, or `enter` in drive mode).
+    AUTO_FOCUS = None
     CSS = """
     Screen { layout: vertical; }
 
@@ -207,6 +261,7 @@ class TownHallApp(App):
     }
     .turn-card.completed { border-left: thick $accent; }
     .turn-card.interrupted { border-left: thick $error; }
+    .turn-card.selected { border-left: thick $warning; background: $boost; }
     .turn-head { text-style: bold; }
     .turn-speech { padding: 0 0 0 2; }
     .turn-think { padding: 0 0 0 2; }
@@ -237,12 +292,34 @@ class TownHallApp(App):
         border: round $panel-lighten-1;
     }
     .persona-card.speaking { border: round $success; background: $boost; }
+
+    #composer {
+        height: auto;
+        padding: 0 1;
+        border-top: heavy $panel-lighten-2;
+    }
+    #status-line { height: 1; color: $text-muted; }
+    #composer-row { height: auto; }
+    #mode-chip { width: auto; padding: 1 1 0 0; }
+    #composer-input { width: 1fr; }
+
+    QuitConfirmScreen { align: center middle; }
+    #quit-dialog {
+        width: 52;
+        height: auto;
+        padding: 1 2;
+        background: $panel;
+        border: thick $warning;
+    }
+    #quit-title { text-style: bold; }
+    #quit-body { color: $text-muted; padding: 1 0 0 0; }
     """
 
+    # Only a hard-exit escape hatch lives in BINDINGS; every Stage-3 key is
+    # routed through ``on_key`` (below) so drive-mode single keys and composer
+    # typing never fight over the same keystroke.
     BINDINGS = [
-        ("q", "quit", "Quit"),
-        ("ctrl+c", "quit", "Quit"),
-        ("T", "toggle_thinking", "Toggle thinking"),
+        ("ctrl+c", "quit", "Force quit"),
     ]
 
     def __init__(
@@ -253,6 +330,7 @@ class TownHallApp(App):
         batch_size: int = 6,
         tick: float = 0.03,
         auto_replay: bool = True,
+        sink: SteeringSink | None = None,
     ) -> None:
         super().__init__()
         self.log_path = Path(log_path) if log_path is not None else None
@@ -275,7 +353,23 @@ class TownHallApp(App):
         self.state = TownHallState()
         self._pending: deque[Event] = deque(self.events)
 
+        # Interaction state (FR-5.2/5.3/5.4).
+        self.steer_mode = "steer"  # "steer" | "queue" (tab toggles)
+        self.paused = False  # auto-advance on by default
+        self._holding = False  # paused + parked at a phase banner (n to continue)
+        self._selected_turn_key: str | None = None  # explicit `t`-key target
+        # Steering seam: replay just echoes; M1/M6 swaps in an engine-backed sink.
+        self._sink: SteeringSink = sink if sink is not None else ReplaySink(
+            self._apply_local_event
+        )
+
         self._header = StatusHeader(self.state)
+        self._status_line = Static("", id="status-line")
+        self._mode_chip = Static("", id="mode-chip")
+        self._composer_input = Input(
+            placeholder="Steer the committee…  (@name targets a persona)",
+            id="composer-input",
+        )
         self._persona_widgets: dict[str, PersonaCard] = {}
         self._item_widgets: dict[str, TurnCard | PhaseBanner | SteeringNote | ArtifactCard] = {}
         self._timer = None
@@ -288,11 +382,17 @@ class TownHallApp(App):
         with Horizontal(id="body"):
             yield VerticalScroll(id="transcript")
             yield VerticalScroll(id="committee")
+        with Vertical(id="composer"):
+            yield self._status_line
+            with Horizontal(id="composer-row"):
+                yield self._mode_chip
+                yield self._composer_input
         yield Footer()
 
     def on_mount(self) -> None:
         self.sub_title = self._log_label()
         self._replay_complete = asyncio.Event()
+        self._sync_controls()
         if not self.events:
             self.query_one("#transcript", VerticalScroll).mount(
                 Static("(no events — empty or missing log)", id="empty-note")
@@ -316,17 +416,60 @@ class TownHallApp(App):
             self._timer = self.set_interval(self.tick, self._pump)
 
     def _pump(self) -> None:
-        """Timer tick: fold one batch of pending events, then re-sync the panes."""
-        self._apply_batch(self.batch_size)
+        """Timer tick: fold one batch of pending events, then re-sync the panes.
+
+        Respects the phase gate: while parked at a phase banner (paused mode) the
+        tick is a no-op until ``n`` or a resume clears the hold.
+        """
+        if self._holding:
+            return
+        self._drain_gated()
         self._sync()
-        if not self._pending:
+        if not self._pending and not self._holding:
             self._stop_replay()
 
+    def _drain_gated(self) -> None:
+        """Fold up to one batch, parking at a phase banner when paused (FR-5.4).
+
+        In paused mode the pump plays out the current phase but stops right after
+        opening the next one — the between-phases reflection moment. Sets
+        ``_holding`` so the timer freezes there until ``n``/resume.
+        """
+        applied = 0
+        while self._pending and applied < self.batch_size:
+            event = self._pending.popleft()
+            self.state.dispatch(event)
+            applied += 1
+            if self.paused and event.type == "phase_started":
+                self._holding = True
+                return
+
     def _apply_batch(self, limit: int) -> int:
+        """Fold up to ``limit`` events ungated (used by :meth:`replay_all_now`)."""
         applied = 0
         while self._pending and applied < limit:
             self.state.dispatch(self._pending.popleft())
             applied += 1
+        return applied
+
+    def _skip_to_turn_boundary(self) -> int:
+        """Fast-forward to the next turn boundary (the ``esc`` interrupt).
+
+        Replay has no in-flight model call to cancel, so a "hard interrupt" here
+        means: drain through the rest of the current turn (up to and including its
+        ``turn_completed``) and stop, leaving the next speaker parked. Clears any
+        phase hold so the interrupt always makes visible progress.
+        """
+        self._holding = False
+        applied = 0
+        while self._pending:
+            event = self._pending.popleft()
+            self.state.dispatch(event)
+            applied += 1
+            if event.type == "turn_completed":
+                break
+        if not self._pending:
+            self._stop_replay()
         return applied
 
     def replay_all_now(self) -> None:
@@ -338,6 +481,7 @@ class TownHallApp(App):
         if self._timer is not None:
             self._timer.stop()
             self._timer = None
+        self._holding = False
         self._apply_batch(len(self._pending) or 0)
         self._sync()
         self._stop_replay()
@@ -384,6 +528,8 @@ class TownHallApp(App):
         if new_items:
             transcript.mount(*new_items)
             transcript.scroll_end(animate=False)
+        self._refresh_selection()
+        self._sync_controls()
 
     @staticmethod
     def _make_item_widget(item):
@@ -395,10 +541,61 @@ class TownHallApp(App):
             return SteeringNote(item)
         return ArtifactCard(item)
 
-    # -- actions ----------------------------------------------------------- #
+    # -- key routing (FR-5.2) --------------------------------------------- #
+
+    @property
+    def _is_composing(self) -> bool:
+        """True while the composer input holds focus (typing a steer)."""
+        return self.focused is self._composer_input
+
+    def on_key(self, event: events.Key) -> None:
+        """Route keys by mode. Composer typing wins; drive keys act otherwise.
+
+        ``tab``/``esc`` act in both modes (mode toggle / hard interrupt). While
+        the composer is focused, every other key is left to the ``Input`` so text
+        (including ``t``, ``n``, ``q``, space) types normally; otherwise the bare
+        drive keys trigger their actions. A modal (quit confirm) suppresses all of
+        it — its own bindings handle input.
+        """
+        if len(self.screen_stack) > 1:
+            return  # a modal is up; let it own the keyboard
+
+        if event.key == "tab":
+            self.action_toggle_mode()
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "escape":
+            self.action_interrupt()
+            event.stop()
+            event.prevent_default()
+            return
+
+        if self._is_composing:
+            return  # typing — Input handles it (enter -> on_input_submitted)
+
+        char = event.character
+        if char == "t":
+            self.action_toggle_thinking_selected()
+        elif char == "T":
+            self.action_toggle_thinking()
+        elif event.key == "space":
+            self.action_toggle_pause()
+        elif event.key == "n":
+            self.action_next_phase()
+        elif event.key == "q":
+            self.action_request_quit()
+        elif event.key == "enter":
+            self._focus_composer()
+        else:
+            return
+        event.stop()
+        event.prevent_default()
+
+    # -- thinking toggles (FR-5.2: t / T) --------------------------------- #
 
     def action_toggle_thinking(self) -> None:
-        """Expand or collapse every turn's thinking row at once (FR-5.2 preview)."""
+        """Expand or collapse every turn's thinking row at once (``T``)."""
         from textual.widgets import Collapsible
 
         collapsibles = list(self.query(Collapsible))
@@ -406,6 +603,157 @@ class TownHallApp(App):
         expand = any(c.collapsed for c in collapsibles)
         for c in collapsibles:
             c.collapsed = not expand
+
+    def action_toggle_thinking_selected(self) -> None:
+        """Toggle the thinking row of the selected (or latest) turn (``t``)."""
+        key = self._effective_selected_key()
+        if key is None:
+            return
+        widget = self._item_widgets.get(key)
+        if isinstance(widget, TurnCard):
+            widget.toggle_thinking()
+
+    # -- turn selection (the `t`-key target) ------------------------------ #
+
+    def select_turn(self, key: str) -> None:
+        """Mark a transcript turn as selected (from a click or programmatically)."""
+        self._selected_turn_key = key
+        self._refresh_selection()
+
+    def on_turn_card_selected(self, message: TurnCard.Selected) -> None:
+        self.select_turn(message.key)
+
+    def _effective_selected_key(self) -> str | None:
+        """The explicit selection if it still exists, else the latest turn."""
+        if self._selected_turn_key and self._selected_turn_key in self._item_widgets:
+            return self._selected_turn_key
+        for item in reversed(self.state.transcript):
+            if isinstance(item, TurnState):
+                return item.key
+        return None
+
+    def _refresh_selection(self) -> None:
+        effective = self._effective_selected_key()
+        for key, widget in self._item_widgets.items():
+            if isinstance(widget, TurnCard):
+                should = key == effective
+                if widget.selected != should:
+                    widget.selected = should
+                    widget.sync()
+
+    # -- steering / composer (FR-5.3) ------------------------------------- #
+
+    def action_toggle_mode(self) -> None:
+        """Flip the composer between Steer and Queue delivery (``tab``)."""
+        self.steer_mode = "queue" if self.steer_mode == "steer" else "steer"
+        self._sync_controls()
+
+    def _focus_composer(self) -> None:
+        self.set_focus(self._composer_input)
+
+    def _blur_composer(self) -> None:
+        self.set_focus(None)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Enter in the composer: parse, hand to the sink, clear, back to drive."""
+        if event.input is not self._composer_input:
+            return
+        raw = event.value
+        self._composer_input.value = ""
+        message = parse_steering_input(
+            raw, mode=self.steer_mode, known_personas=list(self.state.personas)
+        )
+        if message is not None:
+            self._sink.submit(message)
+        self._blur_composer()
+        event.stop()
+
+    def _apply_local_event(self, event: Event) -> None:
+        """Fold a locally-echoed event (from :class:`ReplaySink`) and redraw now.
+
+        Applied immediately rather than enqueued so the steer appears even while
+        the pump is parked at a phase banner.
+        """
+        self.state.dispatch(event)
+        if self.is_running:
+            self._sync()
+
+    # -- interrupt (FR-5.2/5.3: esc) -------------------------------------- #
+
+    def action_interrupt(self) -> None:
+        """Hard interrupt: in replay, skip to the next turn boundary."""
+        self._skip_to_turn_boundary()
+        if self.is_running:
+            self._sync()
+
+    # -- phase flow (FR-5.4: space / n) ----------------------------------- #
+
+    def action_toggle_pause(self) -> None:
+        """Toggle auto-advance (``space``). Resuming clears any phase hold."""
+        self.paused = not self.paused
+        if not self.paused:
+            self._holding = False
+        self._sync_controls()
+
+    def action_next_phase(self) -> None:
+        """Release a phase-boundary hold to play the next phase (``n``)."""
+        if self.paused and self._holding:
+            self._holding = False
+        self._sync_controls()
+
+    # -- quit (FR-5.2: q, confirmed while running) ------------------------ #
+
+    def action_request_quit(self) -> None:
+        if self._quit_needs_confirm():
+            self.push_screen(QuitConfirmScreen(), self._on_quit_confirm)
+        else:
+            self.exit()
+
+    def _on_quit_confirm(self, confirmed: bool | None) -> None:
+        if confirmed:
+            self.exit()
+
+    def _quit_needs_confirm(self) -> bool:
+        return self._replay_running
+
+    @property
+    def _replay_running(self) -> bool:
+        """True while there is still a debate to play out (not yet complete)."""
+        done = self._replay_complete
+        return done is not None and not done.is_set()
+
+    # -- controls rendering ----------------------------------------------- #
+
+    def _sync_controls(self) -> None:
+        """Redraw the composer mode chip and the status/hint line.
+
+        A no-op until the composer widgets are mounted, so actions invoked before
+        the first render (or in unit tests) never touch an unmounted widget.
+        """
+        if not self._status_line.is_mounted:
+            return
+        mode = self.steer_mode.upper()
+        chip = Text()
+        chip.append(
+            f" {mode} ",
+            style="bold black on yellow" if self.steer_mode == "steer" else "bold black on cyan",
+        )
+        self._mode_chip.update(chip)
+
+        status = Text()
+        if self._holding:
+            status.append("⏸ holding at phase boundary", style="bold yellow")
+            status.append("  ·  n next phase", style="dim")
+        elif self.paused:
+            status.append("⏸ paused", style="bold yellow")
+            status.append("  ·  n next phase", style="dim")
+        else:
+            status.append("▶ auto-advance", style="bold green")
+        status.append(
+            "     enter compose · tab mode · t/T think · space pause · esc interrupt · q quit",
+            style="dim",
+        )
+        self._status_line.update(status)
 
     # -- misc -------------------------------------------------------------- #
 

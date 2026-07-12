@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from rich.text import Text
 from textual.containers import Vertical
+from textual.message import Message
 from textual.widgets import Collapsible, Static
 
 from .state import (
@@ -154,11 +155,23 @@ class PhaseBanner(Static):
 
 
 class TurnCard(Vertical):
-    """A speaker turn card: header + speech, with a collapsed thinking row."""
+    """A speaker turn card: header + speech, with a collapsed thinking row.
+
+    Clicking the card posts :class:`TurnCard.Selected` so the app can mark this
+    turn as the ``t``-key target (FR-5.2: "toggle thinking on selected turn").
+    """
+
+    class Selected(Message):
+        """Posted when the card is clicked; carries the transcript item key."""
+
+        def __init__(self, key: str) -> None:
+            self.key = key
+            super().__init__()
 
     def __init__(self, turn: TurnState) -> None:
         super().__init__(classes="turn-card")
         self.turn = turn
+        self.selected = False
         self._head = Static(classes="turn-head")
         self._speech = Static(classes="turn-speech")
         self._think_body = Static(classes="think-body")
@@ -179,9 +192,17 @@ class TurnCard(Vertical):
     def on_mount(self) -> None:
         self.sync()
 
+    def on_click(self) -> None:
+        self.post_message(self.Selected(self.turn.key))
+
+    def toggle_thinking(self) -> None:
+        """Expand/collapse just this turn's thinking row (the ``t`` key)."""
+        self._think.collapsed = not self._think.collapsed
+
     def sync(self) -> None:
         self.set_class(self.turn.interrupted, "interrupted")
         self.set_class(self.turn.completed, "completed")
+        self.set_class(self.selected, "selected")
         self._head.update(self._head_text())
         self._speech.update(
             Text(self.turn.speech) if self.turn.speech
