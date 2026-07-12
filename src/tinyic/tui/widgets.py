@@ -9,6 +9,8 @@ or any engine internals — they only read plain dataclasses.
 
 from __future__ import annotations
 
+import hashlib
+
 from rich.text import Text
 from textual.containers import Vertical
 from textual.message import Message
@@ -58,10 +60,16 @@ _PHASE_LABELS = {
 
 
 def persona_color(name: str) -> str:
-    """A stable display color for a persona name."""
+    """A stable, process-independent display color for a persona name.
+
+    Unknown personas hash into the fallback rotation via a SHA-1 digest rather
+    than the builtin ``hash`` (which is salted per interpreter run) so a replay
+    colorizes the same committee identically every time.
+    """
     if name in _PERSONA_COLORS:
         return _PERSONA_COLORS[name]
-    return _FALLBACK_COLORS[hash(name) % len(_FALLBACK_COLORS)]
+    digest = int(hashlib.sha1(name.encode("utf-8")).hexdigest(), 16)
+    return _FALLBACK_COLORS[digest % len(_FALLBACK_COLORS)]
 
 
 def _clip(text: str, limit: int) -> str:
@@ -222,6 +230,14 @@ class TurnCard(Vertical):
         head.append(turn.persona or "?", style=f"bold {persona_color(turn.persona)}")
         badge = f"  ⟨{turn.phase or '?'} · {turn.role or '?'}⟩"
         head.append(badge, style="dim")
+        if turn.stance:
+            stance_color = (
+                _VOTE_COLORS.get(turn.stance)
+                or _STANCE_COLORS.get(turn.stance)
+                or "white"
+            )
+            head.append("  ")
+            head.append(f"[{turn.stance}]", style=f"bold {stance_color}")
         if turn.target_persona:
             head.append(f" → {turn.target_persona}", style="italic")
         if turn.interrupted:
@@ -299,12 +315,16 @@ class PersonaCard(Static):
     def __init__(self, persona: PersonaState) -> None:
         super().__init__(classes="persona-card")
         self.persona = persona
+        # Mind view (the `m` key): when set, the card reveals the persona's
+        # latest private-reasoning snippet inline (FR-5.2).
+        self.expanded = False
 
     def on_mount(self) -> None:
         self.sync()
 
     def sync(self) -> None:
         self.set_class(self.persona.speaking, "speaking")
+        self.set_class(self.expanded, "mind-expanded")
         self.refresh()
 
     def render(self) -> Text:
@@ -368,4 +388,15 @@ class PersonaCard(Static):
                     text.append(f" ({p.confidence})", style="dim")
             if p.caved:
                 text.append("  ⚑ caved", style="bold red")
+
+        # Mind view: the `m` key expands this card to reveal the latest private
+        # reasoning snippet (the goal/attention/mood badges above already surface
+        # the cognitive state).
+        if self.expanded:
+            text.append("\n")
+            text.append("mind ", style="dim")
+            if p.think:
+                text.append(_clip(p.think, 240), style="italic")
+            else:
+                text.append("(no private reasoning yet)", style="dim italic")
         return text

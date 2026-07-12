@@ -11,9 +11,17 @@ Two layers:
 
 from __future__ import annotations
 
+import json
+
 from textual.widgets import Collapsible, Input
 
-from tinyic.tui.app import QuitConfirmScreen, TownHallApp
+from tinyic.tui.app import (
+    TRANSCRIPT_CAP,
+    TRANSCRIPT_RELOAD,
+    QuitConfirmScreen,
+    TownHallApp,
+)
+from tinyic.tui.events import parse_event
 from tinyic.tui.state import SteeringState, TurnState
 from tinyic.tui.steering import SteeringMessage
 from tinyic.tui.widgets import SteeringNote, TurnCard
@@ -302,3 +310,114 @@ async def test_quit_needs_no_confirm_once_replay_is_complete():
         app.replay_all_now()
         await pilot.pause()
         assert app._quit_needs_confirm() is False
+
+
+# --------------------------------------------------------------------------- #
+# Persona mind view (FR-5.2: m)
+# --------------------------------------------------------------------------- #
+
+async def test_m_cycles_persona_mind_view_then_collapses_past_the_end():
+    app = TownHallApp(G.FIXTURE_PATH, auto_replay=False)
+    async with app.run_test() as pilot:
+        app.replay_all_now()  # personas + their think snippets populated
+        await pilot.pause()
+        names = list(app.state.personas)
+        assert len(names) == 6
+        assert app._mind_index == -1
+        assert not any(c.expanded for c in app._persona_widgets.values())
+
+        await pilot.press("m")  # focus + expand the first persona
+        assert app._mind_index == 0
+        first = app._persona_widgets[names[0]]
+        assert first.expanded is True
+        assert not any(
+            c.expanded for n, c in app._persona_widgets.items() if n != names[0]
+        )
+        # The expanded card reveals the persona's private reasoning inline.
+        assert "mind" in str(first.render())
+
+        for _ in range(5):  # advance through the remaining five personas
+            await pilot.press("m")
+        assert app._mind_index == 5
+        last = app._persona_widgets[names[5]]
+        assert last.expanded is True
+        assert not first.expanded  # exactly one card expanded at a time
+
+        await pilot.press("m")  # cycle past the last -> collapse the view
+        assert app._mind_index == -1
+        assert not any(c.expanded for c in app._persona_widgets.values())
+
+
+async def test_m_does_not_cycle_while_composing():
+    app = TownHallApp(G.FIXTURE_PATH, auto_replay=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.set_focus(app._composer_input)
+        assert app._is_composing
+        await pilot.press("m")
+        # 'm' is typed into the composer, not consumed as a mind-cycle.
+        assert app._mind_index == -1
+        assert "m" in app._composer_input.value
+
+
+# --------------------------------------------------------------------------- #
+# Transcript virtualization (FR-5.5): cap + PageUp windowing
+# --------------------------------------------------------------------------- #
+
+def _many_turns_app(n_turns: int, **kwargs) -> TownHallApp:
+    """A replay app whose log has ``n_turns`` one-shot turns in a single phase."""
+    raw: list[dict] = [
+        {"type": "debate_started",
+         "payload": {"ticker": "TST", "personas": [{"name": "Solo"}]}},
+        {"type": "phase_started", "payload": {"phase": "opening", "index": 0}},
+    ]
+    for i in range(n_turns):
+        tid = f"t{i:04d}"
+        raw += [
+            {"type": "turn_started", "payload": {
+                "turn_id": tid, "persona": "Solo",
+                "phase": "opening", "role": "statement"}},
+            {"type": "talk_completed", "payload": {
+                "turn_id": tid, "full_text": f"point number {i}"}},
+            {"type": "turn_completed", "payload": {
+                "turn_id": tid, "persona": "Solo",
+                "phase": "opening", "interrupted": False}},
+        ]
+    events = [parse_event(json.dumps(obj)) for obj in raw]
+    return TownHallApp(events=events, auto_replay=False, **kwargs)
+
+
+async def test_transcript_caps_mounted_cards_and_pageup_loads_older():
+    # 305 turns + 1 phase banner = 306 transcript items; the cap is 200.
+    app = _many_turns_app(305)
+    async with app.run_test() as pilot:
+        app.replay_all_now()
+        await pilot.pause()
+
+        # State keeps every turn; only the newest cap-worth are mounted.
+        assert sum(1 for i in app.state.transcript if isinstance(i, TurnState)) == 305
+        assert len(app.query(TurnCard)) == TRANSCRIPT_CAP  # 200 newest turns
+        placeholder = app.query_one("#older-placeholder")
+        assert "earlier turns" in str(placeholder.render())
+
+        # PageUp widens the window by one reload step (200 -> 300 mounted).
+        await pilot.press("pageup")
+        await pilot.pause()
+        assert len(app.query(TurnCard)) == TRANSCRIPT_CAP + TRANSCRIPT_RELOAD  # 300
+        assert app.query("#older-placeholder")  # still older turns hidden
+
+        # A second PageUp reveals the remainder and drops the placeholder.
+        await pilot.press("pageup")
+        await pilot.pause()
+        assert len(app.query(TurnCard)) == 305
+        assert len(app.query("#older-placeholder")) == 0
+
+
+async def test_small_transcript_is_never_virtualized():
+    # The recorded golden log (22 turns) stays fully mounted, no placeholder.
+    app = TownHallApp(G.FIXTURE_PATH, auto_replay=False)
+    async with app.run_test() as pilot:
+        app.replay_all_now()
+        await pilot.pause()
+        assert len(app.query(TurnCard)) == 22
+        assert len(app.query("#older-placeholder")) == 0

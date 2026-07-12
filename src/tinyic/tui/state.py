@@ -105,6 +105,8 @@ class PersonaState:
     mood: str = ""
     attention: str = ""
     goal: str = ""
+    # Latest completed private-reasoning snippet, surfaced by the `m` mind view.
+    think: str = ""
     stance: str = ""
     vote: str = ""
     confidence: str = ""
@@ -124,6 +126,10 @@ class TurnState:
     target_persona: str | None = None
     speech: str = ""
     thinking: str = ""
+    # The speaker's stance for this turn: bullish/bearish/neutral (from the
+    # opening thesis) or BUY/HOLD/SELL (from the verdict vote). Backfilled and
+    # carried forward per persona by ``TownHallState`` (FR-5.1 stance badge).
+    stance: str = ""
     interrupted: bool = False
     completed: bool = False
     kind: str = "turn"
@@ -215,6 +221,11 @@ class TownHallState:
         self._steering_by_id: dict[str, SteeringState] = {}
         self._phases_by_index: dict[int, PhaseState] = {}
         self.current_turn_id: str | None = None
+        # Per-persona stance carry-forward + the most recent turn to backfill,
+        # so a stance recorded *after* a turn still stamps that turn and every
+        # subsequent one until it changes (FR-5.1 stance badge).
+        self._latest_stance: dict[str, str] = {}
+        self._last_turn_by_persona: dict[str, TurnState] = {}
 
         # Usage / cost rollups
         self.cost_usd: float = 0.0
@@ -368,8 +379,10 @@ class TownHallState:
             phase=str(p.get("phase", "") or ""),
             role=str(p.get("role", "") or ""),
             target_persona=p.get("target_persona"),
+            stance=self._latest_stance.get(persona, ""),
         )
         self._turns_by_id[turn_id] = turn
+        self._last_turn_by_persona[persona] = turn
         self.transcript.append(turn)
         self.current_turn_id = turn_id
         # Highlight the active speaker in the committee panel.
@@ -380,11 +393,13 @@ class TownHallState:
         turn = self._turns_by_id.get(str(p.get("turn_id", "")))
         if turn is not None:
             turn.thinking += str(p.get("text", "") or "")
+            self._sync_think_snippet(turn)
 
     def _on_think_completed(self, p: Mapping[str, Any]) -> None:
         turn = self._turns_by_id.get(str(p.get("turn_id", "")))
         if turn is not None:
             turn.thinking = str(p.get("full_text", "") or "")
+            self._sync_think_snippet(turn)
 
     def _on_talk_delta(self, p: Mapping[str, Any]) -> None:
         turn = self._turns_by_id.get(str(p.get("turn_id", "")))
@@ -453,15 +468,21 @@ class TownHallState:
     # -- structured artifacts / committee updates -------------------------- #
 
     def _on_thesis_recorded(self, p: Mapping[str, Any]) -> None:
-        member = self.personas.get(str(p.get("persona", "")))
+        persona = str(p.get("persona", "") or "")
+        stance = str(p.get("stance", "") or "")
+        member = self.personas.get(persona)
         if member is not None:
-            member.stance = str(p.get("stance", "") or "")
+            member.stance = stance
+        self._stamp_stance(persona, stance)
 
     def _on_vote_recorded(self, p: Mapping[str, Any]) -> None:
-        member = self.personas.get(str(p.get("persona", "")))
+        persona = str(p.get("persona", "") or "")
+        vote = str(p.get("vote", "") or "")
+        member = self.personas.get(persona)
         if member is not None:
-            member.vote = str(p.get("vote", "") or "")
+            member.vote = vote
             member.confidence = str(p.get("confidence", "") or "")
+        self._stamp_stance(persona, vote)
 
     def _on_collapse_metric(self, p: Mapping[str, Any]) -> None:
         member = self.personas.get(str(p.get("persona", "")))
@@ -523,6 +544,28 @@ class TownHallState:
         self.usage_window = p
 
     # -- internals --------------------------------------------------------- #
+
+    def _stamp_stance(self, persona: str, stance: str) -> None:
+        """Record a persona's latest stance and backfill their most recent turn.
+
+        A stance (bullish/bearish/neutral from ``thesis_recorded`` in the opening,
+        or BUY/HOLD/SELL from ``vote_recorded`` in the verdict) arrives *after*
+        the turn that produced it, so we stamp that just-finished turn here and
+        stash the value so :meth:`_on_turn_started` carries it onto every
+        subsequent turn of the same persona until it changes.
+        """
+        if not persona or not stance:
+            return
+        self._latest_stance[persona] = stance
+        turn = self._last_turn_by_persona.get(persona)
+        if turn is not None:
+            turn.stance = stance
+
+    def _sync_think_snippet(self, turn: TurnState) -> None:
+        """Mirror a turn's private reasoning onto its persona for the mind view."""
+        member = self.personas.get(turn.persona)
+        if member is not None:
+            member.think = turn.thinking
 
     def _append_artifact(
         self, *, key: str, kind: str, title: str, body: str, payload: Mapping[str, Any]

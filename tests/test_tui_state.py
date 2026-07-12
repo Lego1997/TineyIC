@@ -187,6 +187,44 @@ def test_turn_cards_carry_speech_and_thinking():
 
 
 # --------------------------------------------------------------------------- #
+# Per-turn stance (FR-5.1 stance badge) + mind-view think snippet (FR-5.2)
+# --------------------------------------------------------------------------- #
+
+def test_turn_stance_is_stamped_from_thesis_and_vote_and_backfilled():
+    state = _folded()
+    turns = [i for i in state.transcript if isinstance(i, TurnState)]
+
+    def turn(persona: str, phase: str) -> TurnState:
+        return next(t for t in turns if t.persona == persona and t.phase == phase)
+
+    # The opening thesis stance stamps the just-finished opening turn (the event
+    # arrives right after it), for bulls and bears alike.
+    assert turn("Warren Buffett", "opening").stance == "bullish"
+    assert turn("Benjamin Graham", "opening").stance == "bearish"
+    # Backfill: that stance carries onto the persona's later turns until it
+    # changes — Buffett stays bullish through cross-exam and rebuttal.
+    assert turn("Warren Buffett", "cross_exam").stance == "bullish"
+    assert turn("Warren Buffett", "rebuttal").stance == "bullish"
+    # The verdict vote overrides the stance on the verdict turn.
+    assert turn("Warren Buffett", "verdict").stance == "BUY"
+    assert turn("Benjamin Graham", "verdict").stance == "SELL"
+    assert turn("Peter Lynch", "verdict").stance == "HOLD"
+
+
+def test_persona_think_snippet_tracks_latest_completed_thinking():
+    state = _folded()
+    # The mind view reads the persona's latest private-reasoning snippet, mirrored
+    # from that persona's most recent think event (their verdict turn).
+    buffett = state.personas["Warren Buffett"]
+    assert buffett.think
+    buffett_turns = [
+        t for t in state.transcript
+        if isinstance(t, TurnState) and t.persona == "Warren Buffett"
+    ]
+    assert buffett.think == buffett_turns[-1].thinking
+
+
+# --------------------------------------------------------------------------- #
 # Usage / cost rollups
 # --------------------------------------------------------------------------- #
 

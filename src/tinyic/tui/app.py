@@ -29,9 +29,16 @@ a :class:`~tinyic.tui.steering.ReplaySink` echoes it into the transcript as a
 ``queued`` note — the real engine hookup lands in M1/M6). Keys: ``enter`` compose
 / send · ``tab`` mode toggle · ``esc`` hard interrupt (in replay: skip to the
 next turn boundary) · ``t`` toggle thinking on the selected turn · ``T`` toggle
-all · ``space`` pause/resume auto-advance · ``n`` next phase when paused · ``q``
+all · ``m`` cycle the persona mind view · ``space`` pause/resume auto-advance ·
+``n`` next phase when paused · ``PageUp`` load older transcript cards · ``q``
 quit (confirmed while a debate is still running). Auto-advance is the default;
 paused mode holds at each phase banner until ``n``.
+
+**Virtualization (FR-5.5).** ``TownHallState`` keeps every turn, but the widget
+layer mounts only the newest ``TRANSCRIPT_CAP`` transcript cards; older ones are
+unmounted behind a single "… N earlier turns" placeholder that ``PageUp`` expands
+``TRANSCRIPT_RELOAD`` at a time. This keeps the render bounded on long debates
+without touching the batched ~30 ms pump.
 """
 
 from __future__ import annotations
@@ -65,7 +72,15 @@ __all__ = [
     "run_replay",
     "summarize_event",
     "format_event_line",
+    "TRANSCRIPT_CAP",
+    "TRANSCRIPT_RELOAD",
 ]
+
+# Transcript virtualization (FR-5.5): the widget layer mounts at most
+# ``TRANSCRIPT_CAP`` of the newest transcript cards; ``PageUp`` widens that
+# window by ``TRANSCRIPT_RELOAD`` older cards per press. State keeps them all.
+TRANSCRIPT_CAP = 200
+TRANSCRIPT_RELOAD = 100
 
 
 # --------------------------------------------------------------------------- #
@@ -285,6 +300,14 @@ class TownHallApp(App):
     .artifact-card.kind-scorecard { border: round $success; }
     .artifact-card.kind-debate-error { border: round $error; }
 
+    .older-placeholder {
+        height: auto;
+        padding: 0 1;
+        color: $text-muted;
+        text-style: italic;
+        border-bottom: dashed $panel-lighten-2;
+    }
+
     .persona-card {
         height: auto;
         margin: 1 0 0 0;
@@ -292,6 +315,7 @@ class TownHallApp(App):
         border: round $panel-lighten-1;
     }
     .persona-card.speaking { border: round $success; background: $boost; }
+    .persona-card.mind-expanded { border: round $accent; background: $boost; }
 
     #composer {
         height: auto;
@@ -358,6 +382,7 @@ class TownHallApp(App):
         self.paused = False  # auto-advance on by default
         self._holding = False  # paused + parked at a phase banner (n to continue)
         self._selected_turn_key: str | None = None  # explicit `t`-key target
+        self._mind_index: int = -1  # `m` mind-view cursor; -1 == collapsed/none
         # Steering seam: replay just echoes; M1/M6 swaps in an engine-backed sink.
         self._sink: SteeringSink = sink if sink is not None else ReplaySink(
             self._apply_local_event
@@ -372,6 +397,11 @@ class TownHallApp(App):
         )
         self._persona_widgets: dict[str, PersonaCard] = {}
         self._item_widgets: dict[str, TurnCard | PhaseBanner | SteeringNote | ArtifactCard] = {}
+        # Transcript virtualization (FR-5.5): only the newest ``_window_size``
+        # transcript items stay mounted; ``PageUp`` widens the window and the
+        # ``_older_placeholder`` stands in for everything scrolled out above it.
+        self._window_size = TRANSCRIPT_CAP
+        self._older_placeholder: Static | None = None
         self._timer = None
         self._replay_complete: asyncio.Event | None = None
 
@@ -506,7 +536,13 @@ class TownHallApp(App):
     def _sync(self) -> None:
         """Reflect the current ``state`` across all panes (idempotent)."""
         self._header.sync()
+        self._sync_committee()
+        self._sync_transcript()
+        self._refresh_selection()
+        self._sync_controls()
 
+    def _sync_committee(self) -> None:
+        """Mount/refresh the persona cards and reflect the mind-view expansion."""
         committee = self.query_one("#committee", VerticalScroll)
         new_cards: list[PersonaCard] = []
         for name, pstate in self.state.personas.items():
@@ -519,22 +555,87 @@ class TownHallApp(App):
                 card.sync()
         if new_cards:
             committee.mount(*new_cards)
+        self._apply_mind_state()
 
+    def _sync_transcript(self) -> None:
+        """Mount the newest window of transcript cards, virtualizing the rest.
+
+        Only items in ``[window_start, total)`` stay mounted, where
+        ``window_start`` keeps the live widget count at ``_window_size`` (default
+        ``TRANSCRIPT_CAP``); anything above is unmounted behind a placeholder.
+        The mounted set is always a contiguous range, so the visible items that
+        still need a widget form either a *head* block (older cards revealed by
+        ``PageUp``, inserted above the current top) or a *tail* block (fresh
+        stream items, appended) — never a gap in the middle.
+        """
         transcript = self.query_one("#transcript", VerticalScroll)
-        new_items: list = []
-        for item in self.state.transcript:
-            widget = self._item_widgets.get(item.key)
-            if widget is None:
-                widget = self._make_item_widget(item)
-                self._item_widgets[item.key] = widget
-                new_items.append(widget)
+        items = self.state.transcript
+        total = len(items)
+        window_start = max(0, total - self._window_size)
+
+        # Unmount whatever scrolled out of the window; refresh the survivors.
+        visible_keys = {items[i].key for i in range(window_start, total)}
+        for key in list(self._item_widgets):
+            widget = self._item_widgets[key]
+            if key not in visible_keys:
+                del self._item_widgets[key]
+                widget.remove()
             else:
                 widget.sync()
-        if new_items:
-            transcript.mount(*new_items)
+
+        # The first still-mounted survivor anchors head inserts. It settled in a
+        # prior sync, so ``mount(before=...)`` is safe; None means a fresh pane
+        # where everything simply appends as a tail block.
+        top_widget = None
+        for i in range(window_start, total):
+            top_widget = self._item_widgets.get(items[i].key)
+            if top_widget is not None:
+                break
+
+        self._sync_older_placeholder(transcript, items, window_start, top_widget)
+
+        head_new: list = []
+        tail_new: list = []
+        seen_mounted = False
+        for i in range(window_start, total):
+            item = items[i]
+            if item.key in self._item_widgets:
+                seen_mounted = True
+                continue
+            widget = self._make_item_widget(item)
+            self._item_widgets[item.key] = widget
+            if seen_mounted or top_widget is None:
+                tail_new.append(widget)
+            else:
+                head_new.append(widget)
+
+        if head_new:
+            transcript.mount(*head_new, before=top_widget)
+        if tail_new:
+            transcript.mount(*tail_new)
             transcript.scroll_end(animate=False)
-        self._refresh_selection()
-        self._sync_controls()
+
+    def _sync_older_placeholder(self, transcript, items, window_start, top_widget) -> None:
+        """Keep a single '… N earlier turns' card at the top when cards are hidden."""
+        if window_start <= 0:
+            if self._older_placeholder is not None:
+                self._older_placeholder.remove()
+                self._older_placeholder = None
+            return
+        hidden_turns = sum(
+            1 for i in range(window_start) if isinstance(items[i], TurnState)
+        )
+        label = f"… {hidden_turns} earlier turns (press PageUp to load)"
+        if self._older_placeholder is None:
+            self._older_placeholder = Static(
+                label, id="older-placeholder", classes="older-placeholder"
+            )
+            if top_widget is not None:
+                transcript.mount(self._older_placeholder, before=top_widget)
+            else:
+                transcript.mount(self._older_placeholder)
+        else:
+            self._older_placeholder.update(label)
 
     @staticmethod
     def _make_item_widget(item):
@@ -584,10 +685,14 @@ class TownHallApp(App):
             self.action_toggle_thinking_selected()
         elif char == "T":
             self.action_toggle_thinking()
+        elif char == "m":
+            self.action_cycle_mind()
         elif event.key == "space":
             self.action_toggle_pause()
         elif event.key == "n":
             self.action_next_phase()
+        elif event.key == "pageup":
+            self.action_load_older()
         elif event.key == "q":
             self.action_request_quit()
         elif event.key == "enter":
@@ -617,6 +722,50 @@ class TownHallApp(App):
         widget = self._item_widgets.get(key)
         if isinstance(widget, TurnCard):
             widget.toggle_thinking()
+
+    # -- persona mind view (FR-5.2: m) ------------------------------------ #
+
+    def action_cycle_mind(self) -> None:
+        """Cycle the persona 'mind' view (``m``).
+
+        Each press focuses the next committee card and expands its inline mind
+        detail (the latest cognitive state is already on the card; the expansion
+        adds the persona's latest private-reasoning snippet). Cycling past the
+        last persona collapses the view again.
+        """
+        names = list(self.state.personas)
+        if not names:
+            return
+        self._mind_index += 1
+        if self._mind_index >= len(names):
+            self._mind_index = -1  # cycled past the last -> collapse
+        focused = self._apply_mind_state()
+        if focused is not None:
+            card = self._persona_widgets.get(focused)
+            if card is not None and card.is_mounted:
+                card.scroll_visible()
+
+    def _apply_mind_state(self) -> str | None:
+        """Expand exactly the mind-focused persona card; collapse every other."""
+        names = list(self.state.personas)
+        focused = (
+            names[self._mind_index] if 0 <= self._mind_index < len(names) else None
+        )
+        for name, card in self._persona_widgets.items():
+            should = name == focused
+            if card.expanded != should:
+                card.expanded = should
+                card.sync()
+        return focused
+
+    # -- transcript virtualization (FR-5.5: PageUp) ----------------------- #
+
+    def action_load_older(self) -> None:
+        """Reveal ~``TRANSCRIPT_RELOAD`` older transcript cards (``PageUp``)."""
+        if self._window_size >= len(self.state.transcript):
+            return  # everything is already mounted
+        self._window_size += TRANSCRIPT_RELOAD
+        self._sync()
 
     # -- turn selection (the `t`-key target) ------------------------------ #
 
@@ -755,7 +904,8 @@ class TownHallApp(App):
         else:
             status.append("▶ auto-advance", style="bold green")
         status.append(
-            "     enter compose · tab mode · t/T think · space pause · esc interrupt · q quit",
+            "     enter compose · tab mode · t/T think · m mind · space pause"
+            " · n next · PgUp older · esc interrupt · q quit",
             style="dim",
         )
         self._status_line.update(status)
