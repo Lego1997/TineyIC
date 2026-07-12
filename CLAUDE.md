@@ -11,7 +11,7 @@ TineyIC — an AI investment committee: 6 investor personas (Buffett, Munger, Gr
 ## Commands
 
 ```bash
-uv sync --all-packages                         # install (plain `uv sync` installs NEITHER workspace member -- root package has no deps; uv.lock is gitignored)
+uv sync                                        # install both workspace packages (uv.lock is committed)
 uv run streamlit run src/tinyic/ui/app.py      # run the app
 uv run pytest tests/                           # offline test suite (no API key needed)
 uv run pytest tests/test_debate.py -k name     # single test

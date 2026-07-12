@@ -21,6 +21,7 @@ PERSONA_CONFIG_FILES = {
     "peter_lynch.agent.json",
     "warren_buffett.agent.json",
 }
+PRIVATE_CLASSIFIER = "Private :: Do Not Upload"
 
 
 def _load_toml(path: Path) -> dict:
@@ -35,6 +36,18 @@ def test_plain_uv_sync_includes_both_workspace_packages():
     assert set(project["project"]["dependencies"]) >= {"tinyic", "tinytroupe"}
     assert project["tool"]["uv"]["sources"]["tinyic"] == {"workspace": True}
     assert project["tool"]["uv"]["sources"]["tinytroupe"] == {"workspace": True}
+
+
+def test_workspace_packages_fail_safe_against_registry_uploads():
+    """FR-0.4: both git-source-only packages must reject PyPI uploads."""
+    package_projects = (
+        ROOT / "src" / "tinyic" / "pyproject.toml",
+        ROOT / "src" / "tinytroupe" / "pyproject.toml",
+    )
+
+    for project_path in package_projects:
+        project = _load_toml(project_path)
+        assert PRIVATE_CLASSIFIER in project["project"]["classifiers"], project_path
 
 
 def test_uv_lock_is_not_ignored():
