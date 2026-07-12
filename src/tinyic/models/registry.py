@@ -18,6 +18,13 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
+from .adapters import (
+    anthropic_messages,
+    openai_chat,
+    openai_compatible,
+    openai_responses,
+)
+from .adapters.anthropic_messages import ANTHROPIC_THINKING_BUDGETS
 from .binding import ModelBinding
 from .credentials import CredentialProvider
 from .thinking import ThinkingLevel as _L
@@ -159,93 +166,207 @@ class ProviderRegistry:
         return len(self._providers)
 
 
-def _builtin_providers() -> tuple[Provider, ...]:
-    """The v1 bundled providers (FR-1.2), with static seed catalogs.
+# Provider endpoints and credential env-var references for the v1 key lanes
+# (M2 wires the transports here; M3 adds subscription runtimes + auth profiles).
+_OPENAI_BASE_URL = openai_chat.DEFAULT_BASE_URL
+_ANTHROPIC_BASE_URL = anthropic_messages.DEFAULT_BASE_URL
+_XAI_BASE_URL = "https://api.x.ai/v1"
+_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+_GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+_OLLAMA_BASE_URL = openai_compatible.DEFAULT_BASE_URL
 
-    Wire formats: OpenAI on canonical Chat Completions; Anthropic on Messages;
-    the remaining key-lane providers speak the OpenAI-compatible schema against
-    their own base URLs.  Subscription/Responses lanes (Codex, Claude runtime)
-    are added in M3.
+
+def _thinking_lookup(
+    models: Iterable[ModelSpec], default: ThinkingProfile
+) -> Callable[[str], ThinkingProfile]:
+    """A per-model ``ThinkingProfile`` lookup for a provider's transport factory.
+
+    Mirrors :meth:`Provider.thinking_profile` but is a standalone closure so the
+    factory (built here, before the ``Provider`` exists) stays decoupled from the
+    registry — adapters never import back into it.
     """
+    table = {spec.model_id: spec.thinking for spec in models}
+
+    def lookup(model: str) -> ThinkingProfile:
+        return table.get(model, default)
+
+    return lookup
+
+
+def _openai_dispatch_factory(
+    models: Iterable[ModelSpec],
+    default_thinking: ThinkingProfile,
+    *,
+    base_url: str,
+    credential_ref: str | None,
+) -> TransportFactory:
+    """OpenAI serves *both* wire formats — dispatch Chat vs Responses per model."""
+    models = tuple(models)
+    lookup = _thinking_lookup(models, default_thinking)
+    wire = {
+        spec.model_id: (spec.wire_format or WireFormat.OPENAI_CHAT) for spec in models
+    }
+    chat = openai_chat.make_factory(
+        base_url=base_url, credential_ref=credential_ref, thinking_lookup=lookup
+    )
+    responses = openai_responses.make_factory(
+        base_url=base_url, credential_ref=credential_ref, thinking_lookup=lookup
+    )
+
+    def factory(binding: ModelBinding, credentials: CredentialProvider) -> Transport:
+        fmt = wire.get(binding.model, WireFormat.OPENAI_CHAT)
+        chosen = responses if fmt is WireFormat.OPENAI_RESPONSES else chat
+        return chosen(binding, credentials)
+
+    return factory
+
+
+def _builtin_providers() -> tuple[Provider, ...]:
+    """The v1 bundled providers (FR-1.2), with static seed catalogs + transports.
+
+    Wire formats: OpenAI on canonical Chat Completions *and* the Responses API
+    (dispatched per model); Anthropic on Messages; xAI and DeepSeek on the
+    OpenAI Chat schema against their own base URLs; Google Gemini and local
+    Ollama on the OpenAI-compatible schema.  A native Gemini adapter is deferred
+    (smallest M2 interpretation): Gemini routes via ``openai-compatible`` and its
+    ``thinkingBudget`` degrades away if that endpoint rejects it.  Subscription
+    runtimes (Codex, Claude) and auth profiles arrive in M3.
+    """
+    openai_models = [
+        ModelSpec(
+            "gpt-5.2",
+            ThinkingProfile.effort(
+                "reasoning_effort",
+                {
+                    _L.MINIMAL: "minimal",
+                    _L.LOW: "low",
+                    _L.MEDIUM: "medium",
+                    _L.HIGH: "high",
+                    _L.XHIGH: "xhigh",
+                },
+            ),
+        ),
+        # A Responses-API model so "openai (both formats)" is reachable end to
+        # end.  Flagged subscription_only (its auth lane is M3); M2 exercises the
+        # wire routing (Chat vs Responses), which is format- not auth-driven.
+        ModelSpec(
+            "gpt-5.6-sol",
+            ThinkingProfile.nested_effort(
+                ("reasoning", "effort"),
+                {
+                    _L.MINIMAL: "minimal",
+                    _L.LOW: "low",
+                    _L.MEDIUM: "medium",
+                    _L.HIGH: "high",
+                    _L.XHIGH: "xhigh",
+                },
+            ),
+            wire_format=WireFormat.OPENAI_RESPONSES,
+            subscription_only=True,
+        ),
+    ]
+    # Unknown OpenAI models: assume a standard low/medium/high effort knob.
+    openai_default_thinking = ThinkingProfile.effort(
+        "reasoning_effort",
+        {_L.LOW: "low", _L.MEDIUM: "medium", _L.HIGH: "high"},
+    )
     openai = Provider(
         name="openai",
         wire_format=WireFormat.OPENAI_CHAT,
-        models=[
-            ModelSpec(
-                "gpt-5.2",
-                ThinkingProfile.effort(
-                    "reasoning_effort",
-                    {
-                        _L.MINIMAL: "minimal",
-                        _L.LOW: "low",
-                        _L.MEDIUM: "medium",
-                        _L.HIGH: "high",
-                        _L.XHIGH: "xhigh",
-                    },
-                ),
-            ),
-        ],
-        # Unknown OpenAI models: assume a standard low/medium/high effort knob.
-        default_thinking=ThinkingProfile.effort(
-            "reasoning_effort",
-            {_L.LOW: "low", _L.MEDIUM: "medium", _L.HIGH: "high"},
+        models=openai_models,
+        default_thinking=openai_default_thinking,
+        transport_factory=_openai_dispatch_factory(
+            openai_models,
+            openai_default_thinking,
+            base_url=_OPENAI_BASE_URL,
+            credential_ref="OPENAI_API_KEY",
         ),
     )
+
+    anthropic_models = [
+        ModelSpec(
+            "claude-opus-4-8",
+            ThinkingProfile.budget("budget_tokens", ANTHROPIC_THINKING_BUDGETS),
+        ),
+    ]
     anthropic = Provider(
         name="anthropic",
         wire_format=WireFormat.ANTHROPIC_MESSAGES,
-        models=[
-            ModelSpec(
-                "claude-opus-4-8",
-                ThinkingProfile.budget(
-                    "budget_tokens",
-                    {
-                        _L.LOW: 2048,
-                        _L.MEDIUM: 4096,
-                        _L.HIGH: 8192,
-                        _L.XHIGH: 16384,
-                        _L.MAX: 32768,
-                    },
-                ),
+        models=anthropic_models,
+        transport_factory=anthropic_messages.make_factory(
+            base_url=_ANTHROPIC_BASE_URL,
+            credential_ref="ANTHROPIC_API_KEY",
+            thinking_lookup=_thinking_lookup(
+                anthropic_models, ThinkingProfile.omitted()
             ),
-        ],
+        ),
     )
+
+    google_models = [
+        ModelSpec(
+            "gemini-2.5-pro",
+            ThinkingProfile.budget(
+                "thinkingBudget",
+                {_L.LOW: 1024, _L.MEDIUM: 8192, _L.HIGH: 24576},
+            ),
+        ),
+    ]
     google = Provider(
         name="google",
         wire_format=WireFormat.OPENAI_COMPATIBLE,
-        models=[
-            ModelSpec(
-                "gemini-2.5-pro",
-                ThinkingProfile.budget(
-                    "thinkingBudget",
-                    {_L.LOW: 1024, _L.MEDIUM: 8192, _L.HIGH: 24576},
-                ),
-            ),
-        ],
+        models=google_models,
+        transport_factory=openai_compatible.make_factory(
+            base_url=_GEMINI_OPENAI_BASE_URL,
+            credential_ref="GEMINI_API_KEY",
+            thinking_lookup=_thinking_lookup(google_models, ThinkingProfile.omitted()),
+        ),
     )
+
+    xai_models = [ModelSpec("grok-4", ThinkingProfile.omitted())]
     xai = Provider(
         name="xai",
-        wire_format=WireFormat.OPENAI_COMPATIBLE,
         # Grok reasons by default with no thinking parameter -> omit entirely.
-        models=[ModelSpec("grok-4", ThinkingProfile.omitted())],
+        wire_format=WireFormat.OPENAI_CHAT,
+        models=xai_models,
+        transport_factory=openai_chat.make_factory(
+            base_url=_XAI_BASE_URL,
+            credential_ref="XAI_API_KEY",
+            thinking_lookup=_thinking_lookup(xai_models, ThinkingProfile.omitted()),
+        ),
     )
+
+    deepseek_models = [
+        ModelSpec(
+            "deepseek-reasoner",
+            ThinkingProfile.effort(
+                "reasoning_effort",
+                {_L.LOW: "low", _L.MEDIUM: "medium", _L.HIGH: "high"},
+            ),
+        ),
+    ]
     deepseek = Provider(
         name="deepseek",
-        wire_format=WireFormat.OPENAI_COMPATIBLE,
-        models=[
-            ModelSpec(
-                "deepseek-reasoner",
-                ThinkingProfile.effort(
-                    "reasoning_effort",
-                    {_L.LOW: "low", _L.MEDIUM: "medium", _L.HIGH: "high"},
-                ),
+        wire_format=WireFormat.OPENAI_CHAT,
+        models=deepseek_models,
+        transport_factory=openai_chat.make_factory(
+            base_url=_DEEPSEEK_BASE_URL,
+            credential_ref="DEEPSEEK_API_KEY",
+            thinking_lookup=_thinking_lookup(
+                deepseek_models, ThinkingProfile.omitted()
             ),
-        ],
+        ),
     )
+
+    ollama_models = [ModelSpec("qwen3:32b", ThinkingProfile.flag("think"))]
     ollama = Provider(
         name="ollama",
         wire_format=WireFormat.OPENAI_COMPATIBLE,
-        models=[ModelSpec("qwen3:32b", ThinkingProfile.flag("think"))],
+        models=ollama_models,
+        transport_factory=openai_compatible.make_factory(
+            base_url=_OLLAMA_BASE_URL,
+            credential_ref=None,  # local, unauthenticated lane
+            thinking_lookup=_thinking_lookup(ollama_models, ThinkingProfile.omitted()),
+        ),
     )
     return (openai, anthropic, google, xai, deepseek, ollama)
 

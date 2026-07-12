@@ -334,9 +334,12 @@ def test_get_provider_unknown_names_the_registered_set():
 
 
 def test_builtin_wire_formats():
-    assert get_provider("openai").wire_format is WireFormat.OPENAI_CHAT
+    # openai + xai + deepseek speak canonical Chat Completions; anthropic
+    # speaks Messages; google (Gemini) and ollama use the compatible schema.
+    for chat in ("openai", "xai", "deepseek"):
+        assert get_provider(chat).wire_format is WireFormat.OPENAI_CHAT
     assert get_provider("anthropic").wire_format is WireFormat.ANTHROPIC_MESSAGES
-    for compatible in ("google", "xai", "deepseek", "ollama"):
+    for compatible in ("google", "ollama"):
         assert get_provider(compatible).wire_format is WireFormat.OPENAI_COMPATIBLE
 
 
@@ -373,9 +376,12 @@ def test_build_default_registry_is_isolated_from_the_shared_default():
 
 def test_provider_catalog_and_thinking_profile_fallback():
     openai = get_provider("openai")
-    assert openai.catalog() == ("gpt-5.2",)
+    # the catalog now seeds both a Chat model and a Responses model
+    assert openai.catalog() == ("gpt-5.2", "gpt-5.6-sol")
     # a listed model uses its own profile
     assert openai.thinking_profile("gpt-5.2").supports(L.XHIGH) is True
+    # the Responses model routes on the Responses wire format
+    assert openai.wire_format_for("gpt-5.6-sol") is WireFormat.OPENAI_RESPONSES
     # an unlisted model falls back to the provider default (low/medium/high)
     fallback = openai.thinking_profile("some-unlisted-model")
     assert fallback.supported == (L.LOW, L.MEDIUM, L.HIGH)
@@ -566,9 +572,39 @@ class _FakeTransport:
 
 
 def test_provider_without_transport_factory_raises_clear_error():
-    binding = ModelBinding("openai/gpt-5.2")
+    # A provider with no wired adapter (all built-ins now have one) still
+    # raises a clear NotImplementedError from the seam.
+    bare = Provider("bare", WireFormat.OPENAI_COMPATIBLE)
+    binding = ModelBinding("bare/model")
     with pytest.raises(NotImplementedError):
-        get_provider("openai").new_transport(binding, StaticCredentialProvider({}))
+        bare.new_transport(binding, StaticCredentialProvider({}))
+
+
+def test_builtin_providers_have_wired_transports():
+    # M2 stage 2: every bundled provider builds a real adapter transport.
+    creds = StaticCredentialProvider(
+        {
+            "OPENAI_API_KEY": "k",
+            "ANTHROPIC_API_KEY": "k",
+            "XAI_API_KEY": "k",
+            "DEEPSEEK_API_KEY": "k",
+            "GEMINI_API_KEY": "k",
+        }
+    )
+    refs = {
+        "openai/gpt-5.2": "OpenAIChatAdapter",
+        "openai/gpt-5.6-sol": "OpenAIResponsesAdapter",
+        "anthropic/claude-opus-4-8": "AnthropicMessagesAdapter",
+        "google/gemini-2.5-pro": "OpenAICompatibleAdapter",
+        "xai/grok-4": "OpenAIChatAdapter",
+        "deepseek/deepseek-reasoner": "OpenAIChatAdapter",
+        "ollama/qwen3:32b": "OpenAICompatibleAdapter",
+    }
+    for model_ref, adapter_name in refs.items():
+        binding = ModelBinding(model_ref)
+        transport = provider_for_binding(binding).new_transport(binding, creds)
+        assert isinstance(transport, Transport)
+        assert type(transport).__name__ == adapter_name
 
 
 def test_transport_factory_receives_binding_and_credential_seam():
