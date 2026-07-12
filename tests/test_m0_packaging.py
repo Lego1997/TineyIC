@@ -22,6 +22,23 @@ PERSONA_CONFIG_FILES = {
     "warren_buffett.agent.json",
 }
 PRIVATE_CLASSIFIER = "Private :: Do Not Upload"
+UPSTREAM_070_BASELINE_SHA256 = (
+    "d5ec7d8d9a9f4f76841372b59c4595ae76ab0303cf9939db52b08bba5cc70c39"
+)
+VENDORED_DIVERGENCES = {
+    "FORK.md",
+    "LICENSE",
+    "pyproject.toml",
+    "session.py",
+    "__init__.py",
+    "agent/tiny_person.py",
+    "clients/ollama_client.py",
+    "clients/openai_client.py",
+    "environment/tiny_world.py",
+    "extraction/results_extractor.py",
+    "utils/behavior.py",
+    "utils/config.py",
+}
 
 
 def _load_toml(path: Path) -> dict:
@@ -85,17 +102,47 @@ def test_committed_config_uses_json_api_cache():
     assert ".pickle" not in config_text.casefold()
 
 
-def test_openai_client_matches_unpatched_upstream_070():
-    """A3/B12: prove the obsolete proxy client patch vanished in the rebase."""
+def test_openai_client_has_no_obsolete_proxy_patch():
+    """A3: later documented fixes must not resurrect the removed proxy patch."""
     client_path = ROOT / "src" / "tinytroupe" / "clients" / "openai_client.py"
     client_bytes = client_path.read_bytes().replace(b"\r\n", b"\n")
-
-    assert hashlib.sha256(client_bytes).hexdigest() == (
-        "b43ee2d506a552029da868c1be8b16ae506b02282f648d729006b12339e73db0"
-    )
     client_text = client_bytes.decode("utf-8")
+
     assert "PATCH(tinyIC)" not in client_text
     assert "codex-for.me" not in client_text.casefold()
+    assert '"stream": False' in client_text
+    assert "beta.chat.completions.parse" in client_text
+
+
+def test_undiverged_vendor_files_match_pinned_upstream_manifest():
+    """All non-allowlisted files retain the verified upstream 0.7.0 bytes."""
+    vendor_root = ROOT / "src" / "tinytroupe"
+    records: list[tuple[str, str]] = []
+    for path in vendor_root.rglob("*"):
+        relative = path.relative_to(vendor_root).as_posix()
+        if (
+            not path.is_file()
+            or relative in VENDORED_DIVERGENCES
+            or "__pycache__" in path.parts
+            or any(part.endswith(".egg-info") for part in path.parts)
+            or path.suffix == ".pyc"
+        ):
+            continue
+        content = path.read_bytes()
+        blob = hashlib.sha1(
+            f"blob {len(content)}\0".encode("ascii") + content
+        ).hexdigest()
+        records.append((relative, blob))
+
+    aggregate = hashlib.sha256()
+    for relative, blob in sorted(records):
+        aggregate.update(relative.encode("utf-8"))
+        aggregate.update(b"\0")
+        aggregate.update(blob.encode("ascii"))
+        aggregate.update(b"\n")
+
+    assert len(records) == 86
+    assert aggregate.hexdigest() == UPSTREAM_070_BASELINE_SHA256
 
 
 def test_tinyic_console_entry_point_help(capsys):

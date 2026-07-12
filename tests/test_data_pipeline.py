@@ -6,7 +6,7 @@ Plan 02: filings, social, pipeline + live API integration (14+ tests)
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -797,6 +797,7 @@ class TestBuildDataPackage:
         assert pkg.social is not None
         assert pkg.research_brief is not None
         assert len(pkg.warnings) == 0
+        assert pkg.fetched_at.utcoffset() == timedelta(0)
 
     @patch("tinyic.data.pipeline.resolve_ticker")
     def test_build_data_package_invalid_ticker(self, mock_resolve):

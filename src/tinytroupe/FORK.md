@@ -37,7 +37,9 @@ TinyIC's uv workspace uses this vendored directory itself as a workspace
 member, so it needs a local setuptools wrapper with `package-dir` mapping the
 flattened source tree to the `tinytroupe` import package. The dependency set
 and package version match upstream 0.7.0; `requires-python` is narrowed from
-upstream's `>=3.10` to TinyIC's project-wide Python 3.12 requirement.
+upstream's `>=3.10` to TinyIC's project-wide Python 3.12 requirement. FR-0.4
+also adds the `Private :: Do Not Upload` classifier because v1 is distributed
+from git source and must fail safe against accidental registry publication.
 
 ### Fork documentation and license (`FORK.md`, `LICENSE`)
 
@@ -80,6 +82,57 @@ later initialization or a debate invocation fails.
 
 These divergences fix TinyIC review defect A1: repeated debates in one process
 can reuse persona and committee names without leaking process-global state.
+
+### M1 output-integrity fixes (`__init__.py`,
+`extraction/results_extractor.py`, `utils/behavior.py`, `utils/config.py`)
+
+TinyIC changes `ConfigManager.config_defaults` so an explicit positional or
+keyword `None` is preserved only for parameters mapped to
+`max_content_display_length`; in that context it means unlimited rendering.
+Other configured APIs retain upstream's `None`-means-default behavior. The
+decorator reconstructs calls from bound arguments, avoiding the upstream
+duplicate-argument error for positional `None`.
+
+Bulk result extraction isolates exceptions per agent, records `None` for the
+failed agent, and continues in input order. This prevents one provider failure
+from discarding already extracted or subsequent committee votes.
+
+Action repetition similarity uses multiset Jaccard over case-normalized token
+bigrams rather than character multisets. This preserves frequency and local
+claim order: exact and near repetition remain above the guard while reordered
+opposite claims and two distinct 1,700-character investment speeches remain
+below it. The upstream public helper names and `0.85` threshold stay
+compatible.
+
+File logging defaults to INFO in TinyIC's root configuration. The logging
+initializer now persists its root level correctly, and every console/file
+handler redacts known credential shapes and configured credential environment
+values before output; exception tracebacks are omitted from ordinary logs
+because provider bodies can embed secrets. Full prompts remain DEBUG-only.
+
+### M1 client correctness (`clients/openai_client.py`,
+`clients/ollama_client.py`)
+
+The 0.7.0 rebase already removed TinyIC's old forced-stream proxy path and
+preserved Pydantic `response_format` through OpenAI's native structured-output
+method. M1 keeps those outcomes under explicit rebase-proof tests and does not
+re-enable streaming in the legacy client; real token streaming remains owned
+by the M2 provider adapters.
+
+Request preparation is immutable so model-specific field adaptation cannot
+change retry cache keys. The shared preparation seam adds
+`stream_options={"include_usage": true}` whenever a caller explicitly requests
+streaming, allowing M2 to reuse the tested contract without a schema change.
+Local response-cache hits increment the cache-hit counter without adding the
+stored response's tokens to billable usage a second time.
+Reasoning-model requests remove unsupported optional parameters safely while
+retaining `max_completion_tokens` and native structured-output parsing.
+
+The Ollama compatibility client uses its local endpoint when the shared base
+URL is unset, copies caller messages, and adds either a generic JSON-object
+instruction or delimited JSON Schema when structured output is requested.
+Typed returns use the shared Pydantic contract, and thread-scoped cache
+invalidation lets a retry recover from a malformed structured response.
 
 ### Known session-scope limits retained from upstream
 

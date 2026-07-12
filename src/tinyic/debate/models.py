@@ -1,5 +1,6 @@
 """Pydantic data models for the debate engine."""
 
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Optional
@@ -33,6 +34,23 @@ class Confidence(str, Enum):
     MEDIUM = "MEDIUM"
     LOW = "LOW"
 
+    @classmethod
+    def _missing_(cls, value: object):
+        """Resolve confidence strings without making callers match enum case."""
+        if isinstance(value, str):
+            normalized = value.strip().upper()
+            return cls.__members__.get(normalized)
+        return None
+
+
+_VOTE_PREFIX_PATTERN = re.compile(
+    r"^\s*"
+    r"(?:(?:FINAL\s+)?(?:VOTE|VERDICT|RECOMMENDATION)\s*[:=\-]\s*)?"
+    r"(?:(?:STRONG|CONDITIONAL)\s+)?"
+    r"(?P<vote>BUY|HOLD|SELL)\b",
+    re.IGNORECASE,
+)
+
 
 class Vote(BaseModel):
     """An individual investor's final vote after debate."""
@@ -47,13 +65,13 @@ class Vote(BaseModel):
     @field_validator("vote", mode="before")
     @classmethod
     def fuzzy_match_vote(cls, v: object) -> object:
-        """Fuzzy-match vote strings like 'STRONG BUY' -> BUY."""
+        """Parse an explicit leading verdict without scanning explanatory prose."""
+        if v is None:
+            return VoteChoice.HOLD
         if isinstance(v, str):
-            upper = v.upper()
-            if "BUY" in upper:
-                return VoteChoice.BUY
-            if "SELL" in upper:
-                return VoteChoice.SELL
+            match = _VOTE_PREFIX_PATTERN.match(v)
+            if match:
+                return VoteChoice(match.group("vote").upper())
             return VoteChoice.HOLD
         return v
 

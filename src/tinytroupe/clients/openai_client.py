@@ -135,6 +135,23 @@ class OpenAIClient(LLMCacheBase):
 
         return candidate
 
+    @staticmethod
+    def _prepare_chat_api_params(chat_api_params):
+        """Return an immutable, wire-ready copy of chat request parameters.
+
+        TinyIC's future streaming adapters reuse this preparation contract.
+        The legacy ``send_message`` path still supplies ``stream=False``;
+        this method does not turn streaming on.  It only guarantees that an
+        explicitly streamed request asks OpenAI to include authoritative usage
+        in the final chunk.
+        """
+        prepared = dict(chat_api_params)
+        if prepared.get("stream") is True:
+            stream_options = dict(prepared.get("stream_options") or {})
+            stream_options["include_usage"] = True
+            prepared["stream_options"] = stream_options
+        return prepared
+
     def _reset_cost_stats(self):
         """
         Resets the cost statistics to zero.
@@ -282,6 +299,7 @@ class OpenAIClient(LLMCacheBase):
 
         # remove any parameter that is None, so we use the API defaults
         chat_api_params = {k: v for k, v in chat_api_params.items() if v is not None}
+        chat_api_params = self._prepare_chat_api_params(chat_api_params)
 
         i = 0
         while i < max_attempts:
@@ -405,19 +423,19 @@ class OpenAIClient(LLMCacheBase):
         Calls the OpenAI API with the given parameters. Subclasses should
         override this method to implement their own API calls.
         """
+        # Model-specific adaptation below removes unsupported fields. Work on
+        # a copy so retries keep a stable logical request and cache key.
+        chat_api_params = self._prepare_chat_api_params(chat_api_params)
+
         # adjust parameters depending on the model
         if self._is_reasoning_model(model):
             # Reasoning models have slightly different parameters
-            del chat_api_params["stream"]
-            del chat_api_params["temperature"]
-            del chat_api_params["top_p"]
-            del chat_api_params["frequency_penalty"]
-            del chat_api_params["presence_penalty"]
-
-            chat_api_params["max_completion_tokens"] = chat_api_params[
-                "max_completion_tokens"
-            ]
-            del chat_api_params["max_completion_tokens"]
+            chat_api_params.pop("stream", None)
+            chat_api_params.pop("stream_options", None)
+            chat_api_params.pop("temperature", None)
+            chat_api_params.pop("top_p", None)
+            chat_api_params.pop("frequency_penalty", None)
+            chat_api_params.pop("presence_penalty", None)
 
             chat_api_params["reasoning_effort"] = config_manager.get("reasoning_effort")
 
@@ -437,6 +455,7 @@ class OpenAIClient(LLMCacheBase):
 
             if "stream" in chat_api_params:
                 del chat_api_params["stream"]
+            chat_api_params.pop("stream_options", None)
 
             logger.debug(
                 f"Calling LLM model (using .parse too) with these parameters: {logged_params}. Not showing 'messages' parameter."
@@ -680,8 +699,12 @@ class OpenAIClient(LLMCacheBase):
         with self._cost_stats_lock:
             if was_cached:
                 self._cached_calls += 1
-            else:
-                self._model_calls += 1
+                # A local response-cache hit makes no provider request. Its
+                # stored usage metadata describes the original call and must
+                # not be counted or priced a second time.
+                return
+
+            self._model_calls += 1
 
             # Extract token usage from response if available
             if hasattr(response, "usage") and response.usage is not None:
