@@ -134,6 +134,32 @@ instruction or delimited JSON Schema when structured output is requested.
 Typed returns use the shared Pydantic contract, and thread-scoped cache
 invalidation lets a retry recover from a malformed structured response.
 
+### M2 binding-routing hook (`clients/__init__.py`)
+
+`client()` gains one optional resolver hook (`set_client_resolver`). The
+resolver is consulted first and, when it returns a client-like object, that
+object is used in place of the configured process-global client; returning
+`None` (the inert default when no resolver is installed) preserves the legacy
+path byte-for-byte. This is the single seam that lets the M2 model layer route
+each persona's act loop and the aggregator's extraction/memo calls — both of
+which reach the LLM through the module-level `client()` in
+`agent/action_generator.py` and `extraction/results_extractor.py` — to their
+own `ModelBinding`-backed client without editing those call sites. TinyIC
+installs a resolver reading a context-scoped active binding client
+(`tinyic.models.routing`); nothing in upstream uses the hook. The legacy
+global `client()` remains the default-binding fallback until M6 removes it.
+
+### M2 file-logging default (`config.ini`)
+
+`LOGLEVEL_FILE` in the vendored default config is changed from `DEBUG` to
+`INFO`. Config resolution overlays the vendored `src/tinytroupe/config.ini`
+first, so a process whose working directory is the vendored package (or any
+directory without a `config.ini` override) previously defaulted file logging to
+DEBUG, which persists full prompt dumps to a `tinytroupe.<timestamp>.log` file.
+Defaulting to INFO closes that cwd-gated prompt-to-disk leak (review D2) so the
+divergence matches TinyIC's root `config.ini`; prompts remain DEBUG-only and
+gated behind an explicit debug flag rather than the current directory.
+
 ### Known session-scope limits retained from upstream
 
 M0 scopes the TinyIC debate path and the core agent/world complete-state APIs.

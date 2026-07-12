@@ -22,16 +22,43 @@ PERSONA_CONFIG_FILES = {
     "warren_buffett.agent.json",
 }
 PRIVATE_CLASSIFIER = "Private :: Do Not Upload"
+# Pinned manifest of the vendored subtree. To regenerate after adding a file to
+# VENDORED_DIVERGENCES (the documented procedure), recompute the aggregate over
+# every non-allowlisted, non-cache file exactly as
+# test_undiverged_vendor_files_match_pinned_upstream_manifest does, then update
+# both VENDORED_FILE_COUNT and UPSTREAM_070_BASELINE_SHA256 below:
+#
+#   python - <<'PY'
+#   import hashlib; from pathlib import Path
+#   root = Path("src/tinytroupe")
+#   recs = []
+#   for p in root.rglob("*"):
+#       rel = p.relative_to(root).as_posix()
+#       if (not p.is_file() or rel in VENDORED_DIVERGENCES
+#               or "__pycache__" in p.parts or p.suffix == ".pyc"
+#               or any(x.endswith(".egg-info") for x in p.parts)):
+#           continue
+#       b = p.read_bytes()
+#       recs.append((rel, hashlib.sha1(f"blob {len(b)}\0".encode()+b).hexdigest()))
+#   agg = hashlib.sha256()
+#   for rel, blob in sorted(recs):
+#       agg.update(rel.encode()); agg.update(b"\0")
+#       agg.update(blob.encode()); agg.update(b"\n")
+#   print(len(recs), agg.hexdigest())
+#   PY
 UPSTREAM_070_BASELINE_SHA256 = (
-    "d5ec7d8d9a9f4f76841372b59c4595ae76ab0303cf9939db52b08bba5cc70c39"
+    "ae4f9be6044110b71a2a9df3f7821d54bea9b2f35569369090eef97f455b546b"
 )
+VENDORED_FILE_COUNT = 84
 VENDORED_DIVERGENCES = {
     "FORK.md",
     "LICENSE",
     "pyproject.toml",
+    "config.ini",
     "session.py",
     "__init__.py",
     "agent/tiny_person.py",
+    "clients/__init__.py",
     "clients/ollama_client.py",
     "clients/openai_client.py",
     "environment/tiny_world.py",
@@ -141,7 +168,7 @@ def test_undiverged_vendor_files_match_pinned_upstream_manifest():
         aggregate.update(blob.encode("ascii"))
         aggregate.update(b"\n")
 
-    assert len(records) == 86
+    assert len(records) == VENDORED_FILE_COUNT
     assert aggregate.hexdigest() == UPSTREAM_070_BASELINE_SHA256
 
 
