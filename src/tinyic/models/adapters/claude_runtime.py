@@ -54,7 +54,11 @@ from ..types import (
     Usage,
     UsageLimitError,
 )
-from .anthropic_messages import ANTHROPIC_THINKING_BUDGETS, finish_from_anthropic
+from .anthropic_messages import (
+    ANTHROPIC_BUDGET_MODELS,
+    ANTHROPIC_THINKING_BUDGETS,
+    finish_from_anthropic,
+)
 
 
 CLAUDE_CODE_OAUTH_TOKEN_REF = "CLAUDE_CODE_OAUTH_TOKEN"
@@ -202,9 +206,17 @@ def _prompt_text(messages: Sequence[ChatMessage]) -> str:
 
 
 def _thinking_budget(binding: ModelBinding) -> int | None:
-    # The catalog and HTTP adapter share this table.  Config validation already
-    # rejects unsupported Anthropic levels; runtime remapping happens before a
-    # binding reaches this transport.  OFF/unknown means omit the control.
+    # This lane mirrors the HTTP adapter's two thinking schemes via the shared
+    # anthropic_messages tables: only legacy budget-scheme models (haiku)
+    # receive a max-thinking-tokens control.  Adaptive/effort-scheme models
+    # (fable-5 / opus-4-8 / sonnet-5) reject budget_tokens with a 400, so the
+    # official runtime keeps its default adaptive thinking and the control is
+    # omitted; unknown models omit too, matching the registry's conservative
+    # default.  Config validation already rejects unsupported Anthropic
+    # levels; runtime remapping happens before a binding reaches this
+    # transport.  OFF/unknown level means omit the control.
+    if binding.model not in ANTHROPIC_BUDGET_MODELS:
+        return None
     return ANTHROPIC_THINKING_BUDGETS.get(ThinkingLevel(binding.thinking_level))
 
 

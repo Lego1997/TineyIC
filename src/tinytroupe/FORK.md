@@ -119,6 +119,13 @@ stream. Routing the handler to STDERR keeps STDOUT clean while human-readable
 progress and diagnostics stay on STDERR. This is the only behavioral change to
 this file for M6.
 
+v2.1 extends `CredentialRedactionFilter._CREDENTIAL_ENV_VARS` with the new
+Kimi (Moonshot AI) credentials `MOONSHOT_API_KEY` and `KIMI_API_KEY` so the
+logging backstop covers every provider the v2.1 auth manager resolves.
+`DEEPSEEK_API_KEY` stays listed even though DeepSeek left the product: a
+user's shell may still export it, and redacting a stale env secret costs
+nothing.
+
 ### M1 client correctness (`clients/openai_client.py`,
 `clients/ollama_client.py`)
 

@@ -218,11 +218,13 @@ def test_probe_reports_missing_corrupt_expired_and_ok(tmp_path):
     )
     assert probe_grok_auth(expired, now=NOW).reason is GrokAuthReason.EXPIRED
 
-    # An expired access token with a refresh token is still a usable lane.
+    # An expired access token is expired even when the file carries a refresh
+    # token: TinyIC never redeems the CLI's refresh token, so read-through
+    # usability rests on the access token alone.
     refreshable = _write_auth_file(
         tmp_path / "refreshable.json", expires_at=NOW - 10
     )
-    assert probe_grok_auth(refreshable, now=NOW).ok
+    assert probe_grok_auth(refreshable, now=NOW).reason is GrokAuthReason.EXPIRED
 
     ok = _write_auth_file(tmp_path / "ok.json")
     probe = probe_grok_auth(ok, now=NOW)
@@ -244,14 +246,22 @@ def test_profile_secret_probe_mirrors_the_file_probe():
     assert probe_grok_profile_secret(dead, now=NOW).reason is (
         GrokAuthReason.EXPIRED
     )
+    # Unlike the read-through file, a TinyIC-owned document with a refresh
+    # token stays usable when stale: TinyIC owns that grant and may redeem it.
+    refreshable = tokens_to_profile_secret(GrokTokens("a", "r", NOW - 5))
+    assert probe_grok_profile_secret(refreshable, now=NOW).ok
 
 
 # --------------------------------------------------------------------------
-# refresh + skew, and the never-writes guarantee
+# refresh + skew, and the read-through ownership boundary
 # --------------------------------------------------------------------------
 
 
-def test_refresh_applies_the_two_minute_skew(tmp_path):
+def _profile_secret_loader(secret: str):
+    return profile_token_loader(lambda: secret)
+
+
+def test_refresh_applies_the_two_minute_skew():
     calls: list[dict[str, str]] = []
 
     def http_post(url: str, form):
@@ -262,46 +272,114 @@ def test_refresh_applies_the_two_minute_skew(tmp_path):
             "expires_in": 3600,
         }
 
-    path = _write_auth_file(tmp_path / "auth.json", expires_at=NOW + 90)
+    near = tokens_to_profile_secret(GrokTokens("a", "own-refresh", NOW + 90))
     source = GrokTokenSource(
-        file_token_loader(path), http_post=http_post, clock=lambda: NOW
+        _profile_secret_loader(near), http_post=http_post, clock=lambda: NOW
     )
     # 90s from expiry is inside the 120s skew: refresh must fire.
     assert source.access_token() == "fresh-access"
     assert calls and calls[0]["grant_type"] == "refresh_token"
-    assert calls[0]["refresh_token"] == "grok-refresh-token"
+    assert calls[0]["refresh_token"] == "own-refresh"
 
     calls.clear()
-    far = _write_auth_file(tmp_path / "far.json", expires_at=NOW + 600)
+    far = tokens_to_profile_secret(GrokTokens("far-access", "r", NOW + 600))
     relaxed = GrokTokenSource(
-        file_token_loader(far), http_post=http_post, clock=lambda: NOW
+        _profile_secret_loader(far), http_post=http_post, clock=lambda: NOW
     )
-    assert relaxed.access_token() == "grok-access-token"
+    assert relaxed.access_token() == "far-access"
     assert calls == []  # comfortably fresh: no refresh traffic
 
 
-def test_readthrough_refresh_never_writes_the_cli_auth_file(tmp_path):
+def test_readthrough_never_redeems_the_cli_refresh_token(tmp_path):
+    """FR-2.2 regression: redemption rotates the CLI's refresh token
+    server-side, so the read-through lane must report ``expired`` instead of
+    ever calling the refresh grant — and, of course, never write the file."""
+
     path = _write_auth_file(tmp_path / ".grok" / "auth.json", expires_at=NOW - 5)
     original = path.read_bytes()
     # Write-protect the file and its directory: any write attempt would raise.
     os.chmod(path, stat.S_IRUSR)
     os.chmod(path.parent, stat.S_IRUSR | stat.S_IXUSR)
+
+    def forbidden_post(url, form):
+        raise AssertionError(
+            "read-through lane redeemed the grok CLI's refresh token"
+        )
+
     try:
         source = GrokTokenSource(
             file_token_loader(path),
-            http_post=lambda url, form: {
-                "access_token": "refreshed",
-                "expires_in": 60,
-            },
+            http_post=forbidden_post,
             clock=lambda: NOW,
+            allow_refresh=False,
         )
-        assert source.access_token() == "refreshed"
-        # Second call reuses the in-memory token (still inside its window).
-        assert source.access_token() == "refreshed"
+        with pytest.raises(GrokTokenError) as excinfo:
+            source.access_token()
+        assert excinfo.value.reason is GrokAuthReason.EXPIRED
+        assert "grok-refresh-token" not in str(excinfo.value)
     finally:
         os.chmod(path.parent, stat.S_IRWXU)
         os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
     assert path.read_bytes() == original
+
+
+def test_readthrough_transport_reports_expired_without_a_refresh_grant(tmp_path):
+    """End to end through the transport: a stale ~/.grok/auth.json (refresh
+    token present) is a fixed-message AuthError, with zero OAuth traffic."""
+
+    path = _write_auth_file(tmp_path / "auth.json", expires_at=NOW - 5)
+
+    def forbidden_post(url, form):
+        raise AssertionError(
+            "read-through transport redeemed the grok CLI's refresh token"
+        )
+
+    transport = GrokSubscriptionTransport(
+        ModelBinding("grok/grok-4.5", thinking_level=ThinkingLevel.HIGH),
+        _readthrough_candidate(),
+        auth_path=path,
+        http_post=forbidden_post,
+        clock=lambda: NOW,
+        environ={},
+    )
+    request = ChatRequest(
+        [ChatMessage(Role.USER, "hi")],
+        ModelBinding("grok/grok-4.5", thinking_level=ThinkingLevel.HIGH),
+        stream=False,
+    )
+    with pytest.raises(AuthError, match="expired"):
+        list(transport.generate(request))
+
+
+def test_token_source_refreshes_from_the_rotated_refresh_token():
+    """A server that rotates refresh tokens on use must see the rotated token
+    on the second refresh, not a replay of the original (already-consumed)
+    one from the unchanged underlying document."""
+
+    stale = tokens_to_profile_secret(GrokTokens("old", "original-refresh", NOW - 5))
+    forms: list[dict[str, str]] = []
+
+    def http_post(url: str, form):
+        forms.append(dict(form))
+        count = len(forms)
+        return {
+            "access_token": f"access-{count}",
+            "refresh_token": f"rotated-{count}",
+            "expires_in": 60,
+        }
+
+    clock_values = iter([NOW, NOW + 3600])
+    source = GrokTokenSource(
+        _profile_secret_loader(stale),
+        http_post=http_post,
+        clock=lambda: next(clock_values),
+    )
+    assert source.access_token() == "access-1"
+    assert source.access_token() == "access-2"  # first token's TTL passed
+    assert [form["refresh_token"] for form in forms] == [
+        "original-refresh",
+        "rotated-1",
+    ]
 
 
 def test_refresh_failures_are_reason_coded_and_secret_free():
@@ -723,6 +801,69 @@ def test_oauth_profile_candidate_feeds_the_stored_token_document(tmp_path):
     )
     list(transport.generate(request))
     assert http.sent[0].headers["authorization"] == "Bearer stored-access"
+
+
+def test_oauth_lane_persists_rotated_tokens_back_to_the_profile_store(tmp_path):
+    """TinyIC owns GROK_OAUTH documents: after a refresh rotates the refresh
+    token, the stored profile must hold the rotated document so the next
+    process never replays the consumed one."""
+
+    stale = tokens_to_profile_secret(
+        GrokTokens("old-access", "old-refresh", NOW - 5)
+    )
+    store = _store(tmp_path, _oauth_profile(stale))
+    manager = AuthManager(store, environ={})
+    binding = ModelBinding("grok/grok-4.5", thinking_level=ThinkingLevel.HIGH)
+    (candidate,) = manager.candidates(binding)
+
+    oauth_forms: list[dict[str, str]] = []
+
+    def http_post(url: str, form):
+        oauth_forms.append(dict(form))
+        return {
+            "access_token": "new-access",
+            "refresh_token": "rotated-refresh",
+            "expires_in": 3600,
+        }
+
+    http = ScriptedHttp(FakeResponse(200, _completion_body()))
+    transport = GrokSubscriptionTransport(
+        binding,
+        candidate,
+        http_post=http_post,
+        clock=lambda: NOW,
+        http=http,
+        environ={},
+    )
+    request = ChatRequest([ChatMessage(Role.USER, "hi")], binding, stream=False)
+    list(transport.generate(request))
+
+    assert oauth_forms and oauth_forms[0]["refresh_token"] == "old-refresh"
+    assert http.sent[0].headers["authorization"] == "Bearer new-access"
+    stored = store.get("grok:supergrok")
+    tokens = tokens_from_profile_secret(stored.secret)
+    assert tokens.access_token == "new-access"
+    assert tokens.refresh_token == "rotated-refresh"
+
+
+def test_subscription_lane_omits_reasoning_for_out_of_catalog_models(tmp_path):
+    """Same capability gate as the key lane: an out-of-catalog model gets the
+    reasoning parameter omitted, never the catalog models' effort dial."""
+
+    path = _write_auth_file(tmp_path / "auth.json")
+    http = ScriptedHttp(FakeResponse(200, _completion_body()))
+    binding = ModelBinding("grok/grok-4", thinking_level=ThinkingLevel.HIGH)
+    transport = GrokSubscriptionTransport(
+        binding,
+        _readthrough_candidate(),
+        auth_path=path,
+        clock=lambda: NOW,
+        http=http,
+        environ={},
+    )
+    request = ChatRequest([ChatMessage(Role.USER, "hi")], binding, stream=False)
+    list(transport.generate(request))
+    assert "reasoning_effort" not in http.sent[0].body
 
 
 # --------------------------------------------------------------------------

@@ -50,6 +50,19 @@ DEFAULT_MAX_TOKENS = 4096
 #: Minimum room reserved for the visible answer when extended thinking is on.
 MIN_ANSWER_TOKENS = 1024
 
+#: Catalog models on the adaptive/effort scheme — they **reject**
+#: ``budget_tokens`` with a 400.  The registry and the subscription runtime
+#: lane (:mod:`.claude_runtime`) both consume these tuples, so every lane
+#: agrees on which scheme a model speaks.
+ANTHROPIC_ADAPTIVE_MODELS: tuple[str, ...] = (
+    "claude-fable-5",
+    "claude-opus-4-8",
+    "claude-sonnet-5",
+)
+
+#: Catalog models still on the legacy ``budget_tokens`` scheme.
+ANTHROPIC_BUDGET_MODELS: tuple[str, ...] = ("claude-haiku-4-5",)
+
 #: Documented normalized-level → extended-thinking budget (tokens) for the
 #: legacy budget scheme (claude-haiku-4-5).  The registry's haiku profile is
 #: built from this exact table so the capability gate and the wire never drift.
@@ -273,6 +286,8 @@ def make_factory(
 
 __all__ = [
     "ANTHROPIC_ADAPTIVE_EFFORTS",
+    "ANTHROPIC_ADAPTIVE_MODELS",
+    "ANTHROPIC_BUDGET_MODELS",
     "ANTHROPIC_THINKING_BUDGETS",
     "ANTHROPIC_VERSION",
     "AnthropicMessagesAdapter",

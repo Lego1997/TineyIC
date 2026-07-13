@@ -328,6 +328,9 @@ def test_configured_key_makes_selected_preset_ready_without_live_network(
         manager=manager,
         openai_probe=lambda: "runtime_unavailable",
         anthropic_probe=lambda: "runtime_unavailable",
+        # Offline suite: never let the default probe read the
+        # developer's real ~/.grok/auth.json.
+        grok_probe=lambda: "missing_credential",
         live_probe=lambda binding, candidate: live_calls.append(candidate.ref) or "ok",
         runtime_locator=lambda _command: None,
     )
@@ -363,6 +366,7 @@ def test_live_probe_is_explicit_one_token_seam_and_failure_text_is_sanitized(
         live=True,
         openai_probe=lambda: "runtime_unavailable",
         anthropic_probe=lambda: "runtime_unavailable",
+        grok_probe=lambda: "missing_credential",
         live_probe=failing_live,
         runtime_locator=lambda _command: None,
     )
@@ -396,6 +400,7 @@ def test_subscription_only_openai_requires_configured_profile_and_viable_codex(
         manager=_manager(tmp_path, profile),
         openai_probe=lambda: calls.append(True) or "runtime_unavailable",
         anthropic_probe=lambda: "runtime_unavailable",
+        grok_probe=lambda: "missing_credential",
         runtime_locator=lambda command: "/fake/codex" if command == "codex" else None,
     )
 
@@ -437,6 +442,7 @@ def test_anthropic_policy_disabled_precedes_token_and_runtime_inspection(tmp_pat
         ),
         openai_probe=lambda: "runtime_unavailable",
         anthropic_probe=forbidden_probe,
+        grok_probe=lambda: "missing_credential",
         runtime_locator=lambda _command: None,
     )
 
@@ -476,6 +482,7 @@ def test_named_claude_setup_token_is_probed_as_the_selected_candidate(tmp_path):
         manager=_manager(tmp_path, profile),
         openai_probe=lambda: "runtime_unavailable",
         anthropic_probe=candidate_probe,
+        grok_probe=lambda: "missing_credential",
         runtime_locator=lambda _command: None,
     )
 
@@ -499,6 +506,7 @@ def test_doctor_reports_unsupported_thinking_level_instead_of_raising(tmp_path):
         manager=_manager(tmp_path, environ={"OPENAI_API_KEY": "opaque"}),
         openai_probe=lambda: "runtime_unavailable",
         anthropic_probe=lambda: "runtime_unavailable",
+        grok_probe=lambda: "missing_credential",
         runtime_locator=lambda _command: None,
     )
 
@@ -530,6 +538,7 @@ def test_expired_profile_has_reason_code_without_exposing_secret(tmp_path):
         manager=_manager(tmp_path, expired),
         openai_probe=lambda: "runtime_unavailable",
         anthropic_probe=lambda: "runtime_unavailable",
+        grok_probe=lambda: "missing_credential",
         runtime_locator=lambda _command: None,
     )
 
@@ -552,6 +561,7 @@ def test_malformed_auth_profile_config_is_never_echoed(tmp_path):
         manager=_manager(tmp_path),
         openai_probe=lambda: "runtime_unavailable",
         anthropic_probe=lambda: "runtime_unavailable",
+        grok_probe=lambda: "missing_credential",
         runtime_locator=lambda _command: None,
     )
 
@@ -572,6 +582,7 @@ def test_invalid_preset_shape_is_reason_coded_instead_of_raising(tmp_path):
         manager=_manager(tmp_path),
         openai_probe=lambda: "runtime_unavailable",
         anthropic_probe=lambda: "runtime_unavailable",
+        grok_probe=lambda: "missing_credential",
         runtime_locator=lambda _command: None,
     )
 

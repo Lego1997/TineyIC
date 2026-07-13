@@ -317,6 +317,60 @@ def test_kimi_environment_fallback_prefers_moonshot_then_kimi_env_var(
     assert caught.value.reason_code == "missing_credential"
 
 
+def test_documented_env_alias_reaches_the_adapters_hardcoded_ref(
+    tmp_path: Path,
+) -> None:
+    """Regression: a user who followed the docs and set only KIMI_API_KEY (or
+    GOOGLE_API_KEY) must satisfy the adapter, which asks the candidate for the
+    provider's primary ref (MOONSHOT_API_KEY / GEMINI_API_KEY)."""
+
+    store = make_store(tmp_path)
+
+    kimi = AuthManager(store, environ={"KIMI_API_KEY": "kimi-secret"})
+    (candidate,) = kimi.candidates(ModelBinding("kimi/kimi-k2.6"))
+    # The adapter's factory hardcodes credential_ref="MOONSHOT_API_KEY".
+    assert candidate("MOONSHOT_API_KEY") == "kimi-secret"
+    # Scoping stays provider-local: unrelated refs still resolve to nothing.
+    assert candidate("OPENAI_API_KEY") is None
+
+    google = AuthManager(store, environ={"GOOGLE_API_KEY": "google-secret"})
+    (candidate,) = google.candidates(ModelBinding("google/gemini-3.5-flash"))
+    assert candidate("GEMINI_API_KEY") == "google-secret"
+
+    # A stored API-key profile answers the alias set too.
+    stored = AuthManager(
+        make_store(tmp_path, api_profile("kimi:main", "stored-secret")),
+        environ={},
+    )
+    stored.store.set_auth_order("kimi", ["kimi:main"])
+    (candidate,) = stored.candidates(ModelBinding("kimi/kimi-k2.6"))
+    assert candidate("MOONSHOT_API_KEY") == "stored-secret"
+    assert candidate("KIMI_API_KEY") == "stored-secret"
+
+
+def test_kimi_adapter_resolves_a_kimi_alias_key_end_to_end(
+    tmp_path: Path,
+) -> None:
+    """The exact seam that used to fail: KimiChatAdapter._resolve_key asks for
+    MOONSHOT_API_KEY while the env fallback matched KIMI_API_KEY."""
+
+    from tinyic.models.adapters.kimi_chat import DEFAULT_BASE_URL, KimiChatAdapter
+
+    manager = AuthManager(
+        make_store(tmp_path), environ={"KIMI_API_KEY": "kimi-alias-secret"}
+    )
+    binding = ModelBinding("kimi/kimi-k2.6")
+    (candidate,) = manager.candidates(binding)
+    adapter = KimiChatAdapter(
+        binding,
+        candidate,
+        base_url=DEFAULT_BASE_URL,
+        credential_ref="MOONSHOT_API_KEY",
+    )
+
+    assert adapter._resolve_key() == "kimi-alias-secret"
+
+
 @pytest.mark.parametrize(
     ("provider", "model", "first_kind", "second_kind"),
     [

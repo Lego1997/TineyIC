@@ -79,11 +79,25 @@ class AuthCandidate:
     as ``credentials``; API-key adapters therefore receive exactly the selected
     named key when they ask for their historical environment reference.
     Runtime-owned, secretless subscription profiles naturally return ``None``.
+
+    ``alias_refs`` holds the provider's *other* configured environment
+    references (e.g. Kimi's ``MOONSHOT_API_KEY``/``KIMI_API_KEY`` pair, or
+    Google's ``GEMINI_API_KEY``/``GOOGLE_API_KEY``): the candidate is already
+    scoped to one provider, so an adapter asking under any of that provider's
+    documented names receives the one selected secret rather than a spurious
+    "missing credential".
+
+    ``persist_secret`` is the write-back seam for TinyIC-*owned* rotating
+    token documents (currently ``GROK_OAUTH``): after an in-memory refresh
+    rotates the stored document, the transport persists the new secret
+    through it so the profile store never replays a consumed refresh token.
     """
 
     profile: AuthProfile
     source: Literal["profile", "environment"] = "profile"
     credential_ref: str | None = None
+    alias_refs: tuple[str, ...] = ()
+    persist_secret: Callable[[str], None] | None = None
 
     @property
     def ref(self) -> str:
@@ -104,10 +118,10 @@ class AuthCandidate:
     def __call__(self, ref: str) -> str | None:
         if not ref or self.profile.secret is None:
             return None
-        # A candidate is already scoped to one bound provider.  Accept both its
-        # named ref and the adapter's historical env-var ref without exposing
-        # other manager/store credentials to that adapter.
-        if ref not in {self.ref, self.credential_ref}:
+        # A candidate is already scoped to one bound provider.  Accept its
+        # named ref and any of the provider's documented env-var refs without
+        # exposing other manager/store credentials to that adapter.
+        if ref not in {self.ref, self.credential_ref} and ref not in self.alias_refs:
             return None
         value = self.profile.secret.strip()
         return value or None
@@ -338,6 +352,8 @@ class AuthManager:
                 AuthCandidate(
                     profile,
                     credential_ref=self._profile_credential_ref(profile),
+                    alias_refs=self._profile_alias_refs(profile),
+                    persist_secret=self._profile_secret_writer(profile),
                 )
             )
 
@@ -385,6 +401,7 @@ class AuthManager:
                             transient,
                             source="environment",
                             credential_ref=env_ref,
+                            alias_refs=self._provider_env_refs.get(provider, ()),
                         )
                     )
 
@@ -473,7 +490,7 @@ class AuthManager:
         return None, None
 
     def _profile_credential_ref(self, profile: AuthProfile) -> str | None:
-        """Return the sole adapter ref allowed to receive this profile secret."""
+        """Return the primary adapter ref allowed to receive this secret."""
 
         if profile.kind is ProfileKind.CLAUDE_OAUTH_TOKEN:
             return CLAUDE_CODE_OAUTH_TOKEN_REF
@@ -481,6 +498,36 @@ class AuthManager:
             refs = self._provider_env_refs.get(profile.provider, ())
             return refs[0] if refs else None
         return None
+
+    def _profile_alias_refs(self, profile: AuthProfile) -> tuple[str, ...]:
+        """Every documented env ref an adapter may use for this provider's key."""
+
+        if profile.kind is ProfileKind.API_KEY:
+            return self._provider_env_refs.get(profile.provider, ())
+        return ()
+
+    def _profile_secret_writer(
+        self, profile: AuthProfile
+    ) -> Callable[[str], None] | None:
+        """A write-back seam for TinyIC-owned rotating token documents.
+
+        Only ``GROK_OAUTH`` documents rotate today: the OAuth server may
+        rotate the refresh token on redemption, so the refreshed document
+        must replace the stored one or the next process replays a consumed
+        refresh token.  Read-through/runtime kinds return ``None`` — their
+        credentials belong to external tools and are never written.
+        """
+
+        if profile.kind is not ProfileKind.GROK_OAUTH:
+            return None
+        store = self.store
+
+        def write(secret: str) -> None:
+            from dataclasses import replace
+
+            store.put(replace(profile, secret=secret))
+
+        return write
 
     @staticmethod
     def _runtime_owner(profile: AuthProfile) -> str | None:

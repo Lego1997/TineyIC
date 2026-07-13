@@ -5,10 +5,16 @@ between read-through inspection and a wizard-driven login):
 
 * **Read-through** (``ProfileKind.GROK_READTHROUGH``) — the official xAI CLI
   ("grok" / Grok Build) caches its OAuth tokens in ``~/.grok/auth.json``.
-  TinyIC *reads* that file to reuse an existing sign-in and NEVER writes,
-  refreshes-in-place, or rotates it: a stale access token is refreshed
-  **in memory only, per session**, so the CLI's own file stays byte-identical
-  (the same ownership discipline as the Codex lane).
+  TinyIC *reads* that file to reuse an existing sign-in and NEVER writes it —
+  and, just as importantly, NEVER redeems the CLI's refresh token.  Redeeming
+  a copied refresh token is a server-side rotation event: if the issuer
+  rotates refresh tokens on use (the OAuth 2.1 BCP for public clients), the
+  token still stored in the CLI's file is invalidated the moment TinyIC
+  redeems it, logging the user out of their own CLI without touching a byte
+  of the file (the FR-2.2 hazard; the Codex lane's ``refreshToken: false``
+  discipline, applied here).  A stale file token is therefore reported as
+  ``expired`` — the fix is to run the grok CLI once (it refreshes its own
+  file) or to use the TinyIC-owned device-code lane below.
 * **TinyIC-owned OAuth** (``ProfileKind.GROK_OAUTH``) — the onboarding wizard
   runs an RFC 8628 device-code flow (plus PKCE S256, matching the official
   client's flow) against ``https://auth.x.ai`` using the *public* desktop
@@ -358,9 +364,12 @@ def refresh_grok_tokens(
 ) -> GrokTokens:
     """Exchange a refresh token for a fresh token set — in memory only.
 
-    This never persists anything: read-through callers must leave the CLI's
-    file untouched, and profile-owned callers persist through the profile
-    store explicitly if they choose to.
+    This is for TinyIC-*owned* token documents (``GROK_OAUTH``) exclusively:
+    redeeming someone else's refresh token can rotate/invalidate it
+    server-side, so the read-through lane must never call this (it disables
+    refresh via ``GrokTokenSource(allow_refresh=False)``).  Nothing here
+    persists anything; profile-owned callers persist the returned (possibly
+    rotated) token set through the profile store.
     """
 
     if not tokens.refresh_token:
@@ -424,9 +433,21 @@ class GrokTokenSource:
     """An in-memory access-token cache with skewed, session-local refresh.
 
     ``loader`` re-reads the underlying source (CLI file or stored profile) so
-    an externally refreshed CLI login is picked up; when the loaded token is
-    stale, the refresh grant runs and the result is cached **in memory only**.
-    Nothing here ever writes a file or the profile store.
+    an externally refreshed sign-in is picked up.  When the loaded token is
+    stale, behavior depends on ownership:
+
+    * ``allow_refresh=False`` (the read-through lane over the grok CLI's
+      file): the refresh grant is **never** run — redeeming the CLI's refresh
+      token could rotate/invalidate it server-side and log the user's own CLI
+      out.  A stale token raises ``expired`` instead.
+    * ``allow_refresh=True`` (TinyIC-owned ``GROK_OAUTH`` documents): the
+      refresh grant runs against the *cached* token set when the underlying
+      source is unchanged, so a refresh token the server rotated on a previous
+      redemption is reused rather than replaying the original.  A successful
+      refresh is reported through ``on_refresh`` (best-effort) so owning
+      callers can persist the rotated document.
+
+    Nothing here ever writes a file.
     """
 
     def __init__(
@@ -438,6 +459,8 @@ class GrokTokenSource:
         token_url: str = GROK_TOKEN_URL,
         client_id: str = GROK_CLIENT_ID,
         skew: float = TOKEN_EXPIRY_SKEW_SECONDS,
+        allow_refresh: bool = True,
+        on_refresh: Callable[[GrokTokens], None] | None = None,
     ) -> None:
         if skew < 0:
             raise ValueError("token expiry skew cannot be negative")
@@ -447,7 +470,12 @@ class GrokTokenSource:
         self._token_url = token_url
         self._client_id = client_id
         self._skew = skew
+        self._allow_refresh = bool(allow_refresh)
+        self._on_refresh = on_refresh
         self._tokens: GrokTokens | None = None
+        #: The raw token set the loader last returned, so an externally
+        #: changed source (e.g. a fresh CLI login) supersedes the cache.
+        self._source_tokens: GrokTokens | None = None
         self._lock = threading.Lock()
 
     def access_token(self) -> str:
@@ -466,15 +494,39 @@ class GrokTokenSource:
                 )
             if loaded.is_fresh(now=now, skew=self._skew):
                 self._tokens = loaded
+                self._source_tokens = loaded
                 return loaded.access_token
+            if not self._allow_refresh:
+                # Read-through ownership boundary: never redeem the external
+                # CLI's refresh token (redemption can rotate it server-side
+                # and invalidate the CLI's own copy).
+                raise GrokTokenError(
+                    GrokAuthReason.EXPIRED,
+                    "Grok sign-in has expired; run the grok CLI to refresh "
+                    "it, or sign in with tinyic onboard",
+                )
+            stale = loaded
+            if cached is not None and loaded == self._source_tokens:
+                # The underlying source is unchanged, so the cached set —
+                # which carries any refresh token the server rotated on a
+                # previous redemption — is the one to refresh from.
+                stale = cached
             refreshed = refresh_grok_tokens(
-                loaded,
+                stale,
                 http_post=self._http_post,
                 token_url=self._token_url,
                 client_id=self._client_id,
                 now=now,
             )
             self._tokens = refreshed
+            self._source_tokens = loaded
+            if self._on_refresh is not None:
+                try:
+                    self._on_refresh(refreshed)
+                except Exception:
+                    # Persistence is best-effort: a keyring/store hiccup must
+                    # not fail the request the fresh token just enabled.
+                    pass
             return refreshed.access_token
 
 
@@ -484,10 +536,19 @@ class GrokTokenSource:
 
 
 def _probe_tokens(
-    tokens: GrokTokens, *, source: str, now: float | None = None
+    tokens: GrokTokens,
+    *,
+    source: str,
+    now: float | None = None,
+    can_refresh: bool,
 ) -> GrokAuthProbe:
+    """``can_refresh`` marks a TinyIC-owned document whose refresh token the
+    lane may legitimately redeem; the read-through file probe passes ``False``
+    because usability there depends on the *access* token alone (TinyIC never
+    redeems the CLI's refresh token)."""
+
     instant = time.time() if now is None else now
-    if tokens.is_fresh(now=instant) or tokens.refresh_token:
+    if tokens.is_fresh(now=instant) or (can_refresh and tokens.refresh_token):
         return GrokAuthProbe(
             GrokAuthReason.OK, source, "Grok sign-in is available"
         )
@@ -515,7 +576,7 @@ def probe_grok_auth(
             "grok_file",
             "Grok CLI sign-in was not found",
         )
-    return _probe_tokens(tokens, source="grok_file", now=now)
+    return _probe_tokens(tokens, source="grok_file", now=now, can_refresh=False)
 
 
 def probe_grok_profile_secret(
@@ -536,7 +597,7 @@ def probe_grok_profile_secret(
             "grok_profile",
             "Stored Grok credential is not a valid token document",
         )
-    return _probe_tokens(tokens, source="grok_profile", now=now)
+    return _probe_tokens(tokens, source="grok_profile", now=now, can_refresh=True)
 
 
 def entitlement_reason(status: int, body_text: str) -> str | None:

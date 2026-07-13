@@ -7,9 +7,15 @@ runtime subprocess (unlike the Codex/Claude lanes).  The bearer comes from a
 :class:`tinyic.auth.grok.GrokTokenSource`:
 
 * ``ProfileKind.GROK_READTHROUGH`` — reads the official grok CLI's
-  ``~/.grok/auth.json`` (never writes it; stale tokens refresh in memory only);
+  ``~/.grok/auth.json``.  Never writes it, and never redeems its refresh
+  token (redemption can rotate/invalidate the CLI's own copy server-side —
+  the FR-2.2 hazard): a stale file sign-in surfaces as ``expired`` and the
+  user refreshes it with the grok CLI itself.
 * ``ProfileKind.GROK_OAUTH`` — decodes the TinyIC-owned token document stored
-  as the profile secret.
+  as the profile secret; a stale document is refreshed via the grant TinyIC
+  owns, and the (possibly rotated) result is persisted back through the
+  candidate's profile-store seam so the next process starts from the live
+  refresh token.
 
 The subscription base URL is configurable via ``GROK_SUBSCRIPTION_BASE_URL``
 (default ``https://api.x.ai/v1``).  Parts of the ecosystem route CLI-lane chat
@@ -32,17 +38,19 @@ raises before reading any token or touching the filesystem/network.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Iterator
 
 from tinyic.auth.grok import (
     GrokAuthReason,
     GrokTokenError,
+    GrokTokens,
     GrokTokenSource,
     entitlement_reason,
     file_token_loader,
     profile_token_loader,
+    tokens_to_profile_secret,
 )
 from tinyic.auth.profiles import ProfileKind
 
@@ -73,9 +81,18 @@ GROK_REASONING_EFFORTS: dict[ThinkingLevel, str] = {
     ThinkingLevel.HIGH: "high",
 }
 
+#: The v1 grok catalog ids, in catalog order.  The registry builds its grok
+#: catalog from this tuple and this transport uses it for its per-model
+#: thinking default, so the key and subscription lanes can never drift: an
+#: out-of-catalog model omits ``reasoning_effort`` on both lanes.
+GROK_CATALOG_MODEL_IDS: tuple[str, ...] = ("grok-4.5", "grok-4.3", "grok-4.20")
+
 _TOKEN_ERROR_MESSAGES: dict[GrokAuthReason, str] = {
     GrokAuthReason.MISSING_CREDENTIAL: "Grok sign-in was not found",
-    GrokAuthReason.EXPIRED: "Grok sign-in has expired",
+    GrokAuthReason.EXPIRED: (
+        "Grok sign-in has expired; run the grok CLI to refresh it, or sign "
+        "in again with tinyic onboard"
+    ),
     GrokAuthReason.INVALID_CREDENTIAL: "Grok sign-in is invalid",
     GrokAuthReason.SUBSCRIPTION_INACTIVE: (
         "The Grok subscription is inactive or out of resources"
@@ -139,8 +156,16 @@ class GrokSubscriptionTransport(OpenAIChatAdapter):
             kind = getattr(credentials, "kind", None)
             if kind is ProfileKind.GROK_READTHROUGH:
                 # Explicit path wins; None means the CLI's ~/.grok/auth.json.
+                # allow_refresh=False is the FR-2.2 ownership boundary: the
+                # CLI's refresh token is never redeemed by TinyIC.
                 loader = file_token_loader(
                     None if auth_path is None else Path(auth_path)
+                )
+                token_source = GrokTokenSource(
+                    loader,
+                    http_post=http_post,
+                    clock=clock,
+                    allow_refresh=False,
                 )
             elif kind is ProfileKind.GROK_OAUTH:
                 ref = getattr(credentials, "ref", None)
@@ -149,12 +174,17 @@ class GrokSubscriptionTransport(OpenAIChatAdapter):
                         "Grok OAuth transport requires a resolved auth candidate"
                     )
                 loader = profile_token_loader(lambda: credentials(ref))
+                token_source = GrokTokenSource(
+                    loader,
+                    http_post=http_post,
+                    clock=clock,
+                    on_refresh=self._profile_persistence(credentials),
+                )
             else:
                 raise ValueError(
                     "Grok subscription transport requires a grok subscription "
                     "profile (grok_oauth or grok_readthrough)"
                 )
-            token_source = GrokTokenSource(loader, http_post=http_post, clock=clock)
         self._token_source = token_source
         self.auth_profile = (
             binding.auth_profile
@@ -167,16 +197,44 @@ class GrokSubscriptionTransport(OpenAIChatAdapter):
             credentials,
             base_url=resolved_base,
             credential_ref=GROK_SUBSCRIPTION_TOKEN_REF,
+            # Mirror the key lane's per-model capability gate: catalog models
+            # get the shared effort dial, out-of-catalog models (which may
+            # reject the parameter) omit it entirely.
             thinking=(
                 thinking
                 if thinking is not None
-                else ThinkingProfile.effort(
-                    "reasoning_effort", GROK_REASONING_EFFORTS
+                else (
+                    ThinkingProfile.effort(
+                        "reasoning_effort", GROK_REASONING_EFFORTS
+                    )
+                    if binding.model in GROK_CATALOG_MODEL_IDS
+                    else ThinkingProfile.omitted()
                 )
             ),
             provider_name="grok",
             **adapter_kwargs,
         )
+
+    @staticmethod
+    def _profile_persistence(
+        credentials: Any,
+    ) -> "Callable[[GrokTokens], None] | None":
+        """Persist rotated GROK_OAUTH token documents through the candidate.
+
+        TinyIC owns this credential, so a refresh that rotates the refresh
+        token must reach the profile store — otherwise the stored document
+        replays an already-consumed refresh token on the next run.  Candidates
+        without a persistence seam simply keep the session-local behavior.
+        """
+
+        persist = getattr(credentials, "persist_secret", None)
+        if not callable(persist):
+            return None
+
+        def on_refresh(tokens: GrokTokens) -> None:
+            persist(tokens_to_profile_secret(tokens))
+
+        return on_refresh
 
     def generate(self, request: ChatRequest) -> Iterator[ChatStreamEvent]:
         # This ordering is a legal boundary: when disabled, do not read a
@@ -218,6 +276,7 @@ class GrokSubscriptionTransport(OpenAIChatAdapter):
 
 __all__ = [
     "DEFAULT_SUBSCRIPTION_BASE_URL",
+    "GROK_CATALOG_MODEL_IDS",
     "GROK_REASONING_EFFORTS",
     "GROK_SUBSCRIPTION_BASE_URL_ENV_VAR",
     "GROK_SUBSCRIPTION_TOKEN_REF",

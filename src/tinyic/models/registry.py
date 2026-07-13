@@ -28,9 +28,14 @@ from .adapters import (
 )
 from .adapters.anthropic_messages import (
     ANTHROPIC_ADAPTIVE_EFFORTS,
+    ANTHROPIC_ADAPTIVE_MODELS,
+    ANTHROPIC_BUDGET_MODELS,
     ANTHROPIC_THINKING_BUDGETS,
 )
-from .adapters.grok_subscription import GROK_REASONING_EFFORTS
+from .adapters.grok_subscription import (
+    GROK_CATALOG_MODEL_IDS,
+    GROK_REASONING_EFFORTS,
+)
 from .binding import ModelBinding
 from .credentials import CredentialProvider
 from .thinking import ThinkingLevel as _L
@@ -371,16 +376,16 @@ def _builtin_providers() -> tuple[Provider, ...]:
     )
 
     # fable-5 / opus-4-8 / sonnet-5 speak the adaptive/effort scheme
-    # (budget_tokens is a 400 there); haiku-4-5 keeps legacy budgets.
+    # (budget_tokens is a 400 there); haiku-4-5 keeps legacy budgets.  The
+    # model→scheme split lives in anthropic_messages (shared with the
+    # claude_runtime subscription lane) so the lanes cannot drift.
     _anthropic_adaptive = ThinkingProfile.adaptive_effort(ANTHROPIC_ADAPTIVE_EFFORTS)
+    _anthropic_budget = ThinkingProfile.budget(
+        "budget_tokens", ANTHROPIC_THINKING_BUDGETS
+    )
     anthropic_models = [
-        ModelSpec("claude-fable-5", _anthropic_adaptive),
-        ModelSpec("claude-opus-4-8", _anthropic_adaptive),
-        ModelSpec("claude-sonnet-5", _anthropic_adaptive),
-        ModelSpec(
-            "claude-haiku-4-5",
-            ThinkingProfile.budget("budget_tokens", ANTHROPIC_THINKING_BUDGETS),
-        ),
+        *(ModelSpec(name, _anthropic_adaptive) for name in ANTHROPIC_ADAPTIVE_MODELS),
+        *(ModelSpec(name, _anthropic_budget) for name in ANTHROPIC_BUDGET_MODELS),
     ]
     anthropic = Provider(
         name="anthropic",
@@ -444,15 +449,15 @@ def _builtin_providers() -> tuple[Provider, ...]:
     # Grok reasons with an effort dial (low|medium|high); grok-4.5 cannot
     # disable reasoning, so "off" is a config-time reject / runtime remap→low
     # via the ordinary FR-1.3 semantics.  Env var stays XAI_API_KEY (xAI's own
-    # convention survives the provider rename).  The dial is shared with the
-    # subscription transport (grok_subscription.GROK_REASONING_EFFORTS).
+    # convention survives the provider rename).  The dial *and* the catalog
+    # ids are shared with the subscription transport
+    # (grok_subscription.GROK_REASONING_EFFORTS / GROK_CATALOG_MODEL_IDS) so
+    # both lanes gate identically.
     _grok_efforts = ThinkingProfile.effort(
         "reasoning_effort", GROK_REASONING_EFFORTS
     )
     grok_models = [
-        ModelSpec("grok-4.5", _grok_efforts),
-        ModelSpec("grok-4.3", _grok_efforts),
-        ModelSpec("grok-4.20", _grok_efforts),
+        ModelSpec(name, _grok_efforts) for name in GROK_CATALOG_MODEL_IDS
     ]
     grok = Provider(
         name="grok",

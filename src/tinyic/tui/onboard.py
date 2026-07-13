@@ -633,7 +633,9 @@ class OnboardController:
                         detail=(
                             "A working ~/.grok/auth.json sign-in was detected. "
                             "Reuse it read-through — TinyIC never rewrites the "
-                            "Grok CLI's credentials."
+                            "Grok CLI's credentials and never redeems its "
+                            "refresh token; if the sign-in expires, refresh "
+                            "it by running the grok CLI."
                         ),
                         note=GROK_POLICY_NOTE,
                     )

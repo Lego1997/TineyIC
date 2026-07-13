@@ -9,15 +9,22 @@ import pytest
 from claude_agent_sdk import RateLimitEvent, RateLimitInfo
 
 from tinyic.models.adapters._claude_sdk_worker import _message as sdk_worker_message
+from tinyic.models.adapters.anthropic_messages import (
+    ANTHROPIC_ADAPTIVE_MODELS,
+    ANTHROPIC_THINKING_BUDGETS,
+)
 from tinyic.models.adapters.claude_runtime import (
     ClaudePolicyError,
     ClaudeRuntimeReason,
     ClaudeRuntimeTransport,
     _claude_child_env,
+    _cli_command,
+    _sdk_options,
     probe_claude_runtime,
 )
 from tinyic.models.binding import ModelBinding
 from tinyic.models.credentials import StaticCredentialProvider
+from tinyic.models.thinking import ThinkingLevel
 from tinyic.models.types import (
     ChatMessage,
     ChatRequest,
@@ -192,8 +199,9 @@ def test_sdk_worker_is_preferred_hardened_and_normalizes_stream(tmp_path: Path):
         "skills": [],
         "plugins": [],
         "include_partial_messages": True,
+        # claude-opus-4-8 speaks the adaptive/effort scheme and rejects
+        # thinking budgets with a 400, so no max_thinking_tokens control.
         "model": "claude-opus-4-8",
-        "max_thinking_tokens": 4096,
     }
     assert sentinel not in repr(invocation)
     assert "Assess ACME" not in repr(invocation)
@@ -298,6 +306,43 @@ def test_cli_fallback_is_official_tool_free_and_keeps_prompt_out_of_argv(
     assert sentinel not in joined
     assert "claude.ai" not in joined
     assert "oauth" not in joined.casefold()
+
+
+@pytest.mark.parametrize("model", ANTHROPIC_ADAPTIVE_MODELS)
+@pytest.mark.parametrize(
+    "level", [ThinkingLevel.MINIMAL, ThinkingLevel.HIGH, ThinkingLevel.MAX]
+)
+def test_adaptive_scheme_models_never_receive_a_thinking_budget(model, level):
+    """Regression: fable-5 / opus-4-8 / sonnet-5 reject budget_tokens with a
+    400, so neither official runtime may carry a max-thinking-tokens control
+    for them — the runtime keeps its default adaptive thinking instead."""
+
+    binding = ModelBinding(f"anthropic/{model}", thinking_level=level)
+
+    assert "max_thinking_tokens" not in _sdk_options(binding)
+    assert "--max-thinking-tokens" not in _cli_command("/official/claude", binding)
+
+
+def test_budget_scheme_haiku_keeps_the_shared_budget_table():
+    binding = ModelBinding(
+        "anthropic/claude-haiku-4-5", thinking_level=ThinkingLevel.HIGH
+    )
+    expected = str(ANTHROPIC_THINKING_BUDGETS[ThinkingLevel.HIGH])
+
+    options = _sdk_options(binding)
+    assert options["max_thinking_tokens"] == int(expected)
+    command = _cli_command("/official/claude", binding)
+    assert command[command.index("--max-thinking-tokens") + 1] == expected
+
+
+def test_unknown_anthropic_models_omit_the_thinking_control():
+    # Matches the registry's conservative default for out-of-catalog models.
+    binding = ModelBinding(
+        "anthropic/claude-next-preview", thinking_level=ThinkingLevel.HIGH
+    )
+
+    assert "max_thinking_tokens" not in _sdk_options(binding)
+    assert "--max-thinking-tokens" not in _cli_command("/official/claude", binding)
 
 
 def test_non_streaming_request_yields_only_usage_window_and_final(tmp_path: Path):

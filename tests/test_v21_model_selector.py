@@ -11,6 +11,9 @@ pins for hermeticity.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -489,6 +492,49 @@ def test_cli_models_unknown_provider_exits_two(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "unknown provider" in captured.err
+
+
+def test_models_json_is_one_clean_document_in_a_fresh_process(tmp_path):
+    """STDOUT is a machine channel: importing tinyic.models pulls TinyTroupe's
+    stdout disclaimer + config dump, and only a fresh interpreter can prove the
+    redirect keeps them off the ``--json`` document (the in-process tests above
+    import everything long before ``main`` runs).  Mirrors the doctor's
+    subprocess regression test."""
+
+    root = Path(__file__).resolve().parents[1]
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        # The offline subprocess must not discover local runtimes or keyrings.
+        "PATH": str(tmp_path),
+        "PYTHON_KEYRING_BACKEND": "keyring.backends.null.Keyring",
+    }
+    for secret_name in (
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "XAI_API_KEY",
+        "MOONSHOT_API_KEY",
+        "KIMI_API_KEY",
+    ):
+        env.pop(secret_name, None)
+    completed = subprocess.run(
+        [sys.executable, "-m", "tinyic.cli", "models", "--json"],
+        cwd=root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    document = json.loads(completed.stdout)
+    assert document["schema_version"] == CATALOG_SCHEMA_VERSION
+    assert completed.stdout.count("\n") == 1
+    assert "DISCLAIMER" not in completed.stdout
 
 
 # --------------------------------------------------------------------------- #
