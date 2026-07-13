@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import hashlib
 
+from rich.markdown import Markdown
+from rich.text import Text
+
 from tinyic.tui.state import PersonaState, TurnState
 from tinyic.tui.widgets import (
     _FALLBACK_COLORS,
     PersonaCard,
     TurnCard,
     persona_color,
+    speech_markdown,
 )
 
 
@@ -103,6 +107,75 @@ def test_turn_card_live_think_text_shows_streaming_thought():
     live = str(TurnCard(turn)._live_think_text())
     assert "thinking" in live
     assert "weighing the durable moat" in live
+
+
+# --------------------------------------------------------------------------- #
+# Markdown speech (Stage-1): plain while streaming, rendered once final
+# --------------------------------------------------------------------------- #
+
+def _speech_turn(**kwargs) -> TurnState:
+    return TurnState(
+        key="turn-md", turn_id="md", persona="Warren Buffett",
+        phase="opening", role="statement", **kwargs,
+    )
+
+
+def test_completed_speech_renders_markdown_and_is_cached():
+    card = TurnCard(_speech_turn(speech="**Buy** the moat", speech_final=True))
+    rendered = card._speech_renderable()
+    assert isinstance(rendered, Markdown)
+    # Content-keyed cache: the same final text is parsed exactly once.
+    assert card._speech_renderable() is rendered
+
+
+def test_streaming_speech_stays_plain_incremental_text():
+    # Mid-stream (no talk_completed, not completed): never parsed as markdown,
+    # even when it already contains markdown syntax.
+    card = TurnCard(_speech_turn(speech="partial **stream", speech_final=False))
+    rendered = card._speech_renderable()
+    assert isinstance(rendered, Text)
+    assert rendered.plain == "partial **stream"
+
+
+def test_turn_completed_flag_alone_also_triggers_markdown():
+    # A log with talk deltas but no talk_completed still gets the rendered form
+    # once its turn completes.
+    card = TurnCard(_speech_turn(speech="- point one\n- point two", completed=True))
+    assert isinstance(card._speech_renderable(), Markdown)
+
+
+def test_malformed_markdown_never_crashes_the_renderer():
+    nasty = [
+        "```python\nunclosed fence",
+        "| a | b |\n|---|\nbroken table row",
+        "[stray [nested] brackets](",
+        "*",
+        "> quote\n\n``` \n\n***",
+    ]
+    for text in nasty:
+        card = TurnCard(_speech_turn(speech=text, speech_final=True))
+        rendered = card._speech_renderable()  # must not raise
+        assert rendered is not None
+
+
+def test_markdown_layer_failure_falls_back_to_plain_text(monkeypatch):
+    import tinyic.tui.widgets as widgets_module
+
+    class _Boom:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("markdown exploded")
+
+    monkeypatch.setattr(widgets_module, "Markdown", _Boom)
+    rendered = speech_markdown("**bold** claim")
+    assert isinstance(rendered, Text)
+    assert rendered.plain == "**bold** claim"
+
+
+def test_empty_speech_placeholder_unchanged():
+    card = TurnCard(_speech_turn(speech="", speech_final=True))
+    rendered = card._speech_renderable()
+    assert isinstance(rendered, Text)
+    assert rendered.plain == "…"
 
 
 # --------------------------------------------------------------------------- #

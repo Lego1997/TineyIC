@@ -80,6 +80,7 @@ from tinyic.auth.manager import (
     AuthResolutionError,
 )
 from tinyic.auth.profiles import AuthLane, AuthProfile, ProfileKind
+from tinyic.tui import theme
 
 __all__ = [
     "OnboardApp",
@@ -1347,6 +1348,9 @@ class OnboardApp(App):
         threaded_verify: bool = True,
     ) -> None:
         super().__init__()
+        # Theme (Stage-1): same registered tinyic themes and default as the
+        # Town Hall, so onboarding and the debate share one look; `d` cycles.
+        theme.register(self)
         self.controller = controller
         self.threaded_verify = threaded_verify
         self._header = Static(id="onboard-title")
@@ -1502,7 +1506,7 @@ class OnboardApp(App):
         text.append("Sign in with ChatGPT\n", style="bold underline")
         text.append("\nGo to ", style="none")
         url = getattr(challenge, "verification_url", None) or "(the URL shown by Codex)"
-        text.append(url, style="bold cyan")
+        text.append(url, style=theme.accent(dark=theme.is_dark(self)))
         text.append("\nand enter the code:\n\n", style="none")
         code = getattr(challenge, "user_code", None) or "…"
         text.append(f"    {code}\n\n", style="bold green")
@@ -1649,15 +1653,20 @@ class OnboardApp(App):
             return text
         text.append("↑↓ move", style="bold")
         if screen is OnboardScreen.DETECT:
-            text.append("  ·  enter begin · q quit", style="dim")
+            text.append("  ·  enter begin · d theme · q quit", style="dim")
         elif screen is OnboardScreen.MODEL:
             text.append(
-                "  ·  enter choose · esc keep current · q quit", style="dim"
+                "  ·  enter choose · esc keep current · d theme · q quit",
+                style="dim",
             )
         elif screen is OnboardScreen.SUMMARY:
-            text.append("  ·  enter select · esc re-detect · q quit", style="dim")
+            text.append(
+                "  ·  enter select · esc re-detect · d theme · q quit", style="dim"
+            )
         else:
-            text.append("  ·  enter select · esc back · q quit", style="dim")
+            text.append(
+                "  ·  enter select · esc back · d theme · q quit", style="dim"
+            )
         return text
 
     # -- key routing ------------------------------------------------------ #
@@ -1690,6 +1699,10 @@ class OnboardApp(App):
             return
         elif char is not None and char.isdigit() and char != "0":
             self.controller.select_index(int(char) - 1)
+        elif char == "d":
+            # Cycle the registered tinyic-dark/tinyic-light theme; re-render so
+            # Rich content built through the theme style seam tracks it.
+            theme.toggle(self)
         elif char == "q":
             self.exit()
             return

@@ -40,9 +40,10 @@ a :class:`~tinyic.tui.steering.ReplaySink` echoes it into the transcript as a
 skips to the next turn boundary; live records an interrupt request M6 wires to
 the engine) · ``t`` toggle thinking on the selected turn · ``T`` toggle
 all · ``m`` cycle the persona mind view · ``space`` pause/resume auto-advance ·
-``n`` next phase when paused · ``PageUp`` load older transcript cards · ``q``
-quit (confirmed while a debate is still running). Auto-advance is the default;
-paused mode holds at each phase banner until ``n``.
+``n`` next phase when paused · ``PageUp`` load older transcript cards · ``d``
+cycle the registered tinyic-dark/tinyic-light theme · ``q`` quit (confirmed
+while a debate is still running). Auto-advance is the default; paused mode
+holds at each phase banner until ``n``.
 
 **Virtualization (FR-5.5).** ``TownHallState`` keeps every turn, but the widget
 layer mounts only the newest ``TRANSCRIPT_CAP`` transcript cards; older ones are
@@ -65,6 +66,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Input, Static
 
+from . import theme
 from .events import Event, is_replayable, read_events
 from .live import EventQueueSource
 from .state import TownHallState, TurnState
@@ -395,6 +397,9 @@ class TownHallApp(App):
         control: ControlSink | None = None,
     ) -> None:
         super().__init__()
+        # Theme (Stage-1): register tinyic-dark/tinyic-light before first paint
+        # and default to dark; `d` cycles (see ``action_toggle_theme``).
+        theme.register(self)
         self.log_path = Path(log_path) if log_path is not None else None
 
         # Mode: **live** is fed by a thread-safe ``queue.Queue`` as events are
@@ -506,6 +511,9 @@ class TownHallApp(App):
             # flips ``finished``. Start the pump so it polls the queue as the
             # producer fills it — even before the first event arrives.
             self.state.live = True
+            # The header mounted (and synced) before this flag existed; re-sync
+            # so its debating indicator — and its pulse — starts immediately.
+            self._header.sync()
             self._sync_controls()
             if self.auto_replay:
                 self._timer = self.set_interval(self.tick, self._pump)
@@ -813,6 +821,8 @@ class TownHallApp(App):
             self.action_toggle_thinking()
         elif char == "m":
             self.action_cycle_mind()
+        elif char == "d":
+            self.action_toggle_theme()
         elif event.key == "space":
             self.action_toggle_pause()
         elif event.key == "n":
@@ -975,6 +985,20 @@ class TownHallApp(App):
         if self.is_running:
             self._sync()
 
+    # -- theme (Stage-1: d cycles tinyic-dark / tinyic-light) -------------- #
+
+    def action_toggle_theme(self) -> None:
+        """Cycle between the registered tinyic-dark/tinyic-light themes (``d``).
+
+        CSS ``$tokens`` re-resolve automatically; the explicit ``_sync`` re-runs
+        every mounted widget's ``sync`` so Rich content built through the
+        :mod:`~tinyic.tui.theme` style seam (pills, persona hues, muted labels)
+        is rebuilt for the new variant too.
+        """
+        theme.toggle(self)
+        if self.is_running:
+            self._sync()
+
     # -- phase flow (FR-5.4: space / n) ----------------------------------- #
 
     def action_toggle_pause(self) -> None:
@@ -1021,27 +1045,26 @@ class TownHallApp(App):
         """
         if not self._status_line.is_mounted:
             return
+        dark = theme.is_dark(self)
         mode = self.steer_mode.upper()
         chip = Text()
-        chip.append(
-            f" {mode} ",
-            style="bold black on yellow" if self.steer_mode == "steer" else "bold black on cyan",
-        )
+        chip.append(f" {mode} ", style=theme.pill(self.steer_mode, dark=dark))
         self._mode_chip.update(chip)
 
+        dim = theme.muted(dark=dark)
         status = Text()
         if self._holding:
             status.append("⏸ holding at phase boundary", style="bold yellow")
-            status.append("  ·  n next phase", style="dim")
+            status.append("  ·  n next phase", style=dim)
         elif self.paused:
             status.append("⏸ paused", style="bold yellow")
-            status.append("  ·  n next phase", style="dim")
+            status.append("  ·  n next phase", style=dim)
         else:
             status.append("▶ auto-advance", style="bold green")
         status.append(
             "     enter compose · tab mode · t/T think · m mind · space pause"
-            " · n next · PgUp older · esc interrupt · q quit",
-            style="dim",
+            " · n next · PgUp older · d theme · esc interrupt · q quit",
+            style=dim,
         )
         self._status_line.update(status)
 

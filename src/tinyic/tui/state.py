@@ -139,6 +139,10 @@ class TurnState:
     # live thinking block must auto-collapse. See :attr:`thinking_live`.
     thinking_streaming: bool = False
     talk_started: bool = False
+    # True once ``talk_completed`` delivered the authoritative full speech — the
+    # renderer's cue to swap the incremental plain-text stream for the rendered
+    # (markdown) form. Never set by deltas, so live streaming stays cheap.
+    speech_final: bool = False
     # Interrupt provenance (FR-5.3), captured from ``turn_interrupted`` so the
     # card can render the badge as the esc affordance's result (by == "user")
     # versus a system/provider interruption.
@@ -456,6 +460,7 @@ class TownHallState:
             # A one-shot talk_completed (no talk_delta) still collapses the block.
             turn.talk_started = True
             turn.speech = str(p.get("full_text", "") or "")
+            turn.speech_final = True
 
     def _on_cognitive_state(self, p: Mapping[str, Any]) -> None:
         member = self.personas.get(str(p.get("persona", "")))

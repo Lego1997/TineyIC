@@ -365,6 +365,25 @@ def test_one_shot_talk_completed_collapses_a_live_block():
     assert turn.thinking_live is False
 
 
+def test_talk_completed_marks_speech_final_but_deltas_do_not():
+    # ``speech_final`` is the renderer's cue to swap the plain incremental
+    # stream for the rendered (markdown) form — it must flip only on the
+    # authoritative talk_completed, never on a delta (Stage-1 markdown speech).
+    state = TownHallState()
+    ev = _feed(state)
+    ev("turn_started", turn_id="t1", persona="X", phase="opening", role="statement")
+    turn = _only_turn(state)
+    assert turn.speech_final is False
+
+    ev("talk_delta", turn_id="t1", text="**streaming ")
+    ev("talk_delta", turn_id="t1", text="markdown**")
+    assert turn.speech == "**streaming markdown**"
+    assert turn.speech_final is False  # still mid-stream
+
+    ev("talk_completed", turn_id="t1", full_text="**streaming markdown**")
+    assert turn.speech_final is True
+
+
 def test_turn_interrupted_captures_provenance_and_clears_live():
     state = TownHallState()
     ev = _feed(state)

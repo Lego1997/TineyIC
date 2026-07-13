@@ -32,6 +32,7 @@ import html
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from . import persona_style
 from .result import assemble_result, resolve_run_path
 from .tui.events import read_events
 from .tui.state import TownHallState, humanize_duration
@@ -50,20 +51,6 @@ __all__ = [
 # --------------------------------------------------------------------------- #
 # Presentation constants (mirror the Town Hall renderer's palette / labels).
 # --------------------------------------------------------------------------- #
-
-# The six canonical committee hues, mirrored from ``tinyic.tui.widgets`` so the
-# HTML colorizes a persona identically to the TUI. Kept here (not imported) so
-# the export never pulls Textual for a color lookup; the set is a stable product
-# fact. Unknown personas fall through the same rotation.
-_PERSONA_COLORS: dict[str, str] = {
-    "Warren Buffett": "#4fc3f7",
-    "Charlie Munger": "#ba68c8",
-    "Benjamin Graham": "#4db6ac",
-    "Peter Lynch": "#ffb74d",
-    "Howard Marks": "#e57373",
-    "Li Lu": "#aed581",
-}
-_FALLBACK_COLORS = ("#4fc3f7", "#ba68c8", "#4db6ac", "#ffb74d", "#e57373", "#aed581")
 
 _PHASE_LABELS: dict[str, str] = {
     "opening": "Opening Statements",
@@ -96,13 +83,14 @@ _STATUS_LABEL = {
 
 
 def _persona_color(name: str) -> str:
-    """A stable display color for a persona (mirrors ``widgets.persona_color``)."""
-    if name in _PERSONA_COLORS:
-        return _PERSONA_COLORS[name]
-    import hashlib
+    """A stable display color for a persona.
 
-    digest = int(hashlib.sha1((name or "").encode("utf-8")).hexdigest(), 16)
-    return _FALLBACK_COLORS[digest % len(_FALLBACK_COLORS)]
+    Delegates to :mod:`tinyic.persona_style` — the single app-level identity
+    source the TUI consumes too (no Textual import involved). The export keeps
+    the dark set: the report's card styling is self-contained and the dark hues
+    are the stable historical output.
+    """
+    return persona_style.persona_color(name, dark=True)
 
 
 def _fmt_tokens(n: object) -> str:

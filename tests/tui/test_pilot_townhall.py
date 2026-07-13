@@ -56,8 +56,18 @@ def _completed_texts(event_type: str, field: str) -> dict[str, str]:
 
 
 def _speech_text(card: TurnCard) -> str:
-    """The plain speech text a turn card is displaying."""
-    return str(card._speech.render())
+    """The plain speech text a turn card is displaying.
+
+    Completed turns now hold a rendered *markdown* form (Stage-1 polish), so the
+    card's content is flattened through a wide Rich console — asserting what a
+    human actually reads, whether the renderable is plain Text or Markdown.
+    """
+    from rich.console import Console
+
+    console = Console(width=4000, legacy_windows=False)
+    with console.capture() as capture:
+        console.print(card._speech.content, end="")
+    return capture.get()
 
 
 def _think_text(card: TurnCard) -> str:

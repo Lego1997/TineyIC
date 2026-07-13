@@ -3,19 +3,29 @@
 Each widget is a thin, stateless-ish *view* over a data object from
 :mod:`tinyic.tui.state`: it holds a reference to its state object and rebuilds
 its display in :meth:`sync`. The app owns the state and calls ``sync`` after each
-batch of events is folded in. No widget touches the event stream, Textual timers,
-or any engine internals — they only read plain dataclasses.
+batch of events is folded in. No widget touches the event stream or any engine
+internals — they only read plain dataclasses. The only timers here are the
+presentation-only :class:`~tinyic.tui.motion.GlyphPulse` cycles (the header's
+"debating…" indicator and a turn's live-think block), which are driven purely
+by widget lifecycle and never touch state or events.
+
+Persona identity (colors + monograms) comes from :mod:`tinyic.persona_style` —
+the single app-level source shared with the HTML exporter. Theme-dependent Rich
+content styles come from the :mod:`tinyic.tui.theme` seam so pills and emphasis
+stay legible on both ``tinyic-dark`` and ``tinyic-light``.
 """
 
 from __future__ import annotations
 
-import hashlib
-
+from rich.markdown import Markdown
 from rich.text import Text
 from textual.containers import Vertical
 from textual.message import Message
 from textual.widgets import Collapsible, Static
 
+from ..persona_style import FALLBACK_COLORS_DARK as _FALLBACK_COLORS  # noqa: F401 - re-export
+from ..persona_style import persona_color
+from .motion import GlyphPulse
 from .state import (
     ArtifactState,
     PersonaState,
@@ -26,6 +36,7 @@ from .state import (
     humanize_count,
     humanize_duration,
 )
+from .theme import accent, is_dark, muted, pill
 
 __all__ = [
     "StatusHeader",
@@ -35,19 +46,8 @@ __all__ = [
     "ArtifactCard",
     "PersonaCard",
     "persona_color",
+    "speech_markdown",
 ]
-
-# A small, stable palette. The six canonical committee members get fixed hues;
-# anything else falls back to a rotation so unknown personas still get a color.
-_PERSONA_COLORS: dict[str, str] = {
-    "Warren Buffett": "#4fc3f7",
-    "Charlie Munger": "#ba68c8",
-    "Benjamin Graham": "#4db6ac",
-    "Peter Lynch": "#ffb74d",
-    "Howard Marks": "#e57373",
-    "Li Lu": "#aed581",
-}
-_FALLBACK_COLORS = ("#4fc3f7", "#ba68c8", "#4db6ac", "#ffb74d", "#e57373", "#aed581")
 
 _VOTE_COLORS = {"BUY": "green", "SELL": "red", "HOLD": "yellow"}
 _STANCE_COLORS = {"bullish": "green", "bearish": "red", "neutral": "yellow"}
@@ -59,17 +59,20 @@ _PHASE_LABELS = {
 }
 
 
-def persona_color(name: str) -> str:
-    """A stable, process-independent display color for a persona name.
+def speech_markdown(text: str) -> Markdown | Text:
+    """Render a completed speech as Rich markdown, falling back to plain text.
 
-    Unknown personas hash into the fallback rotation via a SHA-1 digest rather
-    than the builtin ``hash`` (which is salted per interpreter run) so a replay
-    colorizes the same committee identically every time.
+    Model output routinely contains ``**bold**``, lists, and the occasional
+    fenced block; rendering the *completed* turn as markdown makes those read
+    as intended. CommonMark parsing is total (malformed input parses as text),
+    but the guard is absolute anyway: any exception from the markdown layer
+    degrades to the exact plain :class:`~rich.text.Text` the TUI rendered
+    before — a hostile or bizarre payload can never crash a renderer.
     """
-    if name in _PERSONA_COLORS:
-        return _PERSONA_COLORS[name]
-    digest = int(hashlib.sha1(name.encode("utf-8")).hexdigest(), 16)
-    return _FALLBACK_COLORS[digest % len(_FALLBACK_COLORS)]
+    try:
+        return Markdown(text)
+    except Exception:
+        return Text(text)
 
 
 def _clip(text: str, limit: int) -> str:
@@ -82,45 +85,60 @@ def _clip(text: str, limit: int) -> str:
 # --------------------------------------------------------------------------- #
 
 class StatusHeader(Static):
-    """Top strip: company/ticker, current phase, elapsed, cost/usage rollup."""
+    """Top strip: company/ticker, current phase, elapsed, cost/usage rollup.
+
+    While a live feed is running (``state.live`` and not finished) the
+    "debating…" indicator breathes via a :class:`GlyphPulse`; the pulse stops —
+    and the glyph rests at the static ``◉`` — the moment a terminal event flips
+    ``finished``. Presentation-only: ``sync`` derives run/stop purely from the
+    already-folded state.
+    """
 
     def __init__(self, state: TownHallState) -> None:
         super().__init__(id="header")
         self.state = state
+        self._pulse = GlyphPulse(self)
+
+    def on_mount(self) -> None:
+        self.sync()
 
     def sync(self) -> None:
+        self._pulse.set_running(self.state.live and not self.state.finished)
         self.refresh()
 
     def render(self) -> Text:
         st = self.state
+        dark = is_dark(self)
+        dim = muted(dark=dark)
+        emph = accent(dark=dark)
         title = st.ticker or "TinyIC"
         if st.company_name:
             title = f"{title} · {st.company_name}"
         line1 = Text()
         line1.append(title, style="bold")
         if st.preset:
-            line1.append(f"   preset {st.preset}", style="dim")
+            line1.append(f"   preset {st.preset}", style=dim)
         if st.finished:
             line1.append("   ✓ complete" if not st.errored else "   ✗ error",
                          style="green" if not st.errored else "red")
         elif st.live:
             # A live feed shows a running status until a terminal event lands;
             # this is the live counterpart of the truncated-log indicator.
-            line1.append("   ◉ debating…", style="bold cyan")
+            line1.append(f"   {self._pulse.glyph} debating…", style=emph)
         elif st.truncated:
             line1.append("   ⚠ incomplete (truncated log)", style="bold yellow")
 
         line2 = Text()
-        line2.append("phase ", style="dim")
-        line2.append(st.phase_position, style="bold cyan")
-        line2.append("   elapsed ", style="dim")
+        line2.append("phase ", style=dim)
+        line2.append(st.phase_position, style=emph)
+        line2.append("   elapsed ", style=dim)
         line2.append(humanize_duration(st.elapsed_s))
-        line2.append("   cost ", style="dim")
+        line2.append("   cost ", style=dim)
         cost = f"${st.cost_usd:.4f}" if st.cost_usd else "$0.00"
         if st.subscription_calls:
             cost += f" (+{st.subscription_calls} sub)"
         line2.append(cost, style="bold green")
-        line2.append("   tokens ", style="dim")
+        line2.append("   tokens ", style=dim)
         line2.append(
             f"{humanize_count(st.input_tokens)} in / "
             f"{humanize_count(st.output_tokens)} out"
@@ -128,7 +146,7 @@ class StatusHeader(Static):
         if st.usage_window:
             used = st.usage_window.get("window_used_msgs", "?")
             est = st.usage_window.get("window_estimate_msgs", "?")
-            line2.append(f"   window {used}/{est}", style="dim")
+            line2.append(f"   window {used}/{est}", style=dim)
 
         out = Text()
         out.append_text(line1)
@@ -186,6 +204,15 @@ class TurnCard(Vertical):
         super().__init__(classes="turn-card")
         self.turn = turn
         self.selected = False
+        # Completed speech renders as Rich markdown; parsing happens once per
+        # final text and is cached here (content-keyed), so the ~30 ms pump can
+        # re-sync hundreds of mounted cards without ever re-parsing. (A full
+        # Textual Markdown widget per turn was rejected: at 100+ turns its
+        # per-widget layout cost dwarfs a cached Rich renderable in a Static.)
+        self._md_cache: tuple[str, Markdown | Text] | None = None
+        # Live-think motion: pulses only while ``turn.thinking_live``; repaints
+        # just the live block, and stops (resting glyph) the moment talk begins.
+        self._pulse = GlyphPulse(self, on_frame=self._paint_live_think)
         self._head = Static(classes="turn-head")
         # The live thinking block (FR-5.1): shown, auto-expanded and visually
         # distinct, only while ``turn.thinking_live`` — i.e. the current speaker
@@ -231,30 +258,55 @@ class TurnCard(Vertical):
         # collapsible row is hidden until talk begins, then they swap. Neither
         # touches the collapsible's ``collapsed`` state, so t/T stay user-owned.
         self._think_live.display = live
+        self._pulse.set_running(live)
         if live:
             self._think_live.update(self._live_think_text())
-        self._speech.update(
-            Text(self.turn.speech) if self.turn.speech
-            else Text("…", style="dim italic")
-        )
+        self._speech.update(self._speech_renderable())
         self._think.display = not live
         self._think_body.update(
             Text(self.turn.thinking) if self.turn.thinking
             else Text("(no private reasoning captured)", style="dim italic")
         )
 
+    def _speech_renderable(self) -> Markdown | Text:
+        """Plain incremental text while streaming; cached markdown once final.
+
+        Live ``talk_delta`` accumulation stays a cheap :class:`Text` — markdown
+        is *never* re-parsed per delta. Once the speech is final
+        (``talk_completed`` set ``speech_final``, or the turn completed) the
+        content is parsed once and the renderable cached keyed by the text, so
+        every subsequent ``sync`` reuses it.
+        """
+        turn = self.turn
+        if not turn.speech:
+            return Text("…", style="dim italic")
+        if not (turn.speech_final or turn.completed):
+            return Text(turn.speech)
+        cached = self._md_cache
+        if cached is not None and cached[0] == turn.speech:
+            return cached[1]
+        rendered = speech_markdown(turn.speech)
+        self._md_cache = (turn.speech, rendered)
+        return rendered
+
+    def _paint_live_think(self) -> None:
+        """Pulse tick: repaint only the live-think block (never whole-card work)."""
+        if self.turn.thinking_live:
+            self._think_live.update(self._live_think_text())
+
     def _live_think_text(self) -> Text:
         """The streaming-THINK highlight body (auto-expanded live block)."""
         text = Text()
-        text.append("◉ thinking… ", style="bold")
+        text.append(f"{self._pulse.glyph} thinking… ", style="bold")
         text.append(self.turn.thinking or "…", style="italic")
         return text
 
     def _head_text(self) -> Text:
         turn = self.turn
+        color = persona_color(turn.persona, dark=is_dark(self))
         head = Text()
-        head.append("● ", style=persona_color(turn.persona))
-        head.append(turn.persona or "?", style=f"bold {persona_color(turn.persona)}")
+        head.append("● ", style=color)
+        head.append(turn.persona or "?", style=f"bold {color}")
         badge = f"  ⟨{turn.phase or '?'} · {turn.role or '?'}⟩"
         head.append(badge, style="dim")
         if turn.stance:
@@ -300,7 +352,7 @@ class SteeringNote(Static):
         s = self.steer
         text = Text()
         mode = (s.mode or "steer").upper()
-        text.append(f" ✎ {mode} ", style="bold black on yellow")
+        text.append(f" ✎ {mode} ", style=pill(s.mode or "steer", dark=is_dark(self)))
         if s.target_persona:
             text.append(f" @{s.target_persona}", style="bold")
         if s.source:
@@ -365,7 +417,7 @@ class PersonaCard(Static):
 
     def render(self) -> Text:
         p = self.persona
-        color = persona_color(p.name)
+        color = persona_color(p.name, dark=is_dark(self))
         text = Text()
 
         header = Text()
