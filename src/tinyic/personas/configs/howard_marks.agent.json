@@ -12,6 +12,7 @@
     ]
   },
   "type": "TinyPerson",
+  "temperament": "balanced",
   "persona": {
     "name": "Howard Marks",
     "age": 75,

@@ -1,18 +1,35 @@
-"""Investment memo generation and disagreement extraction via LLM synthesis."""
+"""Investment memo generation and disagreement extraction via LLM synthesis.
+
+FR-4.5: the memo/disagreement writer is the committee's **aggregator binding**.
+It runs inside the aggregator's active routing scope (the orchestrator activates
+it), so the vendored ``client()`` here resolves to the aggregator client.
+
+The synthesis follows the Together Mixture-of-Agents pattern
+(docs/research/2026-07-12-model-agnostic-brief.md section 2): the persona
+speeches are advisor proposals, and this aggregator *critically evaluates* them —
+Together's Apache-2.0 aggregator framing ("some of it may be biased or
+incorrect") is vendored into the system prompts below. The structured records
+(opening theses + final verdicts) are supplied as the **primary grounding**,
+with the windowed prose as corroborating context.
+"""
 
 import json
 import logging
+from collections.abc import Mapping, Sequence
 
 from tinytroupe.clients import client
 from tinytroupe.utils import extract_json
 
+from .analytics import analyze_collapse, render_structured_grounding
 from .models import (
     DebateResult,
     Disagreement,
     DisagreementAnalysis,
     InvestmentMemo,
     MemoSection,
+    Vote,
 )
+from .structured import StructuredThesis
 
 logger = logging.getLogger(__name__)
 
@@ -24,14 +41,33 @@ TRANSCRIPT_WINDOW_LENGTH = 6000
 RUNNING_SYNTHESIS_MAX_LENGTH = 4000
 SCORECARD_CONTEXT_MAX_LENGTH = 2500
 FINANCIAL_CONTEXT_MAX_LENGTH = 5000
+# The structured records are compact (a handful of lines per persona); this slot
+# only bounds a pathological committee so it can never crowd out the transcript.
+STRUCTURED_RECORDS_MAX_LENGTH = 3000
+
+# Together MoA aggregator framing (Apache-2.0), vendored per FR-4.5. Prepended to
+# both writer prompts so the aggregator treats the personas' speech as advisory
+# and potentially biased rather than authoritative.
+_MOA_SKEPTICAL_FRAMING = (
+    "You have been provided with a set of arguments from an investment "
+    "committee of distinct investor personas. It is crucial to critically "
+    "evaluate the information in these arguments, recognizing that some of it "
+    "may be biased or incorrect. Do not simply replicate what a persona said; "
+    "weigh it against the structured records and the financial data, and prefer "
+    "the primary grounding (the personas' recorded theses and verdicts) when "
+    "sources conflict.\n\n"
+)
 
 MEMO_SYSTEM_PROMPT = (
-    "You are an expert investment analyst synthesizing a structured investment memo "
+    _MOA_SKEPTICAL_FRAMING
+    + "You are an expert investment analyst synthesizing a structured investment memo "
     "from a committee debate.\n\n"
-    "You will receive one window of a debate transcript, the running memo draft "
-    "from earlier windows, the scorecard with each investor's vote and reasoning, "
-    "and the financial data package. Revise the complete draft to incorporate the "
-    "new window without dropping well-grounded earlier findings.\n\n"
+    "You will receive the structured records (each persona's recorded opening "
+    "thesis and final verdict) as the PRIMARY GROUNDING, plus one window of a "
+    "debate transcript, the running memo draft from earlier windows, the "
+    "scorecard with each investor's vote and reasoning, and the financial data "
+    "package. Revise the complete draft to incorporate the new window without "
+    "dropping well-grounded earlier findings.\n\n"
     "Produce a JSON object with exactly these 5 sections:\n"
     "{\n"
     '    "executive_summary": {\n'
@@ -45,7 +81,7 @@ MEMO_SYSTEM_PROMPT = (
     '    "final_verdict": { same structure }\n'
     "}\n\n"
     "RULES:\n"
-    "- Every claim must be grounded in the debate transcript or financial data\n"
+    "- Every claim must be grounded in the structured records, debate transcript, or financial data\n"
     "- Do NOT introduce facts not discussed in the debate\n"
     "- Name specific personas when attributing arguments\n"
     "- Reference specific financial metrics from the data package\n"
@@ -55,10 +91,13 @@ MEMO_SYSTEM_PROMPT = (
 )
 
 DISAGREEMENT_SYSTEM_PROMPT = (
-    "You are analyzing an investment committee debate to identify the key areas "
-    "where investors disagreed. You will receive one transcript window and the "
-    "running structured analysis from earlier windows. Revise the complete analysis "
-    "without dropping well-grounded earlier evidence.\n\n"
+    _MOA_SKEPTICAL_FRAMING
+    + "You are analyzing an investment committee debate to identify the key areas "
+    "where investors disagreed. You will receive the structured records (each "
+    "persona's recorded opening thesis and final verdict) as the PRIMARY "
+    "GROUNDING, one transcript window, and the running structured analysis from "
+    "earlier windows. Revise the complete analysis without dropping well-grounded "
+    "earlier evidence.\n\n"
     "Produce a JSON object:\n"
     "{\n"
     '    "disagreements": [\n'
@@ -117,6 +156,23 @@ def _running_draft_json(data: dict | None) -> str:
     )
 
 
+def _grounding_block(
+    theses: Mapping[str, StructuredThesis] | None,
+    votes: Sequence[Vote],
+) -> str | None:
+    """Render the structured-records primary-grounding slot, if records exist.
+
+    Returns ``None`` when no structured theses were passed (the legacy
+    transcript-only path), so the prompt is byte-identical to the pre-FR-4.5
+    shape in that case.
+    """
+    if not theses:
+        return None
+    return _bounded_slot(
+        render_structured_grounding(theses, votes), STRUCTURED_RECORDS_MAX_LENGTH
+    )
+
+
 def _make_fallback_section(title: str, message: str) -> MemoSection:
     """Create a fallback memo section when generation fails."""
     return MemoSection(title=title, content=message)
@@ -152,16 +208,23 @@ def _parse_memo_section(raw: dict, title: str) -> MemoSection:
 def generate_memo(
     debate_result: DebateResult,
     data_package,
+    *,
+    theses: Mapping[str, StructuredThesis] | None = None,
 ) -> InvestmentMemo:
     """Generate an investment memo from debate results via LLM synthesis.
 
     Args:
         debate_result: Completed debate with transcript and scorecard.
         data_package: Financial data package used in the debate.
+        theses: The moderator's recorded opening theses (persona -> thesis). When
+            given, the structured records (theses + the scorecard's final
+            verdicts) are supplied to the aggregator as the primary grounding
+            (FR-4.5). ``None`` keeps the legacy transcript-only prompt.
 
     Returns:
-        InvestmentMemo with 5 structured sections. Returns a fallback memo
-        if LLM synthesis fails.
+        InvestmentMemo with 5 structured sections. On a window failure the last
+        good accumulated draft is retained and synthesis continues with the
+        remaining windows; only a memo whose *every* window failed falls back.
     """
     transcript_windows = _transcript_windows(debate_result.transcript)
     scorecard_md = _bounded_slot(
@@ -170,32 +233,54 @@ def generate_memo(
     context_str = _bounded_slot(
         data_package.to_context_string(), FINANCIAL_CONTEXT_MAX_LENGTH
     )
+    grounding = _grounding_block(theses, debate_result.scorecard.votes)
+    grounding_slot = (
+        f"## Structured Records (PRIMARY GROUNDING)\n{grounding}\n\n"
+        if grounding is not None
+        else ""
+    )
 
+    # A failed window (a raised call or an unparseable response) must not discard
+    # the accumulated draft: it is retained and synthesis continues with the next
+    # window. ``last_error`` is only surfaced if no window ever succeeded.
     data = None
-    try:
-        for index, transcript_window in enumerate(transcript_windows, start=1):
-            user_prompt = (
-                f"## Transcript Window {index} of {len(transcript_windows)}\n"
-                f"{transcript_window}\n\n"
-                f"## Running Memo Draft From Earlier Windows\n"
-                f"{_running_draft_json(data)}\n\n"
-                f"## Scorecard\n{scorecard_md}\n\n"
-                f"## Financial Data\n{context_str}"
-            )
-            messages = [
-                {"role": "system", "content": MEMO_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ]
+    last_error: Exception | None = None
+    for index, transcript_window in enumerate(transcript_windows, start=1):
+        user_prompt = (
+            f"{grounding_slot}"
+            f"## Transcript Window {index} of {len(transcript_windows)}\n"
+            f"{transcript_window}\n\n"
+            f"## Running Memo Draft From Earlier Windows\n"
+            f"{_running_draft_json(data)}\n\n"
+            f"## Scorecard\n{scorecard_md}\n\n"
+            f"## Financial Data\n{context_str}"
+        )
+        messages = [
+            {"role": "system", "content": MEMO_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
+        try:
             response = client().send_message(messages, temperature=0.7)
-            data = extract_json(response["content"])
-            if not isinstance(data, dict) or not data:
+            parsed = extract_json(response["content"])
+            if not isinstance(parsed, dict) or not parsed:
                 raise ValueError(
                     f"Invalid JSON response for transcript window {index}"
                 )
-    except Exception as e:
-        logger.warning("Memo generation LLM call failed: %s", e)
+        except Exception as e:  # noqa: BLE001 -- degrade, do not discard the draft
+            last_error = e
+            logger.warning(
+                "Memo window %d/%d failed; retaining last good draft: %s",
+                index,
+                len(transcript_windows),
+                e,
+            )
+            continue
+        data = parsed
+
+    if data is None:
+        logger.warning("Memo generation produced no usable draft: %s", last_error)
         return _make_fallback_memo(
-            debate_result.ticker, debate_result.company_name, str(e)
+            debate_result.ticker, debate_result.company_name, str(last_error)
         )
 
     section_keys = [
@@ -219,46 +304,84 @@ def generate_memo(
 
 def extract_disagreements(
     debate_result: DebateResult,
+    *,
+    theses: Mapping[str, StructuredThesis] | None = None,
 ) -> DisagreementAnalysis:
     """Extract top disagreements from a debate transcript via LLM analysis.
 
     Args:
         debate_result: Completed debate with transcript.
+        theses: The moderator's recorded opening theses (persona -> thesis). When
+            given, they ground the analysis (FR-4.5) and a DCR ``collapse_summary``
+            (per-persona stance trajectory + caved flags) is computed from the
+            theses and the scorecard's final votes and attached to the output.
 
     Returns:
-        DisagreementAnalysis with up to 3 disagreements. Returns a fallback
-        with empty disagreements list if extraction fails.
+        DisagreementAnalysis with up to 3 disagreements plus, when ``theses`` are
+        supplied, a DCR collapse summary. On a window failure the last good draft
+        is retained; only a run whose every window failed yields empty
+        disagreements (the collapse summary, being LLM-independent, is retained
+        regardless).
     """
     transcript_windows = _transcript_windows(debate_result.transcript)
     scorecard_md = _bounded_slot(
         debate_result.scorecard.to_markdown(), SCORECARD_CONTEXT_MAX_LENGTH
     )
+    grounding = _grounding_block(theses, debate_result.scorecard.votes)
+    grounding_slot = (
+        f"## Structured Records (PRIMARY GROUNDING)\n{grounding}\n\n"
+        if grounding is not None
+        else ""
+    )
+    # The collapse summary is derived from the structured records alone, so it is
+    # available even if every LLM window fails.
+    collapse_summary = (
+        analyze_collapse(theses, debate_result.scorecard.votes)
+        if theses
+        else None
+    )
 
     data = None
-    try:
-        for index, transcript_window in enumerate(transcript_windows, start=1):
-            user_prompt = (
-                f"## Transcript Window {index} of {len(transcript_windows)}\n"
-                f"{transcript_window}\n\n"
-                f"## Running Disagreement Analysis From Earlier Windows\n"
-                f"{_running_draft_json(data)}\n\n"
-                f"## Scorecard\n{scorecard_md}"
-            )
-            messages = [
-                {"role": "system", "content": DISAGREEMENT_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ]
+    last_error: Exception | None = None
+    for index, transcript_window in enumerate(transcript_windows, start=1):
+        user_prompt = (
+            f"{grounding_slot}"
+            f"## Transcript Window {index} of {len(transcript_windows)}\n"
+            f"{transcript_window}\n\n"
+            f"## Running Disagreement Analysis From Earlier Windows\n"
+            f"{_running_draft_json(data)}\n\n"
+            f"## Scorecard\n{scorecard_md}"
+        )
+        messages = [
+            {"role": "system", "content": DISAGREEMENT_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
+        try:
             response = client().send_message(messages, temperature=0.7)
-            data = extract_json(response["content"])
-            if not isinstance(data, dict) or "disagreements" not in data:
+            parsed = extract_json(response["content"])
+            if not isinstance(parsed, dict) or "disagreements" not in parsed:
                 raise ValueError(
                     f"Invalid JSON response for transcript window {index}"
                 )
-    except Exception as e:
-        logger.warning("Disagreement extraction LLM call failed: %s", e)
+        except Exception as e:  # noqa: BLE001 -- degrade, do not discard the draft
+            last_error = e
+            logger.warning(
+                "Disagreement window %d/%d failed; retaining last good draft: %s",
+                index,
+                len(transcript_windows),
+                e,
+            )
+            continue
+        data = parsed
+
+    if data is None:
+        logger.warning(
+            "Disagreement extraction produced no usable draft: %s", last_error
+        )
         return DisagreementAnalysis(
             ticker=debate_result.ticker,
             company_name=debate_result.company_name,
+            collapse_summary=collapse_summary,
         )
 
     disagreements = []
@@ -278,4 +401,5 @@ def extract_disagreements(
         ticker=debate_result.ticker,
         company_name=debate_result.company_name,
         disagreements=disagreements,
+        collapse_summary=collapse_summary,
     )
