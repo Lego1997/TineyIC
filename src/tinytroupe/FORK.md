@@ -110,6 +110,15 @@ handler redacts known credential shapes and configured credential environment
 values before output; exception tracebacks are omitted from ordinary logs
 because provider bodies can embed secrets. Full prompts remain DEBUG-only.
 
+The console `StreamHandler` created by `start_logger` (and lazily by
+`set_console_loglevel`) writes to `sys.stderr` rather than upstream's
+`sys.stdout` (M6). `tinyic debate --json` makes STDOUT a machine channel
+carrying ONLY the append-only event JSONL (the public agent contract in
+`docs/event-schema.md`); a diagnostic log line on STDOUT would corrupt that
+stream. Routing the handler to STDERR keeps STDOUT clean while human-readable
+progress and diagnostics stay on STDERR. This is the only behavioral change to
+this file for M6.
+
 ### M1 client correctness (`clients/openai_client.py`,
 `clients/ollama_client.py`)
 

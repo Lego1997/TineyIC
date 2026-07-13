@@ -303,7 +303,11 @@ def start_logger(config: configparser.ConfigParser):
 
         new_console = None
         if _console_level is not None:
-            new_console = logging.StreamHandler(stream=sys.stdout)
+            # TinyIC divergence (M6): console logs go to STDERR, never STDOUT.
+            # In ``tinyic debate --json`` STDOUT is a machine channel carrying
+            # ONLY event JSONL, so any log line on STDOUT would corrupt the
+            # agent contract. STDERR is the human-progress/diagnostics channel.
+            new_console = logging.StreamHandler(stream=sys.stderr)
             _apply_formatter(new_console)
 
         new_file = _create_file_handler() if _file_level is not None else None
@@ -375,7 +379,9 @@ def set_console_loglevel(log_level):
         else:
             _console_level = level
             if _console_handler is None:
-                handler = logging.StreamHandler(stream=sys.stdout)
+                # TinyIC divergence (M6): console logs go to STDERR (see
+                # ``start_logger``); STDOUT stays a clean event-JSONL channel.
+                handler = logging.StreamHandler(stream=sys.stderr)
                 _apply_formatter(handler)
                 _console_handler = handler
             new_handler = _console_handler
