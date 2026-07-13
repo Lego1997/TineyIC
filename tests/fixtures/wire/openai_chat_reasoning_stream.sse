@@ -1,0 +1,11 @@
+data: {"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Let me"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"reasoning_content":" think."},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"Answer"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":": 42"},"finish_reason":"stop"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":8,"total_tokens":28}}
+
+data: [DONE]

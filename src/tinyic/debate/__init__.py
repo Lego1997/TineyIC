@@ -45,37 +45,75 @@ def _iso_millis(value: datetime) -> str:
     ).replace("+00:00", "Z")
 
 
-def _debate_started_payload(ticker: str, company_name: str, personas) -> dict:
-    """Build non-secret effective-run metadata for the schema-v1 envelope."""
+def _persona_display_name(persona) -> str:
+    return (
+        str(persona.name)
+        if hasattr(persona, "name")
+        else str(persona).replace("_", " ").title()
+    )
+
+
+def _debate_started_payload(
+    ticker: str, company_name: str, personas, committee=None
+) -> dict:
+    """Build non-secret effective-run metadata for the schema-v1 envelope.
+
+    When a ``committee`` (resolved model plan) is present, each persona's
+    ``model_ref``/``auth_profile``/``thinking_level`` reflect its own binding —
+    making per-persona heterogeneity visible in the public event — and the
+    aggregator ``model_ref`` and preset name come from the committee. Without a
+    committee the legacy single-model config is recorded (M1 behavior).
+    """
     from tinytroupe import config_manager
 
-    model_ref = _canonical_model_ref()
-    provider = model_ref.split("/", 1)[0]
-    thinking_level = str(config_manager.get("reasoning_effort") or "off")
     caps = {"opening": 1, "cross_exam": 1, "rebuttal": 1, "verdict": 1}
-    persona_records = [
-        {
-            "name": (
-                str(persona.name)
-                if hasattr(persona, "name")
-                else str(persona).replace("_", " ").title()
-            ),
-            "model_ref": model_ref,
-            "auth_profile": f"{provider}:default",
-            "thinking_level": thinking_level,
-            # Temperament becomes configured in M4. M1 records the absence
-            # explicitly rather than inventing a behavioral classification.
-            "temperament": "unspecified",
+    if committee is not None:
+        persona_records = []
+        for persona in personas:
+            display = _persona_display_name(persona)
+            binding = committee.persona_bindings.get(display)
+            if binding is None:
+                binding = committee.aggregator_binding
+            persona_records.append(
+                {
+                    "name": display,
+                    "model_ref": binding.model_ref,
+                    "auth_profile": binding.auth_profile
+                    or f"{binding.provider}:default",
+                    "thinking_level": binding.thinking_level.value,
+                    "temperament": "unspecified",
+                }
+            )
+        effective_config = {
+            "preset": getattr(committee, "preset_name", "default"),
+            "personas": persona_records,
+            "moderator": "rules",
+            "aggregator": committee.aggregator_binding.model_ref,
+            "caps": caps,
         }
-        for persona in personas
-    ]
-    effective_config = {
-        "preset": "default",
-        "personas": persona_records,
-        "moderator": "rules",
-        "aggregator": model_ref,
-        "caps": caps,
-    }
+    else:
+        model_ref = _canonical_model_ref()
+        provider = model_ref.split("/", 1)[0]
+        thinking_level = str(config_manager.get("reasoning_effort") or "off")
+        persona_records = [
+            {
+                "name": _persona_display_name(persona),
+                "model_ref": model_ref,
+                "auth_profile": f"{provider}:default",
+                "thinking_level": thinking_level,
+                # Temperament becomes configured in M4. M1 records the absence
+                # explicitly rather than inventing a behavioral classification.
+                "temperament": "unspecified",
+            }
+            for persona in personas
+        ]
+        effective_config = {
+            "preset": "default",
+            "personas": persona_records,
+            "moderator": "rules",
+            "aggregator": model_ref,
+            "caps": caps,
+        }
     config_hash = hashlib.sha256(
         json.dumps(
             effective_config, sort_keys=True, separators=(",", ":")
@@ -167,11 +205,29 @@ def _vote_payload(vote: Vote) -> dict:
     }
 
 
+def _client_cached_tokens(client) -> int:
+    """Provider cached-input tokens a binding client has accumulated, if any.
+
+    The legacy snapshot/diff counters (``usage.COUNTER_FIELDS``) do not carry
+    cached tokens, so the binding-routed aggregate/extraction path reads them
+    straight off the client's own model-attributed stats.
+    """
+    getter = getattr(client, "get_cost_stats", None)
+    if not callable(getter):
+        return 0
+    stats = getter()
+    if not isinstance(stats, dict):
+        return 0
+    return int(stats.get("cached_tokens", 0) or 0)
+
+
 def _emit_aggregate_usage(
     event_log: EventLog,
     *,
     purpose: str,
     usage_delta: dict,
+    model_ref: str | None = None,
+    cached_tokens: int = 0,
 ) -> None:
     if not any(
         usage_delta.get(field, 0)
@@ -183,7 +239,8 @@ def _emit_aggregate_usage(
         )
     ):
         return
-    model_ref = _canonical_model_ref()
+    if model_ref is None:
+        model_ref = _canonical_model_ref()
     cost = estimate_model_keyed_cost(
         {model_ref: usage_delta}, MODEL_PRICES_USD_PER_MILLION
     )
@@ -192,7 +249,7 @@ def _emit_aggregate_usage(
         "model_ref": model_ref,
         "input_tokens": int(usage_delta.get("input_tokens", 0)),
         "output_tokens": int(usage_delta.get("output_tokens", 0)),
-        "cached_tokens": 0,
+        "cached_tokens": int(cached_tokens),
     }
     if cost is not None:
         payload["cost_usd"] = round(cost, 8)
@@ -205,6 +262,13 @@ def run_debate(
     data_package=None,
     session: Session | None = None,
     event_log: EventLog | None = None,
+    *,
+    preset: str | None = None,
+    model: str | None = None,
+    thinking: str | None = None,
+    committee=None,
+    config_path=None,
+    credentials=None,
 ) -> DebateResult:
     """Run a complete investment committee debate.
 
@@ -216,6 +280,20 @@ def run_debate(
             function creates and closes an isolated session for the debate.
         event_log: Optional caller-owned event sink. When omitted, a new log
             is written under ``~/.tinyic/runs/<debate_id>.jsonl``.
+        preset: Named committee preset from ``tinyic.toml`` (FR-1.4). When set
+            (or ``model``/``thinking`` overrides are given, or ``committee`` is
+            passed), each persona routes through its own ``ModelBinding`` and
+            the aggregator handles extraction/memo. When all of these are
+            ``None`` (the default), the legacy single-``client()`` path runs
+            unchanged — the smallest-interpretation M2 seam; full legacy removal
+            is M6.
+        model: Per-debate ``provider/model`` override applied to every role.
+        thinking: Per-debate thinking-level override applied to every role.
+        committee: Pre-resolved ``tinyic.models.Committee`` (programmatic/tests);
+            takes precedence over ``preset``/``model``/``thinking``.
+        config_path: Location of ``tinyic.toml`` (defaults to cwd / env).
+        credentials: ``CredentialProvider`` for building the committee's
+            transports (defaults to the environment credential provider).
 
     Returns:
         DebateResult with scorecard, transcript, and phase history.
@@ -235,6 +313,7 @@ def run_debate(
     owns_session = session is None
     debate_session = session
     resolved_client = None
+    resolved_committee = committee
     usage_baseline: dict = {}
     personas = []
     orchestrator = None
@@ -253,6 +332,30 @@ def run_debate(
         for name in persona_names:
             personas.append(load_persona(name, session=debate_session))
 
+        if resolved_committee is None and (
+            preset is not None or model is not None or thinking is not None
+        ):
+            from tinyic.models import build_committee, load_preset
+
+            resolved_preset = load_preset(preset, config_path)
+            has_runtime_override = model is not None or thinking is not None
+            if has_runtime_override:
+                resolved_preset = resolved_preset.with_overrides(
+                    model=model, thinking=thinking
+                )
+            persona_pairs = list(
+                zip(persona_names, [persona.name for persona in personas])
+            )
+            resolved_committee = build_committee(
+                resolved_preset,
+                persona_pairs,
+                credentials=credentials,
+                # The config was strict-validated at load_preset; a per-debate
+                # --model/--thinking override is a runtime choice the adapter
+                # remaps per call (FR-1.3), so it must not fail committee build.
+                validate_thinking=not has_runtime_override,
+            )
+
         if data_package is None:
             stage = "data"
             research_before = snapshot_cost_counters(resolved_client)
@@ -269,6 +372,7 @@ def run_debate(
                 data_package.ticker,
                 data_package.company_name,
                 personas,
+                committee=resolved_committee,
             ),
         )
         active_event_log.emit(
@@ -287,21 +391,45 @@ def run_debate(
             data_package=data_package,
             session=debate_session,
             event_log=active_event_log,
+            committee=resolved_committee,
         )
         orchestrator.run_debate()
 
         stage = "extraction"
-        extraction_before = snapshot_cost_counters(resolved_client)
-        votes = extract_votes(orchestrator)
-        extraction_after = snapshot_cost_counters(resolved_client)
-        extraction_usage = diff_cost_counters(
-            extraction_after, extraction_before
-        )
-        _emit_aggregate_usage(
-            active_event_log,
-            purpose="extraction",
-            usage_delta=extraction_usage,
-        )
+        if resolved_committee is not None:
+            # Vote extraction is aggregation work: route it through the
+            # aggregator binding and capture its native per-call usage.
+            from tinyic.models.routing import activate as _activate_binding
+
+            aggregator_client = resolved_committee.aggregator
+            extraction_before = snapshot_cost_counters(aggregator_client)
+            cached_before = _client_cached_tokens(aggregator_client)
+            with _activate_binding(aggregator_client):
+                votes = extract_votes(orchestrator)
+            extraction_after = snapshot_cost_counters(aggregator_client)
+            cached_after = _client_cached_tokens(aggregator_client)
+            extraction_usage = diff_cost_counters(
+                extraction_after, extraction_before
+            )
+            _emit_aggregate_usage(
+                active_event_log,
+                purpose="extraction",
+                usage_delta=extraction_usage,
+                model_ref=resolved_committee.aggregator_binding.model_ref,
+                cached_tokens=max(0, cached_after - cached_before),
+            )
+        else:
+            extraction_before = snapshot_cost_counters(resolved_client)
+            votes = extract_votes(orchestrator)
+            extraction_after = snapshot_cost_counters(resolved_client)
+            extraction_usage = diff_cost_counters(
+                extraction_after, extraction_before
+            )
+            _emit_aggregate_usage(
+                active_event_log,
+                purpose="extraction",
+                usage_delta=extraction_usage,
+            )
 
         stage = "finalization"
         scorecard = build_scorecard(votes, ticker, data_package.company_name)
@@ -326,24 +454,34 @@ def run_debate(
         transcript = orchestrator.pretty_current_interactions(
             max_content_length=None
         )
-        if callable(getattr(resolved_client, "get_cost_stats", None)):
-            world_cost_stats = orchestrator.get_cost_stats()
-        else:
-            # Legacy OpenAI-compatible clients (notably upstream Ollama) do
-            # not expose counters. Instrumentation must remain non-load-
-            # bearing until M2 adapters provide attributed usage uniformly.
-            world_cost_stats = {
-                "base_stats": snapshot_cost_counters(resolved_client),
-                "num_agents": len(orchestrator.agents),
-                "num_steps": len(orchestrator._phase_history),
+        if resolved_committee is not None:
+            # Binding-routed usage is captured per binding client at the adapter
+            # boundary; the debate rollup sums those model-attributed counters
+            # directly (no process-global snapshot diff, closing M1's
+            # concurrent-contamination handoff).
+            cost_stats = {
+                "base_stats": resolved_committee.aggregate_cost_stats(),
+                "model_ref": resolved_committee.aggregator_binding.model_ref,
             }
-        cost_stats = scope_world_cost_stats(
-            world_cost_stats, usage_baseline
-        )
-        # Legacy counters are not model-attributed. Capture the effective
-        # debate model alongside the scoped snapshot so later rendering never
-        # prices a switched model as GPT-5.2 by accident.
-        cost_stats["model_ref"] = _canonical_model_ref()
+        else:
+            if callable(getattr(resolved_client, "get_cost_stats", None)):
+                world_cost_stats = orchestrator.get_cost_stats()
+            else:
+                # Legacy OpenAI-compatible clients (notably upstream Ollama) do
+                # not expose counters. Instrumentation must remain non-load-
+                # bearing until M2 adapters provide attributed usage uniformly.
+                world_cost_stats = {
+                    "base_stats": snapshot_cost_counters(resolved_client),
+                    "num_agents": len(orchestrator.agents),
+                    "num_steps": len(orchestrator._phase_history),
+                }
+            cost_stats = scope_world_cost_stats(
+                world_cost_stats, usage_baseline
+            )
+            # Legacy counters are not model-attributed. Capture the effective
+            # debate model alongside the scoped snapshot so later rendering
+            # never prices a switched model as GPT-5.2 by accident.
+            cost_stats["model_ref"] = _canonical_model_ref()
 
         result = DebateResult(
             ticker=ticker,
@@ -398,6 +536,7 @@ def run_debate(
                             failed_ticker,
                             failed_company,
                             personas or persona_names,
+                            committee=resolved_committee,
                         ),
                     )
                 active_event_log.emit(
@@ -443,6 +582,7 @@ def get_debate_cost_stats(result: DebateResult) -> dict:
             "total_tokens": 0,
             "model_calls": 0,
             "cached_calls": 0,
+            "cached_tokens": 0,
             "estimated_cost_usd": 0.0,
         }
 
@@ -480,6 +620,7 @@ def get_debate_cost_stats(result: DebateResult) -> dict:
         "total_tokens": base.get("total_tokens", 0),
         "model_calls": base.get("model_calls", 0),
         "cached_calls": base.get("cached_calls", 0),
+        "cached_tokens": base.get("cached_tokens", 0),
         "estimated_cost_usd": (
             round(estimated_cost, 4) if estimated_cost is not None else None
         ),

@@ -66,6 +66,7 @@ class DebateOrchestrator(TinyWorld):
         data_package: DataPackage,
         session: Session | None = None,
         event_log: EventLog | None = None,
+        committee=None,
         **kwargs,
     ):
         if len(personas) < MIN_PERSONAS:
@@ -127,6 +128,11 @@ class DebateOrchestrator(TinyWorld):
 
             self.data_package = data_package
             self.event_log = event_log
+            # A resolved model plan (tinyic.models.Committee) or None. When
+            # present, each persona's turn routes through its own binding client
+            # and usage is captured natively at the adapter boundary; when None,
+            # the legacy client()+snapshot-delta path (M1) is used unchanged.
+            self.committee = committee
             self.current_phase = DebatePhase.SETUP
             self._phase_index = 0
             self._phase_history: list[str] = []
@@ -261,6 +267,104 @@ class DebateOrchestrator(TinyWorld):
             return "; ".join(str(item) for item in value)
         return str(value)
 
+    def _run_bound_turn(self, agent, binding_client, turn_id: str):
+        """Route one persona turn through its binding client.
+
+        Wires the client's per-turn sinks so the turn streams as ``think_delta``
+        / ``talk_delta`` events (turn-scoped, between ``turn_started`` and the
+        completed events): ``on_talk``/``on_think`` carry the scanner-extracted
+        action *prose* (never the raw JSON envelope), while ``on_reasoning``
+        carries the provider's native reasoning tokens — both THINK sources map
+        to ``think_delta`` per the event schema.  ``on_text`` is deliberately
+        left unset so the raw completion envelope never leaks into an event.
+        The provider's terminal usage is aggregated for this turn, then the
+        client is activated so the vendored act loop's ``client()`` calls resolve
+        to it.  Returns ``(committed_actions, latest_actions, binding_usage)``.
+        """
+        from tinyic.models import routing
+
+        turn_usages: list = []
+        binding_client.on_usage = (
+            lambda usage, model_ref: turn_usages.append(usage)
+        )
+        binding_client.on_reasoning = lambda text: self._emit_event(
+            "think_delta", {"turn_id": turn_id, "text": text}
+        )
+        binding_client.on_talk = lambda text: self._emit_event(
+            "talk_delta", {"turn_id": turn_id, "text": text}
+        )
+        binding_client.on_think = lambda text: self._emit_event(
+            "think_delta", {"turn_id": turn_id, "text": text}
+        )
+        try:
+            with routing.activate(binding_client):
+                committed_actions = agent.act(return_actions=True)
+        finally:
+            binding_client.on_usage = None
+            binding_client.on_reasoning = None
+            binding_client.on_talk = None
+            binding_client.on_think = None
+
+        latest = agent.pop_latest_actions()
+        self._handle_actions(agent, latest)
+        binding_usage = self._aggregate_turn_usage(
+            turn_usages, binding_client.binding.model_ref
+        )
+        return committed_actions, latest, binding_usage
+
+    @staticmethod
+    def _aggregate_turn_usage(turn_usages: list, model_ref: str) -> dict:
+        """Sum a turn's per-call adapter usage into one attributed record."""
+        return {
+            "input_tokens": sum(
+                getattr(usage, "input_tokens", 0) for usage in turn_usages
+            ),
+            "output_tokens": sum(
+                getattr(usage, "output_tokens", 0) for usage in turn_usages
+            ),
+            "cached_tokens": sum(
+                getattr(usage, "cached_tokens", 0) for usage in turn_usages
+            ),
+            "model_ref": model_ref,
+            "calls": len(turn_usages),
+        }
+
+    def _emit_binding_usage(self, agent, turn_id: str, binding_usage: dict):
+        """Emit one turn-scoped usage event from native adapter usage.
+
+        Returns the event ``seq`` for ``turn_completed.usage_ref``, or ``None``
+        when the routed turn reported no usage (a degraded lane), leaving
+        ``usage_ref`` null as the schema permits.
+        """
+        input_tokens = int(binding_usage.get("input_tokens", 0))
+        output_tokens = int(binding_usage.get("output_tokens", 0))
+        cached_tokens = int(binding_usage.get("cached_tokens", 0))
+        if not (input_tokens or output_tokens or cached_tokens):
+            return None
+        model_ref = binding_usage.get("model_ref") or self._model_ref()
+        cost = estimate_model_keyed_cost(
+            {
+                model_ref: {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                }
+            },
+            MODEL_PRICES_USD_PER_MILLION,
+        )
+        usage_payload = {
+            "turn_id": turn_id,
+            "persona": agent.name,
+            "purpose": "turn",
+            "model_ref": model_ref,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cached_tokens": cached_tokens,
+        }
+        if cost is not None:
+            usage_payload["cost_usd"] = round(cost, 8)
+        usage_event = self._emit_event("usage", usage_payload)
+        return usage_event.seq if usage_event is not None else None
+
     def _emit_committed_turn(
         self,
         *,
@@ -270,6 +374,7 @@ class DebateOrchestrator(TinyWorld):
         actions: list,
         committed_actions,
         usage_delta: dict,
+        binding_usage: dict | None = None,
     ) -> None:
         """Emit the completed action parts and state for one committed turn."""
         if self.event_log is None:
@@ -304,7 +409,11 @@ class DebateOrchestrator(TinyWorld):
         self._emit_event("cognitive_state", state_payload)
 
         usage_ref = None
-        if any(
+        if binding_usage is not None:
+            # Binding-routed turn: native per-call usage from the adapter,
+            # replacing the M1 snapshot-delta interim for this turn.
+            usage_ref = self._emit_binding_usage(agent, turn_id, binding_usage)
+        elif any(
             usage_delta.get(field, 0)
             for field in (
                 "input_tokens",
@@ -416,25 +525,48 @@ class DebateOrchestrator(TinyWorld):
             if self.on_agent_start:
                 self.on_agent_start(agent.name, phase.value)
 
-            usage_before = self._usage_snapshot()
-            committed_actions = agent.act(return_actions=True)
-            latest = agent.pop_latest_actions()
-            agents_actions[agent.name] = latest
-            self._handle_actions(agent, latest)
-            usage_after = self._usage_snapshot()
-            usage_delta = (
-                diff_cost_counters(usage_after, usage_before)
-                if usage_before and usage_after
-                else {}
+            binding_client = (
+                self.committee.client_for(agent.name)
+                if self.committee is not None
+                else None
             )
-            self._emit_committed_turn(
-                agent=agent,
-                phase=phase,
-                turn_id=turn_id,
-                actions=latest,
-                committed_actions=committed_actions,
-                usage_delta=usage_delta,
-            )
+            if binding_client is not None:
+                # Binding-routed turn: stream think/talk deltas and capture
+                # native per-call usage at the adapter boundary.
+                committed_actions, latest, binding_usage = self._run_bound_turn(
+                    agent, binding_client, turn_id
+                )
+                agents_actions[agent.name] = latest
+                self._emit_committed_turn(
+                    agent=agent,
+                    phase=phase,
+                    turn_id=turn_id,
+                    actions=latest,
+                    committed_actions=committed_actions,
+                    usage_delta={},
+                    binding_usage=binding_usage,
+                )
+            else:
+                # Legacy turn: snapshot the process-global counter delta (M1).
+                usage_before = self._usage_snapshot()
+                committed_actions = agent.act(return_actions=True)
+                latest = agent.pop_latest_actions()
+                agents_actions[agent.name] = latest
+                self._handle_actions(agent, latest)
+                usage_after = self._usage_snapshot()
+                usage_delta = (
+                    diff_cost_counters(usage_after, usage_before)
+                    if usage_before and usage_after
+                    else {}
+                )
+                self._emit_committed_turn(
+                    agent=agent,
+                    phase=phase,
+                    turn_id=turn_id,
+                    actions=latest,
+                    committed_actions=committed_actions,
+                    usage_delta=usage_delta,
+                )
 
             # Notify: agent finished
             if self.on_agent_done:
