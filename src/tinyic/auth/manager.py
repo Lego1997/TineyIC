@@ -47,7 +47,9 @@ _SAFE_MESSAGES = {
     "usage_limited": "All usable credentials are temporarily usage-limited.",
     "lane_incompatible": "The selected auth profile belongs to an incompatible lane.",
     "subscription_required": "This model requires a subscription auth profile.",
-    "policy_disabled": "The Anthropic subscription lane is disabled by policy_guard.",
+    "policy_disabled": (
+        "This provider's subscription lane is disabled by policy_guard."
+    ),
 }
 
 
@@ -154,9 +156,12 @@ class AuthManager:
         meter: RollingUsageMeter | None = None,
         window_estimates: Mapping[str, int] | None = None,
         anthropic_policy_guard: bool = True,
+        grok_policy_guard: bool = True,
     ) -> None:
         if not isinstance(anthropic_policy_guard, bool):
             raise TypeError("anthropic_policy_guard must be a boolean")
+        if not isinstance(grok_policy_guard, bool):
+            raise TypeError("grok_policy_guard must be a boolean")
         self.store = store or ProfileStore()
         self._environ = os.environ if environ is None else environ
         self._provider_env_refs = _normalise_env_refs(provider_env_refs)
@@ -164,6 +169,7 @@ class AuthManager:
         self.meter = meter or RollingUsageMeter(clock=self._clock)
         self._window_estimates = dict(window_estimates or {})
         self._anthropic_policy_guard = anthropic_policy_guard
+        self._grok_policy_guard = grok_policy_guard
         if any(
             not isinstance(value, int) or isinstance(value, bool) or value < 0
             for value in self._window_estimates.values()
@@ -185,15 +191,17 @@ class AuthManager:
         from tinyic.models.presets import load_config
 
         config = load_config(config_path)
-        if "anthropic_policy_guard" in kwargs:
-            raise TypeError(
-                "from_config owns anthropic_policy_guard; construct AuthManager "
-                "directly for programmatic policy control"
-            )
+        for owned in ("anthropic_policy_guard", "grok_policy_guard"):
+            if owned in kwargs:
+                raise TypeError(
+                    f"from_config owns {owned}; construct AuthManager "
+                    "directly for programmatic policy control"
+                )
         return cls(
             anthropic_policy_guard=config["auth"]["anthropic"][
                 "policy_guard"
             ],
+            grok_policy_guard=config["auth"]["grok"]["policy_guard"],
             **kwargs,
         )
 
@@ -202,6 +210,21 @@ class AuthManager:
         """Whether official Claude subscription plumbing may be considered."""
 
         return self._anthropic_policy_guard
+
+    @property
+    def grok_policy_guard(self) -> bool:
+        """Whether the Grok subscription lane may be considered."""
+
+        return self._grok_policy_guard
+
+    def _policy_guard_for(self, provider: str) -> bool:
+        """The configured subscription-lane kill switch for ``provider``."""
+
+        if provider == "anthropic":
+            return self._anthropic_policy_guard
+        if provider == "grok":
+            return self._grok_policy_guard
+        return True
 
     def __call__(self, ref: str) -> str | None:
         """Resolve a named profile ref or a backward-compatible env ref."""
@@ -221,15 +244,14 @@ class AuthManager:
                 profile = None
             if (
                 profile is not None
-                and profile.provider == "anthropic"
                 and profile.lane is AuthLane.SUBSCRIPTION
-                and not self._anthropic_policy_guard
+                and not self._policy_guard_for(profile.provider)
             ):
-                # The guard is a legal boundary: a stored Anthropic
-                # subscription profile must not resolve through the
-                # credential-provider seam when policy_guard is off, mirroring
-                # candidates()' suppression of that lane (not only the literal
-                # CLAUDE_CODE_OAUTH_TOKEN env ref guarded above).
+                # The guard is a legal boundary: a stored subscription-lane
+                # profile (Anthropic or Grok) must not resolve through the
+                # credential-provider seam when its policy_guard is off,
+                # mirroring candidates()' suppression of that lane (not only
+                # the literal CLAUDE_CODE_OAUTH_TOKEN env ref guarded above).
                 return None
             if (
                 profile is not None
@@ -298,9 +320,8 @@ class AuthManager:
                     continue
                 runtime_owners.add(runtime_owner)
             if (
-                provider == "anthropic"
-                and profile.lane is AuthLane.SUBSCRIPTION
-                and not self._anthropic_policy_guard
+                profile.lane is AuthLane.SUBSCRIPTION
+                and not self._policy_guard_for(profile.provider)
             ):
                 saw_policy_disabled = True
                 continue
@@ -470,6 +491,11 @@ class AuthManager:
             return "openai:codex-runtime"
         if profile.kind is ProfileKind.CLAUDE_RUNTIME:
             return "anthropic:claude-runtime"
+        if profile.kind is ProfileKind.GROK_READTHROUGH:
+            # Read-through aliases all view the one ~/.grok/auth.json login;
+            # they are not independent quota fallbacks.  GROK_OAUTH profiles
+            # each own their token document and rotate independently.
+            return "grok:grok-cli"
         return None
 
     def _now(self) -> datetime:

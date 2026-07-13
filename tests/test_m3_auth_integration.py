@@ -67,14 +67,21 @@ def test_auth_policy_config_defaults_true_parses_false_and_rejects_non_bool(
     absent = load_config(_config(tmp_path / "absent.toml", None))
     disabled = load_config(_config(tmp_path / "disabled.toml", "false"))
 
-    assert absent["auth"] == {"anthropic": {"policy_guard": True}}
-    assert disabled["auth"] == {"anthropic": {"policy_guard": False}}
+    assert absent["auth"] == {
+        "anthropic": {"policy_guard": True},
+        "grok": {"policy_guard": True},
+    }
+    assert disabled["auth"] == {
+        "anthropic": {"policy_guard": False},
+        "grok": {"policy_guard": True},
+    }
     configured = AuthManager.from_config(
         tmp_path / "disabled.toml",
         store=_store(tmp_path / "configured"),
         environ={},
     )
     assert configured.anthropic_policy_guard is False
+    assert configured.grok_policy_guard is True
 
     with pytest.raises(PresetError, match="policy_guard must be a boolean"):
         load_config(_config(tmp_path / "invalid.toml", '"false"'))

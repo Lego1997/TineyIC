@@ -30,6 +30,14 @@ default_preset = "default"
 [auth.anthropic]
 policy_guard = true
 
+# Same kill switch for the Grok (xAI) subscription lane — a read-through of
+# your own grok-CLI sign-in (~/.grok/auth.json) or TinyIC's own device-code
+# tokens. xAI has not published an explicit third-party policy for this lane;
+# false skips it before any token read, and an XAI_API_KEY profile in
+# auth_order remains available as overflow.
+[auth.grok]
+policy_guard = true
+
 # One strong model for the whole committee — the recommended starting point.
 [presets.default]
 model = "openai/gpt-5.6-sol"

@@ -290,6 +290,7 @@ def test_doctor_probes_every_builtin_provider_lane_and_requires_selected_preset(
         manager=_manager(tmp_path),
         openai_probe=lambda: "runtime_unavailable",
         anthropic_probe=lambda: "runtime_unavailable",
+        grok_probe=lambda: "missing_credential",
         runtime_locator=lambda _command: None,
     )
 
@@ -301,6 +302,7 @@ def test_doctor_probes_every_builtin_provider_lane_and_requires_selected_preset(
         ("anthropic", "subscription"),
         ("google", "api_key"),
         ("grok", "api_key"),
+        ("grok", "subscription"),
         ("kimi", "api_key"),
         ("ollama", "local"),
     }

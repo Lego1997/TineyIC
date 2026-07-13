@@ -1,0 +1,1149 @@
+"""Offline contract tests for the Grok (xAI) subscription lane (v2.1 stage B).
+
+Everything here is mocked: the OAuth token endpoint is an injected callable,
+the API is a scripted fake HTTP transport, and the ``~/.grok/auth.json``
+read-through runs against tmp files.  The never-writes guarantee is enforced
+with a write-protected file.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import stat
+from pathlib import Path
+
+import pytest
+
+from tinyic.auth.grok import (
+    GROK_AUTH_FILE_KEY,
+    GROK_AUTH_FILE_LEGACY_KEY,
+    GrokAuthReason,
+    GrokDeviceCodeFlow,
+    GrokDeviceLoginSession,
+    GrokTokenError,
+    GrokTokenSource,
+    GrokTokens,
+    file_token_loader,
+    parse_grok_auth_document,
+    probe_grok_auth,
+    probe_grok_profile_secret,
+    profile_token_loader,
+    refresh_grok_tokens,
+    tokens_from_profile_secret,
+    tokens_to_profile_secret,
+)
+from tinyic.auth.manager import AuthManager, AuthResolutionError
+from tinyic.auth.profiles import (
+    AuthLane,
+    AuthProfile,
+    ProfileKind,
+    ProfileStore,
+)
+from tinyic.models.adapters.grok_subscription import (
+    DEFAULT_SUBSCRIPTION_BASE_URL,
+    GROK_SUBSCRIPTION_BASE_URL_ENV_VAR,
+    GrokPolicyError,
+    GrokSubscriptionTransport,
+)
+from tinyic.models.binding import ModelBinding
+from tinyic.models.registry import default_registry
+from tinyic.models.thinking import ThinkingLevel
+from tinyic.models.types import (
+    AuthError,
+    ChatMessage,
+    ChatRequest,
+    FinalMessage,
+    Role,
+    TextDelta,
+    UsageLimitError,
+)
+
+
+NOW = 1_800_000_000.0  # a fixed offline "now" (epoch seconds)
+
+
+class MemoryKeyring:
+    def __init__(self) -> None:
+        self.value: str | None = None
+
+    def get_password(self, _service: str, _username: str) -> str | None:
+        return self.value
+
+    def set_password(self, _service: str, _username: str, value: str) -> None:
+        self.value = value
+
+
+def _store(tmp_path: Path, *profiles: AuthProfile) -> ProfileStore:
+    store = ProfileStore(
+        keyring_backend=MemoryKeyring(), path=tmp_path / "credentials.json"
+    )
+    for profile in profiles:
+        store.put(profile)
+    for provider in {profile.provider for profile in profiles}:
+        store.set_auth_order(
+            provider,
+            [p.ref for p in profiles if p.provider == provider],
+        )
+    return store
+
+
+def _write_auth_file(
+    path: Path,
+    *,
+    key: str = GROK_AUTH_FILE_KEY,
+    token_field: str = "key",
+    access: str = "grok-access-token",
+    refresh: str | None = "grok-refresh-token",
+    expires_at: object = NOW + 3600,
+) -> Path:
+    entry: dict[str, object] = {token_field: access}
+    if refresh is not None:
+        entry["refresh_token"] = refresh
+    if expires_at is not None:
+        entry["expires_at"] = expires_at
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({key: entry}), encoding="utf-8")
+    return path
+
+
+def _oauth_profile(secret: str | None = None) -> AuthProfile:
+    if secret is None:
+        secret = tokens_to_profile_secret(
+            GrokTokens("stored-access", "stored-refresh", NOW + 3600)
+        )
+    return AuthProfile(
+        "grok:supergrok", ProfileKind.GROK_OAUTH, AuthLane.SUBSCRIPTION, secret
+    )
+
+
+# --------------------------------------------------------------------------
+# profile kinds
+# --------------------------------------------------------------------------
+
+
+def test_grok_profile_kinds_enforce_secret_lane_and_provider_scoping():
+    oauth = _oauth_profile()
+    assert oauth.lane is AuthLane.SUBSCRIPTION
+    assert oauth.secret is not None
+
+    readthrough = AuthProfile(
+        "grok:grok-cli", ProfileKind.GROK_READTHROUGH, AuthLane.SUBSCRIPTION
+    )
+    assert readthrough.secret is None
+
+    with pytest.raises(ValueError, match="requires a secret"):
+        AuthProfile("grok:x", ProfileKind.GROK_OAUTH, AuthLane.SUBSCRIPTION)
+    with pytest.raises(ValueError, match="read-through"):
+        AuthProfile(
+            "grok:x",
+            ProfileKind.GROK_READTHROUGH,
+            AuthLane.SUBSCRIPTION,
+            "leaked",
+        )
+    with pytest.raises(ValueError, match="incompatible with provider"):
+        AuthProfile(
+            "openai:x", ProfileKind.GROK_OAUTH, AuthLane.SUBSCRIPTION, "tok"
+        )
+    with pytest.raises(ValueError, match="subscription lane"):
+        AuthProfile("grok:x", ProfileKind.GROK_OAUTH, AuthLane.API_KEY, "tok")
+
+
+def test_grok_profiles_round_trip_through_the_store(tmp_path):
+    store = _store(tmp_path, _oauth_profile())
+    loaded = store.get("grok:supergrok")
+    assert loaded is not None and loaded.kind is ProfileKind.GROK_OAUTH
+    assert tokens_from_profile_secret(loaded.secret).access_token == (
+        "stored-access"
+    )
+    public = json.dumps(loaded.public_dict())
+    assert "stored-access" not in public and "stored-refresh" not in public
+
+
+# --------------------------------------------------------------------------
+# ~/.grok/auth.json parsing (lenient, current + legacy shapes)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("key", [GROK_AUTH_FILE_KEY, GROK_AUTH_FILE_LEGACY_KEY])
+@pytest.mark.parametrize("token_field", ["key", "access_token", "token"])
+def test_auth_file_parsing_accepts_both_keys_and_lenient_field_names(
+    tmp_path, key, token_field
+):
+    path = _write_auth_file(
+        tmp_path / "auth.json", key=key, token_field=token_field
+    )
+    tokens = parse_grok_auth_document(json.loads(path.read_text()))
+    assert tokens is not None
+    assert tokens.access_token == "grok-access-token"
+    assert tokens.refresh_token == "grok-refresh-token"
+    assert tokens.expires_at == NOW + 3600
+
+
+def test_auth_file_parsing_coerces_millisecond_and_iso_expiries(tmp_path):
+    millis = parse_grok_auth_document(
+        {GROK_AUTH_FILE_KEY: {"key": "a", "expires_at": (NOW + 60) * 1000}}
+    )
+    assert millis.expires_at == pytest.approx(NOW + 60)
+    iso = parse_grok_auth_document(
+        {GROK_AUTH_FILE_KEY: {"key": "a", "expires_at": "2027-01-01T00:00:00Z"}}
+    )
+    assert iso.expires_at is not None
+
+
+def test_auth_file_parsing_handles_flat_and_unknown_key_documents():
+    flat = parse_grok_auth_document({"access_token": "a", "refresh_token": "r"})
+    assert flat is not None and flat.access_token == "a"
+    scanned = parse_grok_auth_document(
+        {"https://auth.x.ai::other-client": {"token": "b"}}
+    )
+    assert scanned is not None and scanned.access_token == "b"
+    assert parse_grok_auth_document({"unrelated": 3}) is None
+    assert parse_grok_auth_document("not-a-mapping") is None
+
+
+def test_probe_reports_missing_corrupt_expired_and_ok(tmp_path):
+    missing = probe_grok_auth(tmp_path / "absent" / "auth.json", now=NOW)
+    assert missing.reason is GrokAuthReason.MISSING_CREDENTIAL
+
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+    assert (
+        probe_grok_auth(corrupt, now=NOW).reason
+        is GrokAuthReason.INVALID_CREDENTIAL
+    )
+
+    expired = _write_auth_file(
+        tmp_path / "expired.json", refresh=None, expires_at=NOW - 10
+    )
+    assert probe_grok_auth(expired, now=NOW).reason is GrokAuthReason.EXPIRED
+
+    # An expired access token with a refresh token is still a usable lane.
+    refreshable = _write_auth_file(
+        tmp_path / "refreshable.json", expires_at=NOW - 10
+    )
+    assert probe_grok_auth(refreshable, now=NOW).ok
+
+    ok = _write_auth_file(tmp_path / "ok.json")
+    probe = probe_grok_auth(ok, now=NOW)
+    assert probe.ok and probe.source == "grok_file"
+    # Probe output is secret-free.
+    assert "grok-access-token" not in repr(probe)
+
+
+def test_profile_secret_probe_mirrors_the_file_probe():
+    assert probe_grok_profile_secret(None, now=NOW).reason is (
+        GrokAuthReason.MISSING_CREDENTIAL
+    )
+    assert probe_grok_profile_secret("{broken", now=NOW).reason is (
+        GrokAuthReason.INVALID_CREDENTIAL
+    )
+    fresh = tokens_to_profile_secret(GrokTokens("a", None, NOW + 3600))
+    assert probe_grok_profile_secret(fresh, now=NOW).ok
+    dead = tokens_to_profile_secret(GrokTokens("a", None, NOW - 5))
+    assert probe_grok_profile_secret(dead, now=NOW).reason is (
+        GrokAuthReason.EXPIRED
+    )
+
+
+# --------------------------------------------------------------------------
+# refresh + skew, and the never-writes guarantee
+# --------------------------------------------------------------------------
+
+
+def test_refresh_applies_the_two_minute_skew(tmp_path):
+    calls: list[dict[str, str]] = []
+
+    def http_post(url: str, form):
+        calls.append(dict(form))
+        return {
+            "access_token": "fresh-access",
+            "refresh_token": "fresh-refresh",
+            "expires_in": 3600,
+        }
+
+    path = _write_auth_file(tmp_path / "auth.json", expires_at=NOW + 90)
+    source = GrokTokenSource(
+        file_token_loader(path), http_post=http_post, clock=lambda: NOW
+    )
+    # 90s from expiry is inside the 120s skew: refresh must fire.
+    assert source.access_token() == "fresh-access"
+    assert calls and calls[0]["grant_type"] == "refresh_token"
+    assert calls[0]["refresh_token"] == "grok-refresh-token"
+
+    calls.clear()
+    far = _write_auth_file(tmp_path / "far.json", expires_at=NOW + 600)
+    relaxed = GrokTokenSource(
+        file_token_loader(far), http_post=http_post, clock=lambda: NOW
+    )
+    assert relaxed.access_token() == "grok-access-token"
+    assert calls == []  # comfortably fresh: no refresh traffic
+
+
+def test_readthrough_refresh_never_writes_the_cli_auth_file(tmp_path):
+    path = _write_auth_file(tmp_path / ".grok" / "auth.json", expires_at=NOW - 5)
+    original = path.read_bytes()
+    # Write-protect the file and its directory: any write attempt would raise.
+    os.chmod(path, stat.S_IRUSR)
+    os.chmod(path.parent, stat.S_IRUSR | stat.S_IXUSR)
+    try:
+        source = GrokTokenSource(
+            file_token_loader(path),
+            http_post=lambda url, form: {
+                "access_token": "refreshed",
+                "expires_in": 60,
+            },
+            clock=lambda: NOW,
+        )
+        assert source.access_token() == "refreshed"
+        # Second call reuses the in-memory token (still inside its window).
+        assert source.access_token() == "refreshed"
+    finally:
+        os.chmod(path.parent, stat.S_IRWXU)
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    assert path.read_bytes() == original
+
+
+def test_refresh_failures_are_reason_coded_and_secret_free():
+    expired_no_refresh = GrokTokens("a", None, NOW - 5)
+    with pytest.raises(GrokTokenError) as excinfo:
+        refresh_grok_tokens(expired_no_refresh, http_post=None, now=NOW)
+    assert excinfo.value.reason is GrokAuthReason.EXPIRED
+
+    rejected = GrokTokens("a", "refresh-secret-77", NOW - 5)
+    with pytest.raises(GrokTokenError) as excinfo:
+        refresh_grok_tokens(
+            rejected,
+            http_post=lambda url, form: {"error": "invalid_grant"},
+            now=NOW,
+        )
+    assert excinfo.value.reason is GrokAuthReason.EXPIRED
+    assert "refresh-secret-77" not in str(excinfo.value)
+    assert "<redacted>" in repr(rejected)
+
+
+def test_token_source_maps_missing_and_corrupt_sources(tmp_path):
+    missing = GrokTokenSource(
+        file_token_loader(tmp_path / "none.json"), clock=lambda: NOW
+    )
+    with pytest.raises(GrokTokenError) as excinfo:
+        missing.access_token()
+    assert excinfo.value.reason is GrokAuthReason.MISSING_CREDENTIAL
+
+    corrupt_profile = GrokTokenSource(
+        profile_token_loader(lambda: "{broken"), clock=lambda: NOW
+    )
+    with pytest.raises(GrokTokenError) as excinfo:
+        corrupt_profile.access_token()
+    assert excinfo.value.reason is GrokAuthReason.INVALID_CREDENTIAL
+
+
+# --------------------------------------------------------------------------
+# policy guard (config -> manager -> transport), incl. stored-profile refs
+# --------------------------------------------------------------------------
+
+
+def test_load_config_parses_the_grok_policy_guard(tmp_path):
+    from tinyic.models.presets import PresetError, load_config
+
+    path = tmp_path / "tinyic.toml"
+    path.write_text(
+        "[auth.grok]\npolicy_guard = false\n\n"
+        "[presets.default]\nmodel = \"grok/grok-4.5\"\nthinking = \"high\"\n",
+        encoding="utf-8",
+    )
+    config = load_config(path)
+    assert config["auth"]["grok"] == {"policy_guard": False}
+    assert config["auth"]["anthropic"] == {"policy_guard": True}
+
+    bad = tmp_path / "bad.toml"
+    bad.write_text(
+        "[auth.grok]\npolicy_guard = \"false\"\n\n"
+        "[presets.default]\nmodel = \"grok/grok-4.5\"\nthinking = \"high\"\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PresetError, match="auth.grok.policy_guard"):
+        load_config(bad)
+
+
+def test_from_config_plumbs_and_owns_the_grok_guard(tmp_path):
+    path = tmp_path / "tinyic.toml"
+    path.write_text(
+        "[auth.grok]\npolicy_guard = false\n\n"
+        "[presets.default]\nmodel = \"grok/grok-4.5\"\nthinking = \"high\"\n",
+        encoding="utf-8",
+    )
+    manager = AuthManager.from_config(
+        path, store=_store(tmp_path / "s"), environ={}
+    )
+    assert manager.grok_policy_guard is False
+    assert manager.anthropic_policy_guard is True
+
+    with pytest.raises(TypeError, match="grok_policy_guard"):
+        AuthManager.from_config(
+            path,
+            store=_store(tmp_path / "s2"),
+            environ={},
+            grok_policy_guard=True,
+        )
+
+
+def test_guard_off_skips_grok_subscription_candidates_and_keeps_key_overflow(
+    tmp_path,
+):
+    store = _store(tmp_path, _oauth_profile())
+    binding = ModelBinding("grok/grok-4.5", thinking_level=ThinkingLevel.HIGH)
+
+    guarded = AuthManager(store, environ={}, grok_policy_guard=True)
+    refs = [candidate.ref for candidate in guarded.candidates(binding)]
+    assert refs == ["grok:supergrok"]
+
+    disabled = AuthManager(store, environ={}, grok_policy_guard=False)
+    with pytest.raises(AuthResolutionError) as excinfo:
+        disabled.candidates(binding)
+    assert excinfo.value.reason_code == "policy_disabled"
+
+    # An XAI_API_KEY profile remains available as overflow — the guard only
+    # removes the subscription lane, never the provider.
+    overflow = AuthManager(
+        store, environ={"XAI_API_KEY": "xai-key"}, grok_policy_guard=False
+    )
+    lanes = [candidate.lane for candidate in overflow.candidates(binding)]
+    assert lanes == [AuthLane.API_KEY]
+
+
+def test_guard_off_suppresses_stored_grok_profile_refs_in_call(tmp_path):
+    """The b9e889f precedent: the guard covers the credential-provider seam."""
+    secret = tokens_to_profile_secret(GrokTokens("seam-access", "r", NOW + 3600))
+    store = _store(tmp_path, _oauth_profile(secret))
+
+    enabled = AuthManager(store, environ={}, grok_policy_guard=True)
+    assert enabled("grok:supergrok") == secret
+
+    disabled = AuthManager(store, environ={}, grok_policy_guard=False)
+    assert disabled("grok:supergrok") is None
+
+
+def test_transport_guard_blocks_before_any_token_read(tmp_path):
+    def forbidden_loader():
+        raise AssertionError("policy-disabled transport read a token")
+
+    transport = GrokSubscriptionTransport(
+        ModelBinding("grok/grok-4.5", thinking_level=ThinkingLevel.HIGH),
+        None,
+        policy_guard=False,
+        token_source=GrokTokenSource(forbidden_loader, clock=lambda: NOW),
+    )
+    request = ChatRequest(
+        [ChatMessage(Role.USER, "hi")],
+        ModelBinding("grok/grok-4.5", thinking_level=ThinkingLevel.HIGH),
+        stream=False,
+    )
+    with pytest.raises(GrokPolicyError) as excinfo:
+        list(transport.generate(request))
+    assert excinfo.value.reason_code == "policy_disabled"
+
+
+def test_transport_honors_a_disabled_manager_guard_on_credentials():
+    class DisabledCandidate:
+        kind = ProfileKind.GROK_READTHROUGH
+        ref = "grok:grok-cli"
+        grok_policy_guard = False
+
+        def __call__(self, _ref):
+            return None
+
+    transport = GrokSubscriptionTransport(
+        ModelBinding("grok/grok-4.5", thinking_level=ThinkingLevel.HIGH),
+        DisabledCandidate(),
+    )
+    request = ChatRequest(
+        [ChatMessage(Role.USER, "hi")],
+        ModelBinding("grok/grok-4.5", thinking_level=ThinkingLevel.HIGH),
+        stream=False,
+    )
+    with pytest.raises(GrokPolicyError):
+        list(transport.generate(request))
+
+
+# --------------------------------------------------------------------------
+# the transport: wire shape, base URL, entitlement 403 -> rotation
+# --------------------------------------------------------------------------
+
+
+class FakeResponse:
+    def __init__(self, status_code: int, body: str, headers=None) -> None:
+        self.status_code = status_code
+        self._body = body
+        self._headers = headers or {}
+
+    def header(self, name: str):
+        for key, value in self._headers.items():
+            if key.lower() == name.lower():
+                return value
+        return None
+
+    def iter_lines(self):
+        yield from self._body.split("\n")
+
+    def read_text(self) -> str:
+        return self._body
+
+    def close(self) -> None:
+        pass
+
+
+class ScriptedHttp:
+    def __init__(self, *responses) -> None:
+        self._responses = list(responses)
+        self.sent = []
+
+    def send(self, request):
+        self.sent.append(request)
+        return self._responses.pop(0)
+
+
+def _completion_body(text: str = "hello") -> str:
+    return json.dumps(
+        {
+            "choices": [
+                {"message": {"content": text}, "finish_reason": "stop"}
+            ],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+        }
+    )
+
+
+def _readthrough_candidate() -> AuthProfile:
+    from tinyic.auth.manager import AuthCandidate
+
+    return AuthCandidate(
+        AuthProfile(
+            "grok:grok-cli", ProfileKind.GROK_READTHROUGH, AuthLane.SUBSCRIPTION
+        )
+    )
+
+
+def test_transport_sends_bearer_from_the_auth_file_to_api_x_ai(tmp_path):
+    path = _write_auth_file(tmp_path / "auth.json")
+    http = ScriptedHttp(FakeResponse(200, _completion_body()))
+    transport = GrokSubscriptionTransport(
+        ModelBinding("grok/grok-4.5", thinking_level=ThinkingLevel.HIGH),
+        _readthrough_candidate(),
+        auth_path=path,
+        clock=lambda: NOW,
+        http=http,
+        environ={},
+    )
+    request = ChatRequest(
+        [ChatMessage(Role.USER, "hi")],
+        ModelBinding("grok/grok-4.5", thinking_level=ThinkingLevel.HIGH),
+        stream=False,
+    )
+    events = list(transport.generate(request))
+    final = [event for event in events if isinstance(event, FinalMessage)]
+    assert final and final[0].text == "hello"
+
+    sent = http.sent[0]
+    assert sent.url == f"{DEFAULT_SUBSCRIPTION_BASE_URL}/chat/completions"
+    assert sent.headers["authorization"] == "Bearer grok-access-token"
+    assert sent.body["model"] == "grok-4.5"
+    assert sent.body["reasoning_effort"] == "high"
+
+
+def test_subscription_base_url_env_override_is_honored(tmp_path):
+    path = _write_auth_file(tmp_path / "auth.json")
+    http = ScriptedHttp(FakeResponse(200, _completion_body()))
+    transport = GrokSubscriptionTransport(
+        ModelBinding("grok/grok-4.3", thinking_level=ThinkingLevel.LOW),
+        _readthrough_candidate(),
+        auth_path=path,
+        clock=lambda: NOW,
+        http=http,
+        environ={
+            GROK_SUBSCRIPTION_BASE_URL_ENV_VAR: (
+                "https://cli-chat-proxy.grok.com/v1"
+            )
+        },
+    )
+    request = ChatRequest(
+        [ChatMessage(Role.USER, "hi")],
+        ModelBinding("grok/grok-4.3", thinking_level=ThinkingLevel.LOW),
+        stream=False,
+    )
+    list(transport.generate(request))
+    assert http.sent[0].url == (
+        "https://cli-chat-proxy.grok.com/v1/chat/completions"
+    )
+
+
+def test_entitlement_403_is_a_pre_output_usage_limit(tmp_path):
+    path = _write_auth_file(tmp_path / "auth.json")
+    body = (
+        "You have either run out of available resources or do not have an "
+        "active Grok subscription."
+    )
+    http = ScriptedHttp(FakeResponse(403, body))
+    transport = GrokSubscriptionTransport(
+        ModelBinding("grok/grok-4.5", thinking_level=ThinkingLevel.HIGH),
+        _readthrough_candidate(),
+        auth_path=path,
+        clock=lambda: NOW,
+        http=http,
+        environ={},
+    )
+    request = ChatRequest(
+        [ChatMessage(Role.USER, "hi")],
+        ModelBinding("grok/grok-4.5", thinking_level=ThinkingLevel.HIGH),
+        stream=False,
+    )
+    with pytest.raises(UsageLimitError) as excinfo:
+        list(transport.generate(request))
+    assert excinfo.value.reason_code == "subscription_inactive"
+    assert excinfo.value.partial_output is False
+    # The provider-controlled body text never crosses the adapter boundary.
+    assert "run out of available resources" not in str(excinfo.value)
+
+
+def test_plain_403_stays_an_auth_error(tmp_path):
+    path = _write_auth_file(tmp_path / "auth.json")
+    http = ScriptedHttp(FakeResponse(403, json.dumps({"error": "forbidden"})))
+    transport = GrokSubscriptionTransport(
+        ModelBinding("grok/grok-4.5", thinking_level=ThinkingLevel.HIGH),
+        _readthrough_candidate(),
+        auth_path=path,
+        clock=lambda: NOW,
+        http=http,
+        environ={},
+    )
+    request = ChatRequest(
+        [ChatMessage(Role.USER, "hi")],
+        ModelBinding("grok/grok-4.5", thinking_level=ThinkingLevel.HIGH),
+        stream=False,
+    )
+    with pytest.raises(AuthError):
+        list(transport.generate(request))
+
+
+def test_rotation_advances_past_an_entitlement_403_without_replay(tmp_path):
+    """The whole seam: subscription 403 -> UsageLimitError -> next profile."""
+    auth_file = _write_auth_file(tmp_path / "auth.json")
+    store = _store(
+        tmp_path,
+        AuthProfile(
+            "grok:grok-cli", ProfileKind.GROK_READTHROUGH, AuthLane.SUBSCRIPTION
+        ),
+        AuthProfile("grok:key", ProfileKind.API_KEY, AuthLane.API_KEY, "xai-k"),
+    )
+    manager = AuthManager(store, environ={})
+    binding = ModelBinding("grok/grok-4.5", thinking_level=ThinkingLevel.HIGH)
+
+    entitlement_body = "No active Grok subscription."
+    fallback_events = [TextDelta("ok"), FinalMessage(text="ok")]
+
+    def child_factory(child_binding, candidate):
+        if candidate.kind is ProfileKind.GROK_READTHROUGH:
+            return GrokSubscriptionTransport(
+                child_binding,
+                candidate,
+                auth_path=auth_file,
+                clock=lambda: NOW,
+                http=ScriptedHttp(FakeResponse(403, entitlement_body)),
+                environ={},
+            )
+
+        class KeyTransport:
+            def generate(self, _request):
+                yield from fallback_events
+
+        return KeyTransport()
+
+    rotating = manager.new_transport(binding, child_factory)
+    request = ChatRequest([ChatMessage(Role.USER, "hi")], binding, stream=True)
+    events = list(rotating.generate(request))
+
+    texts = [event.text for event in events if isinstance(event, TextDelta)]
+    assert texts == ["ok"]
+    assert manager.is_usage_limited("grok:grok-cli")
+    assert rotating.selected_profile_ref == "grok:key"
+    finals = [event for event in events if isinstance(event, FinalMessage)]
+    assert len(finals) == 1  # never replayed, never duplicated
+
+
+def test_readthrough_aliases_share_one_runtime_owner(tmp_path):
+    store = _store(
+        tmp_path,
+        AuthProfile(
+            "grok:cli-a", ProfileKind.GROK_READTHROUGH, AuthLane.SUBSCRIPTION
+        ),
+        AuthProfile(
+            "grok:cli-b", ProfileKind.GROK_READTHROUGH, AuthLane.SUBSCRIPTION
+        ),
+    )
+    manager = AuthManager(store, environ={})
+    binding = ModelBinding("grok/grok-4.5", thinking_level=ThinkingLevel.HIGH)
+    refs = [candidate.ref for candidate in manager.candidates(binding)]
+    # Two aliases of the one ~/.grok login are not independent fallbacks.
+    assert refs == ["grok:cli-a"]
+
+
+def test_registry_dispatches_grok_subscription_kinds_to_the_transport(tmp_path):
+    from tinyic.auth.manager import AuthCandidate
+
+    provider = default_registry().get("grok")
+    binding = ModelBinding("grok/grok-4.5", thinking_level=ThinkingLevel.HIGH)
+    readthrough = provider._new_child_transport(
+        binding.with_auth_profile("grok:grok-cli"), _readthrough_candidate()
+    )
+    assert isinstance(readthrough, GrokSubscriptionTransport)
+
+    oauth = provider._new_child_transport(
+        binding.with_auth_profile("grok:supergrok"),
+        AuthCandidate(_oauth_profile()),
+    )
+    assert isinstance(oauth, GrokSubscriptionTransport)
+
+
+def test_oauth_profile_candidate_feeds_the_stored_token_document(tmp_path):
+    from tinyic.auth.manager import AuthCandidate
+
+    candidate = AuthCandidate(_oauth_profile())
+    http = ScriptedHttp(FakeResponse(200, _completion_body("stored")))
+    transport = GrokSubscriptionTransport(
+        ModelBinding("grok/grok-4.5", thinking_level=ThinkingLevel.HIGH),
+        candidate,
+        clock=lambda: NOW,
+        http=http,
+        environ={},
+    )
+    request = ChatRequest(
+        [ChatMessage(Role.USER, "hi")],
+        ModelBinding("grok/grok-4.5", thinking_level=ThinkingLevel.HIGH),
+        stream=False,
+    )
+    list(transport.generate(request))
+    assert http.sent[0].headers["authorization"] == "Bearer stored-access"
+
+
+# --------------------------------------------------------------------------
+# doctor
+# --------------------------------------------------------------------------
+
+
+def _doctor_manager(tmp_path, *profiles, environ=None, **kwargs):
+    return AuthManager(
+        _store(tmp_path, *profiles),
+        environ={} if environ is None else environ,
+        **kwargs,
+    )
+
+
+def test_doctor_reports_the_grok_subscription_lane_from_the_injected_probe(
+    tmp_path,
+):
+    from tinyic.auth.doctor import run_doctor
+
+    report = run_doctor(
+        manager=_doctor_manager(tmp_path),
+        openai_probe=lambda: "runtime_unavailable",
+        anthropic_probe=lambda: "runtime_unavailable",
+        grok_probe=lambda: "ok",
+        runtime_locator=lambda _command: None,
+    )
+    row = next(
+        probe
+        for probe in report.probes
+        if (probe.provider, probe.lane) == ("grok", "subscription")
+    )
+    assert row.reason_code == "ok"
+    assert row.message == "Grok subscription sign-in is available."
+    assert row.required is False
+
+
+def test_doctor_surfaces_subscription_inactive_as_a_known_reason(tmp_path):
+    from tinyic.auth.doctor import run_doctor
+
+    report = run_doctor(
+        manager=_doctor_manager(tmp_path),
+        openai_probe=lambda: "runtime_unavailable",
+        anthropic_probe=lambda: "runtime_unavailable",
+        grok_probe=lambda: "subscription_inactive",
+        runtime_locator=lambda _command: None,
+    )
+    row = next(
+        probe
+        for probe in report.probes
+        if (probe.provider, probe.lane) == ("grok", "subscription")
+    )
+    assert row.reason_code == "subscription_inactive"
+    assert row.status.value == "warning"
+
+
+def test_doctor_guard_off_reports_policy_disabled_without_probing(tmp_path):
+    from tinyic.auth.doctor import run_doctor
+
+    def forbidden_probe():
+        raise AssertionError("policy-disabled doctor probed the grok lane")
+
+    report = run_doctor(
+        manager=_doctor_manager(tmp_path, grok_policy_guard=False),
+        openai_probe=lambda: "runtime_unavailable",
+        anthropic_probe=lambda: "runtime_unavailable",
+        grok_probe=forbidden_probe,
+        runtime_locator=lambda _command: None,
+    )
+    row = next(
+        probe
+        for probe in report.probes
+        if (probe.provider, probe.lane) == ("grok", "subscription")
+    )
+    assert row.reason_code == "policy_disabled"
+    assert row.message == (
+        "The Grok subscription lane is disabled by policy_guard."
+    )
+
+
+def test_doctor_probes_a_stored_grok_oauth_profile_not_the_cli_file(tmp_path):
+    from tinyic.auth.doctor import run_doctor
+
+    def forbidden_probe():
+        raise AssertionError("stored-profile doctor read the CLI file probe")
+
+    report = run_doctor(
+        manager=_doctor_manager(tmp_path, _oauth_profile()),
+        openai_probe=lambda: "runtime_unavailable",
+        anthropic_probe=lambda: "runtime_unavailable",
+        grok_probe=forbidden_probe,
+        runtime_locator=lambda _command: None,
+    )
+    row = next(
+        probe
+        for probe in report.probes
+        if (probe.provider, probe.lane) == ("grok", "subscription")
+    )
+    assert row.reason_code == "ok"
+    assert row.auth_profile == "grok:supergrok"
+    assert "stored-access" not in report.to_json()
+
+
+# --------------------------------------------------------------------------
+# device-code state machine (pure logic, no network)
+# --------------------------------------------------------------------------
+
+
+class ScriptedOAuth:
+    """Scripted http_post seam recording every form it receives."""
+
+    def __init__(self, start_payload, poll_payloads) -> None:
+        self.start_payload = start_payload
+        self.poll_payloads = list(poll_payloads)
+        self.calls: list[tuple[str, dict[str, str]]] = []
+
+    def __call__(self, url: str, form):
+        self.calls.append((url, dict(form)))
+        if form.get("grant_type") == (
+            "urn:ietf:params:oauth:grant-type:device_code"
+        ):
+            return self.poll_payloads.pop(0)
+        return self.start_payload
+
+
+_START = {
+    "device_code": "dev-code",
+    "user_code": "ABCD-1234",
+    "verification_uri": "https://auth.x.ai/activate",
+    "interval": 5,
+    "expires_in": 900,
+}
+
+
+def test_device_flow_walks_pending_slow_down_then_success():
+    oauth = ScriptedOAuth(
+        _START,
+        [
+            {"error": "authorization_pending"},
+            {"error": "slow_down"},
+            {
+                "access_token": "device-access",
+                "refresh_token": "device-refresh",
+                "expires_in": 3600,
+            },
+        ],
+    )
+    flow = GrokDeviceCodeFlow(http_post=oauth, clock=lambda: NOW)
+    challenge = flow.start()
+    assert flow.state == "pending"
+    assert challenge.user_code == "ABCD-1234"
+    assert challenge.verification_url == "https://auth.x.ai/activate"
+    assert "dev-code" not in repr(challenge)
+
+    assert flow.poll() is None
+    assert flow.interval == 5.0
+    assert flow.poll() is None
+    assert flow.interval == 10.0  # slow_down widened the interval
+    tokens = flow.poll()
+    assert flow.state == "complete"
+    assert tokens.access_token == "device-access"
+    assert tokens.refresh_token == "device-refresh"
+    assert tokens.expires_at == pytest.approx(NOW + 3600)
+
+    start_form = oauth.calls[0][1]
+    assert start_form["client_id"]
+    assert start_form["code_challenge_method"] == "S256"
+    poll_form = oauth.calls[1][1]
+    assert poll_form["device_code"] == "dev-code"
+    assert poll_form["code_verifier"]
+
+
+def test_device_flow_terminal_denied_and_expired_states():
+    denied = GrokDeviceCodeFlow(
+        http_post=ScriptedOAuth(_START, [{"error": "access_denied"}]),
+        clock=lambda: NOW,
+    )
+    denied.start()
+    with pytest.raises(GrokTokenError) as excinfo:
+        denied.poll()
+    assert denied.state == "denied"
+    assert excinfo.value.reason is GrokAuthReason.INVALID_CREDENTIAL
+
+    expired = GrokDeviceCodeFlow(
+        http_post=ScriptedOAuth(_START, [{"error": "expired_token"}]),
+        clock=lambda: NOW,
+    )
+    expired.start()
+    with pytest.raises(GrokTokenError):
+        expired.poll()
+    assert expired.state == "expired"
+
+    clock_values = iter([NOW, NOW + 901])
+    timed_out = GrokDeviceCodeFlow(
+        http_post=ScriptedOAuth(_START, []),
+        clock=lambda: next(clock_values),
+    )
+    timed_out.start()
+    with pytest.raises(GrokTokenError) as excinfo:
+        timed_out.poll()  # local clock passed expires_in: no network poll
+    assert timed_out.state == "expired"
+    assert excinfo.value.reason is GrokAuthReason.EXPIRED
+
+
+def test_device_login_session_yields_a_persistable_profile_secret():
+    oauth = ScriptedOAuth(
+        _START,
+        [
+            {"error": "authorization_pending"},
+            {"access_token": "sess-access", "refresh_token": "sess-refresh"},
+        ],
+    )
+    slept: list[float] = []
+    with GrokDeviceLoginSession(
+        flow_factory=lambda: GrokDeviceCodeFlow(
+            http_post=oauth, clock=lambda: NOW
+        ),
+        sleep=slept.append,
+    ) as session:
+        challenge = session.start(None)
+        result = session.wait(challenge)
+    assert result.ok
+    assert slept == [5.0, 5.0]
+    tokens = tokens_from_profile_secret(result.profile_secret)
+    assert tokens.access_token == "sess-access"
+    assert "sess-access" not in repr(result)
+
+    # The secret round-trips into a valid GROK_OAUTH profile.
+    profile = AuthProfile(
+        "grok:supergrok",
+        ProfileKind.GROK_OAUTH,
+        AuthLane.SUBSCRIPTION,
+        result.profile_secret,
+    )
+    assert probe_grok_profile_secret(profile.secret, now=NOW).ok
+
+
+def test_device_login_session_reports_denial_as_a_reason_code():
+    oauth = ScriptedOAuth(_START, [{"error": "access_denied"}])
+    with GrokDeviceLoginSession(
+        flow_factory=lambda: GrokDeviceCodeFlow(
+            http_post=oauth, clock=lambda: NOW
+        ),
+        sleep=lambda _s: None,
+    ) as session:
+        challenge = session.start(None)
+        result = session.wait(challenge)
+    assert not result.ok
+    assert result.reason is GrokAuthReason.INVALID_CREDENTIAL
+    assert result.profile_secret is None
+
+
+# --------------------------------------------------------------------------
+# the onboarding wizard's grok subscription branch
+# --------------------------------------------------------------------------
+
+
+def _grok_report(*, subscription_ok: bool = False):
+    from tinyic.auth.doctor import ProbeResult, ProbeStatus, build_report
+
+    def _probe(lane, status, reason):
+        return ProbeResult(
+            provider="grok",
+            lane=lane,
+            auth_profile=None,
+            model_ref=None,
+            required=False,
+            status=status,
+            reason_code=reason,
+            message="probe detail",
+        )
+
+    return build_report(
+        [
+            _probe("api_key", ProbeStatus.WARNING, "missing_credential"),
+            _probe(
+                "subscription",
+                ProbeStatus.OK if subscription_ok else ProbeStatus.WARNING,
+                "ok" if subscription_ok else "missing_credential",
+            ),
+        ],
+        preset="default",
+    )
+
+
+def _wizard(tmp_path, *, report=None, grok_login_factory=None, **manager_kwargs):
+    from tinyic.tui.onboard import OnboardController
+
+    manager = AuthManager(_store(tmp_path), environ={}, **manager_kwargs)
+    controller = OnboardController(
+        manager=manager,
+        report_factory=lambda: report if report is not None else _grok_report(),
+        verify_probe=lambda _binding, _candidate: "ok",
+        grok_login_factory=grok_login_factory,
+    )
+    controller.start()
+    return controller
+
+
+def _choice_ids(controller):
+    return [choice.id for choice in controller.choices()]
+
+
+def _select(controller, choice_id):
+    controller.select_index(_choice_ids(controller).index(choice_id))
+
+
+def test_wizard_offers_the_grok_subscription_branch(tmp_path):
+    controller = _wizard(tmp_path, report=_grok_report(subscription_ok=True))
+    controller.activate()  # DETECT -> CHOOSE (grok is the only plan)
+    assert _choice_ids(controller) == ["subscription", "api_key", "skip"]
+    subscription = controller.choices()[0]
+    assert subscription.enabled
+    assert "policy" in (subscription.note or "").casefold()
+
+    _select(controller, "subscription")
+    controller.activate()  # CHOOSE subscription -> CONNECT_SUB menu
+    assert _choice_ids(controller) == ["reuse", "device", "back"]
+
+
+def test_wizard_guard_off_disables_the_grok_subscription_choice(tmp_path):
+    controller = _wizard(tmp_path, grok_policy_guard=False)
+    controller.activate()
+    subscription = controller.choices()[0]
+    assert subscription.id == "subscription" and not subscription.enabled
+    assert "auth.grok.policy_guard" in (subscription.disabled_reason or "")
+
+    kind, payload = controller.activate()
+    assert (kind, payload) == ("navigate", None)
+    assert controller.current_plan().error == "policy_disabled"
+
+
+def test_wizard_reuse_persists_a_grok_readthrough_marker(tmp_path):
+    controller = _wizard(tmp_path, report=_grok_report(subscription_ok=True))
+    controller.activate()  # -> CHOOSE
+    _select(controller, "subscription")
+    controller.activate()  # -> CONNECT_SUB menu
+    kind, verify = controller.activate()  # highlighted: "reuse"
+    assert kind == "verify"
+    assert verify() is True
+
+    stored = controller.store.get("grok:grok-cli")
+    assert stored is not None
+    assert stored.kind is ProfileKind.GROK_READTHROUGH
+    assert stored.secret is None
+    assert controller.store.get_auth_order("grok") == ("grok:grok-cli",)
+
+
+def test_wizard_device_login_persists_tinyic_owned_grok_tokens(tmp_path):
+    secret = tokens_to_profile_secret(
+        GrokTokens("wizard-access", "wizard-refresh", NOW + 3600)
+    )
+
+    class FakeGrokSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def start(self, _mode):
+            from tinyic.auth.grok import GrokDeviceChallenge
+
+            return GrokDeviceChallenge(
+                verification_url="https://auth.x.ai/activate",
+                user_code="ABCD-1234",
+                interval=5.0,
+                expires_at=None,
+            )
+
+        def wait(self, _challenge):
+            from tinyic.auth.grok import GrokAuthReason, GrokLoginResult
+
+            return GrokLoginResult(GrokAuthReason.OK, secret)
+
+    controller = _wizard(tmp_path, grok_login_factory=FakeGrokSession)
+    controller.activate()  # -> CHOOSE
+    controller.activate()  # -> CONNECT_SUB menu (device only: not detected)
+    assert _choice_ids(controller) == ["device", "back"]
+    kind, _payload = controller.activate()
+    assert kind == "device"
+    assert controller.sub_stage == "device_wait"
+    assert controller.challenge.user_code == "ABCD-1234"
+
+    assert controller.finish_subscription_login() is True
+    stored = controller.store.get("grok:supergrok")
+    assert stored is not None
+    assert stored.kind is ProfileKind.GROK_OAUTH
+    assert stored.secret == secret
+    assert controller.store.get_auth_order("grok") == ("grok:supergrok",)
+    plan = controller.plans[0]
+    assert plan.outcome == "verified" and plan.persisted_lane == "subscription"
+
+
+def test_wizard_device_denial_surfaces_the_reason_without_persisting(tmp_path):
+    class DeniedGrokSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def start(self, _mode):
+            from tinyic.auth.grok import GrokDeviceChallenge
+
+            return GrokDeviceChallenge(
+                verification_url="https://auth.x.ai/activate",
+                user_code="ABCD-1234",
+                interval=5.0,
+                expires_at=None,
+            )
+
+        def wait(self, _challenge):
+            from tinyic.auth.grok import GrokAuthReason, GrokLoginResult
+
+            return GrokLoginResult(GrokAuthReason.INVALID_CREDENTIAL)
+
+    controller = _wizard(tmp_path, grok_login_factory=DeniedGrokSession)
+    controller.activate()
+    controller.activate()
+    controller.activate()  # device
+    assert controller.finish_subscription_login() is False
+    assert controller.plans[0].error == "invalid_credential"
+    assert controller.store.get("grok:supergrok") is None

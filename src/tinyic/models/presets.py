@@ -68,7 +68,11 @@ DEFAULT_PRESET_NAME = "default"
 #: Environment override for the config file location (else ``./tinyic.toml``).
 CONFIG_ENV_VAR = "TINYIC_CONFIG"
 CONFIG_FILENAME = "tinyic.toml"
-DEFAULT_AUTH_CONFIG = {"anthropic": {"policy_guard": True}}
+#: Legal/policy kill switches, one per subscription-capable provider lane.
+DEFAULT_AUTH_CONFIG = {
+    "anthropic": {"policy_guard": True},
+    "grok": {"policy_guard": True},
+}
 
 
 class PresetError(ValueError):
@@ -375,15 +379,17 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     auth_table = raw.get("auth", {})
     if not isinstance(auth_table, Mapping):
         raise PresetError(f"{resolved} [auth] must be a table")
-    anthropic_table = auth_table.get("anthropic", {})
-    if not isinstance(anthropic_table, Mapping):
-        raise PresetError(f"{resolved} [auth.anthropic] must be a table")
-    policy_guard = anthropic_table.get("policy_guard", True)
-    if not isinstance(policy_guard, bool):
-        raise PresetError(
-            f"{resolved} auth.anthropic.policy_guard must be a boolean"
-        )
-    auth = {"anthropic": {"policy_guard": policy_guard}}
+    auth: dict[str, dict[str, bool]] = {}
+    for provider in DEFAULT_AUTH_CONFIG:
+        provider_table = auth_table.get(provider, {})
+        if not isinstance(provider_table, Mapping):
+            raise PresetError(f"{resolved} [auth.{provider}] must be a table")
+        policy_guard = provider_table.get("policy_guard", True)
+        if not isinstance(policy_guard, bool):
+            raise PresetError(
+                f"{resolved} auth.{provider}.policy_guard must be a boolean"
+            )
+        auth[provider] = {"policy_guard": policy_guard}
     presets_table = raw.get("presets", {})
     if not isinstance(presets_table, Mapping) or not presets_table:
         raise PresetError(f"{resolved} defines no [presets.*] tables")

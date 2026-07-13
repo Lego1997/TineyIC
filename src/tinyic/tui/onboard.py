@@ -126,6 +126,11 @@ BEST_FOR: dict[tuple[str, str], str] = {
         "Best for: Gemini access via a Google AI Studio API key. Billed per "
         "token."
     ),
+    ("grok", "subscription"): (
+        "Best for: SuperGrok / X Premium subscribers. Reuses your own grok-CLI "
+        "sign-in (~/.grok/auth.json, read-only) or a TinyIC device-code login. "
+        "Entitlement is checked server-side by xAI."
+    ),
     ("grok", "api_key"): (
         "Best for: Grok access (and X / Twitter sentiment) via an xAI API key "
         "(XAI_API_KEY). Billed per token."
@@ -153,6 +158,19 @@ POLICY_DISABLED_MSG = (
     "Anthropic subscription lane is turned off — use an API key instead."
 )
 
+# Always shown on the Grok subscription branch.
+GROK_POLICY_NOTE = (
+    "Policy: reuses your own Grok sign-in through the official OAuth endpoints "
+    "(device code / grok-CLI read-through; TinyIC never rewrites "
+    "~/.grok/auth.json). xAI enforces subscription entitlement server-side and "
+    "has not published an explicit third-party policy for this lane. Governed "
+    "by the `[auth.grok] policy_guard` switch in tinyic.toml."
+)
+GROK_POLICY_DISABLED_MSG = (
+    "Disabled by policy_guard (auth.grok.policy_guard = false). The Grok "
+    "subscription lane is turned off — use an XAI_API_KEY instead."
+)
+
 # Secret-free, human explanations for the reason codes a verify/connect can
 # surface. Kept local so the wizard never leaks the doctor's internal message
 # table or any runtime/exception text.
@@ -169,6 +187,9 @@ REASON_HINTS: dict[str, str] = {
     "lane_incompatible": "That profile belongs to another lane.",
     "unsupported_thinking_level": "The model rejects the selected thinking level.",
     "unknown_provider": "The provider is not registered.",
+    "subscription_inactive": (
+        "The provider reports no active subscription on this account."
+    ),
 }
 
 _PROVIDER_ORDER = ("openai", "anthropic", "google", "grok", "kimi", "ollama")
@@ -312,6 +333,13 @@ def _default_openai_login_factory():
     return CodexLoginSession()
 
 
+def _default_grok_login_factory():
+    """Open one TinyIC-owned Grok device-code login session."""
+    from tinyic.auth.grok import GrokDeviceLoginSession
+
+    return GrokDeviceLoginSession()
+
+
 # --------------------------------------------------------------------------- #
 # The controller — the pure, Textual-free state machine
 # --------------------------------------------------------------------------- #
@@ -339,6 +367,7 @@ class OnboardController:
         config_path: str | None = None,
         verify_probe: Callable[[object, object], object] | None = None,
         openai_login_factory: Callable[[], object] | None = None,
+        grok_login_factory: Callable[[], object] | None = None,
     ) -> None:
         self.manager = manager
         self.store = manager.store
@@ -348,6 +377,7 @@ class OnboardController:
         # so the interactive wizard and headless ``doctor`` can never drift.
         self.verify_probe = verify_probe or live_token_probe
         self.openai_login_factory = openai_login_factory or _default_openai_login_factory
+        self.grok_login_factory = grok_login_factory or _default_grok_login_factory
 
         self.screen = OnboardScreen.DETECT
         self.report: DoctorReport | None = None
@@ -475,16 +505,28 @@ class OnboardController:
                     plan.provider == "anthropic"
                     and not self.manager.anthropic_policy_guard
                 )
+                grok_off = plan.provider == "grok" and not getattr(
+                    self.manager, "grok_policy_guard", True
+                )
+                if plan.provider == "anthropic":
+                    note = ANTHROPIC_POLICY_NOTE
+                elif plan.provider == "grok":
+                    note = GROK_POLICY_NOTE
+                else:
+                    note = None
+                disabled_reason = None
+                if anthropic_off:
+                    disabled_reason = POLICY_DISABLED_MSG
+                elif grok_off:
+                    disabled_reason = GROK_POLICY_DISABLED_MSG
                 choices.append(
                     Choice(
                         "subscription",
                         "Use your subscription",
-                        enabled=not anthropic_off,
+                        enabled=not (anthropic_off or grok_off),
                         detail=best_for(plan.provider, "subscription"),
-                        note=ANTHROPIC_POLICY_NOTE
-                        if plan.provider == "anthropic"
-                        else None,
-                        disabled_reason=POLICY_DISABLED_MSG if anthropic_off else None,
+                        note=note,
+                        disabled_reason=disabled_reason,
                     )
                 )
             elif branch == "api_key":
@@ -546,6 +588,33 @@ class OnboardController:
                     "Use my Claude Code login",
                     detail=best_for("anthropic", "subscription"),
                     note=ANTHROPIC_POLICY_NOTE,
+                )
+            )
+        elif plan.provider == "grok":
+            detected = plan.lanes.get("subscription")
+            if detected is not None and detected.status == "ok":
+                choices.append(
+                    Choice(
+                        "reuse",
+                        "Reuse existing Grok CLI sign-in",
+                        detail=(
+                            "A working ~/.grok/auth.json sign-in was detected. "
+                            "Reuse it read-through — TinyIC never rewrites the "
+                            "Grok CLI's credentials."
+                        ),
+                        note=GROK_POLICY_NOTE,
+                    )
+                )
+            choices.append(
+                Choice(
+                    "device",
+                    "Sign in with Grok (device code)",
+                    detail=(
+                        "Shows a URL and a one-time code; authorize in a "
+                        "browser on any device. The resulting tokens are "
+                        "TinyIC's own and are stored in the keyring."
+                    ),
+                    note=GROK_POLICY_NOTE,
                 )
             )
         elif plan.provider == "ollama":
@@ -638,12 +707,19 @@ class OnboardController:
             return ("navigate", None)
         plan.error = None
         if choice.id == "reuse":
+            if plan.provider == "grok":
+                return ("verify", self.confirm_grok_readthrough)
             return ("verify", self.confirm_readthrough)
         if choice.id == "runtime":
             return ("verify", self.confirm_runtime)
         if choice.id == "ollama":
             return ("verify", self.confirm_ollama)
         if choice.id == "device":
+            if plan.provider == "grok" and not getattr(
+                self.manager, "grok_policy_guard", True
+            ):
+                plan.error = "policy_disabled"
+                return ("navigate", None)
             try:
                 self.start_subscription_login()
             except Exception:
@@ -741,6 +817,21 @@ class OnboardController:
             ref="openai:codex",
         )
 
+    def confirm_grok_readthrough(self) -> bool:
+        """Persist a secretless read-through marker for a Grok CLI sign-in."""
+        plan = self.current_plan()
+        if plan is None:
+            return False
+        if not getattr(self.manager, "grok_policy_guard", True):
+            plan.error = "policy_disabled"
+            return False
+        return self._verify_and_persist(
+            plan,
+            kind=ProfileKind.GROK_READTHROUGH,
+            lane="subscription",
+            ref="grok:grok-cli",
+        )
+
     def confirm_runtime(self) -> bool:
         """Persist the Anthropic Claude-runtime route marker (policy-gated)."""
         plan = self.current_plan()
@@ -768,7 +859,13 @@ class OnboardController:
         from tinyic.auth.openai import LoginMode
 
         self._close_login()
-        cm = self.openai_login_factory()
+        plan = self.current_plan()
+        factory = (
+            self.grok_login_factory
+            if plan is not None and plan.provider == "grok"
+            else self.openai_login_factory
+        )
+        cm = factory()
         session = cm.__enter__()
         try:
             challenge = session.start(LoginMode.DEVICE_CODE)
@@ -803,6 +900,20 @@ class OnboardController:
             self._sub_stage = "menu"
             return False
         self._sub_stage = "menu"
+        if plan.provider == "grok":
+            # TinyIC owns the Grok device-code tokens: persist the token
+            # document as the profile secret (keyring-first store).
+            secret = getattr(result, "profile_secret", None)
+            if not isinstance(secret, str) or not secret:
+                plan.error = "invalid_credential"
+                return False
+            return self._verify_and_persist(
+                plan,
+                kind=ProfileKind.GROK_OAUTH,
+                lane="subscription",
+                ref="grok:supergrok",
+                secret=secret,
+            )
         return self._verify_and_persist(
             plan,
             kind=ProfileKind.OPENAI_OAUTH,
@@ -891,6 +1002,10 @@ class OnboardController:
             return AuthCandidate(
                 profile, credential_ref=env_refs[0] if env_refs else None
             )
+        if kind is ProfileKind.GROK_OAUTH:
+            # TinyIC-owned tokens: the JSON token document is the secret.
+            profile = AuthProfile(ref, kind, AuthLane.SUBSCRIPTION, secret)
+            return AuthCandidate(profile)
         # Secretless subscription route markers (read-through / runtime / oauth).
         profile = AuthProfile(ref, kind, AuthLane.SUBSCRIPTION)
         return AuthCandidate(profile)
@@ -1384,6 +1499,7 @@ def build_controller(
     report_factory: Callable[[], DoctorReport] | None = None,
     verify_probe: Callable[[object, object], object] | None = None,
     openai_login_factory: Callable[[], object] | None = None,
+    grok_login_factory: Callable[[], object] | None = None,
 ) -> OnboardController:
     """Build a production controller, wiring the default doctor-report seam."""
     manager = manager or AuthManager.from_config(config_path)
@@ -1404,6 +1520,7 @@ def build_controller(
         config_path=config_path,
         verify_probe=verify_probe,
         openai_login_factory=openai_login_factory,
+        grok_login_factory=grok_login_factory,
     )
 
 

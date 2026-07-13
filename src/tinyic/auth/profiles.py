@@ -65,12 +65,18 @@ class ProfileKind(StrEnum):
     CODEX_READTHROUGH = "codex_readthrough"
     CLAUDE_RUNTIME = "claude_runtime"
     CLAUDE_OAUTH_TOKEN = "claude_oauth_token"
+    GROK_OAUTH = "grok_oauth"
+    GROK_READTHROUGH = "grok_readthrough"
 
 
 _SECRET_KINDS = frozenset(
     {
         ProfileKind.API_KEY,
         ProfileKind.CLAUDE_OAUTH_TOKEN,
+        # TinyIC's own device-code tokens (a JSON token document produced by
+        # tinyic.auth.grok); unlike the read-through kinds these are owned by
+        # TinyIC and therefore live in the keyring-first store.
+        ProfileKind.GROK_OAUTH,
     }
 )
 _SECRETLESS_KINDS = frozenset(
@@ -81,6 +87,9 @@ _SECRETLESS_KINDS = frozenset(
         ProfileKind.OPENAI_OAUTH,
         ProfileKind.CODEX_READTHROUGH,
         ProfileKind.CLAUDE_RUNTIME,
+        # A read-only view of the official grok CLI's ~/.grok/auth.json; the
+        # CLI stays the sole owner of that file.
+        ProfileKind.GROK_READTHROUGH,
     }
 )
 _PROVIDER_SCOPED_KINDS = {
@@ -88,6 +97,8 @@ _PROVIDER_SCOPED_KINDS = {
     ProfileKind.CODEX_READTHROUGH: "openai",
     ProfileKind.CLAUDE_RUNTIME: "anthropic",
     ProfileKind.CLAUDE_OAUTH_TOKEN: "anthropic",
+    ProfileKind.GROK_OAUTH: "grok",
+    ProfileKind.GROK_READTHROUGH: "grok",
 }
 
 

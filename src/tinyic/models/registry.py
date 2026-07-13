@@ -30,6 +30,7 @@ from .adapters.anthropic_messages import (
     ANTHROPIC_ADAPTIVE_EFFORTS,
     ANTHROPIC_THINKING_BUDGETS,
 )
+from .adapters.grok_subscription import GROK_REASONING_EFFORTS
 from .binding import ModelBinding
 from .credentials import CredentialProvider
 from .thinking import ThinkingLevel as _L
@@ -172,6 +173,15 @@ class Provider:
             # before a candidate reaches this factory.  The transport keeps a
             # second default-on guard as defense in depth for direct callers.
             return ClaudeRuntimeTransport(binding, credentials)
+        if self.name.lower() == "grok" and kind in {
+            ProfileKind.GROK_OAUTH,
+            ProfileKind.GROK_READTHROUGH,
+        }:
+            from .adapters.grok_subscription import GrokSubscriptionTransport
+
+            # Same wire as the key lane, different credential seam; the
+            # transport keeps its own default-on policy_guard defense.
+            return GrokSubscriptionTransport(binding, credentials)
         return self.transport_factory(binding, credentials)  # type: ignore[misc]
 
 
@@ -434,10 +444,10 @@ def _builtin_providers() -> tuple[Provider, ...]:
     # Grok reasons with an effort dial (low|medium|high); grok-4.5 cannot
     # disable reasoning, so "off" is a config-time reject / runtime remap→low
     # via the ordinary FR-1.3 semantics.  Env var stays XAI_API_KEY (xAI's own
-    # convention survives the provider rename).
+    # convention survives the provider rename).  The dial is shared with the
+    # subscription transport (grok_subscription.GROK_REASONING_EFFORTS).
     _grok_efforts = ThinkingProfile.effort(
-        "reasoning_effort",
-        {_L.LOW: "low", _L.MEDIUM: "medium", _L.HIGH: "high"},
+        "reasoning_effort", GROK_REASONING_EFFORTS
     )
     grok_models = [
         ModelSpec("grok-4.5", _grok_efforts),

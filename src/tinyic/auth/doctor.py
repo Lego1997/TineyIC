@@ -79,9 +79,8 @@ _BUILTIN_LANES = (
     ("anthropic", "api_key"),
     ("anthropic", "subscription"),
     ("google", "api_key"),
-    # A ("grok", "subscription") row lands with the SuperGrok lane work; keep
-    # grok's rows contiguous here so that addition is a one-line diff.
     ("grok", "api_key"),
+    ("grok", "subscription"),
     ("kimi", "api_key"),
     ("ollama", "local"),
 )
@@ -98,6 +97,7 @@ _KNOWN_REASONS = frozenset(
         "lane_incompatible",
         "subscription_required",
         "usage_limited",
+        "subscription_inactive",
         "probe_failed",
         "unknown_provider",
         "invalid_preset",
@@ -118,6 +118,9 @@ _FIXED_MESSAGES = {
     "lane_incompatible": "The selected auth profile belongs to another lane.",
     "subscription_required": "This model requires a subscription auth profile.",
     "usage_limited": "Every usable credential for this lane is usage-limited.",
+    "subscription_inactive": (
+        "The provider reports no active subscription for this account."
+    ),
     "probe_failed": "The provider readiness check failed.",
     "unknown_provider": "The selected provider is not registered.",
     "invalid_preset": "The selected preset configuration is invalid.",
@@ -252,13 +255,14 @@ def run_doctor(
     clock: Callable[[], datetime] | None = None,
     openai_probe: ReasonProbe | None = None,
     anthropic_probe: ReasonProbe | None = None,
+    grok_probe: ReasonProbe | None = None,
     live_probe: LiveProbe | None = None,
     runtime_locator: RuntimeLocator | None = None,
     registry=None,
 ) -> DoctorReport:
     """Run local auth diagnostics; perform completions only with ``live=True``.
 
-    The four injected callables are the offline-test/onboarding seam.  Reason
+    The injected callables are the offline-test/onboarding seam.  Reason
     probes return a stable reason code (or an object whose ``reason`` has one);
     their message/exception text is never copied into the report.  ``live_probe``
     receives the selected binding and auth candidate and must perform at most a
@@ -316,6 +320,7 @@ def run_doctor(
         live=live,
         openai_probe=openai_probe or _default_openai_probe,
         anthropic_probe=anthropic_probe or _default_anthropic_probe,
+        grok_probe=grok_probe or _default_grok_probe,
         live_probe=live_probe or live_token_probe,
         runtime_locator=runtime_locator or shutil.which,
     )
@@ -361,6 +366,8 @@ def _message(reason: str, provider: str, lane: str, *, live: bool = False) -> st
     if reason != "ok":
         if live and reason == "probe_failed":
             return "The live one-token check failed."
+        if reason == "policy_disabled" and provider == "grok":
+            return "The Grok subscription lane is disabled by policy_guard."
         return _FIXED_MESSAGES[reason]
     if live:
         return "The live one-token check passed."
@@ -370,6 +377,8 @@ def _message(reason: str, provider: str, lane: str, *, live: bool = False) -> st
         return "Codex ChatGPT subscription runtime is available."
     if provider == "anthropic" and lane == "subscription":
         return "Claude Code subscription runtime is available."
+    if provider == "grok" and lane == "subscription":
+        return "Grok subscription sign-in is available."
     return "Local runtime is available."
 
 
@@ -413,6 +422,13 @@ def _default_openai_probe() -> object:
     return probe_codex_auth(credential_store="keyring")
 
 
+def _default_grok_probe() -> object:
+    """Probe the official grok CLI's ~/.grok/auth.json without touching it."""
+    from .grok import probe_grok_auth
+
+    return probe_grok_auth()
+
+
 def _default_anthropic_probe(candidate=None) -> object:
     """Use the Claude runtime's safe local probe when that adapter is installed."""
     try:
@@ -454,6 +470,7 @@ class _ProbeContext:
         live: bool,
         openai_probe: ReasonProbe,
         anthropic_probe: ReasonProbe,
+        grok_probe: ReasonProbe,
         live_probe: LiveProbe,
         runtime_locator: RuntimeLocator,
     ) -> None:
@@ -462,6 +479,7 @@ class _ProbeContext:
         self.live = live
         self.openai_probe = openai_probe
         self.anthropic_probe = anthropic_probe
+        self.grok_probe = grok_probe
         self.live_probe = live_probe
         self.runtime_locator = runtime_locator
         self._runtime_reasons: dict[str, str] = {}
@@ -641,6 +659,17 @@ class _ProbeContext:
                 required=False,
                 reason="policy_disabled",
             )
+        if (
+            provider_name == "grok"
+            and lane == "subscription"
+            and not getattr(self.manager, "grok_policy_guard", True)
+        ):
+            return _result(
+                provider=provider_name,
+                lane=lane,
+                required=False,
+                reason="policy_disabled",
+            )
 
         binding = self._inventory_binding(provider_name)
         if binding is None:
@@ -766,6 +795,22 @@ class _ProbeContext:
             and not self.manager.anthropic_policy_guard
         ):
             return "policy_disabled"
+        if candidate.provider == "grok":
+            if not getattr(self.manager, "grok_policy_guard", True):
+                return "policy_disabled"
+            from tinyic.auth.profiles import ProfileKind
+
+            if getattr(candidate, "kind", None) is ProfileKind.GROK_OAUTH:
+                # TinyIC-owned tokens: probe the stored document itself, not
+                # the CLI's file — the two credentials are independent.
+                from .grok import probe_grok_profile_secret
+
+                try:
+                    return _reason_value(
+                        probe_grok_profile_secret(candidate(candidate.ref))
+                    )
+                except Exception:
+                    return "probe_failed"
         return self._subscription_runtime_reason(
             candidate.provider, candidate=candidate
         )
@@ -794,6 +839,14 @@ class _ProbeContext:
                     reason = _reason_value(
                         _call_candidate_probe(self.anthropic_probe, candidate)
                     )
+                except Exception:
+                    reason = "probe_failed"
+        elif provider == "grok":
+            if not getattr(self.manager, "grok_policy_guard", True):
+                reason = "policy_disabled"
+            else:
+                try:
+                    reason = _reason_value(self.grok_probe())
                 except Exception:
                     reason = "probe_failed"
         else:
