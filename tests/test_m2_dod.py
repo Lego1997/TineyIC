@@ -283,10 +283,12 @@ def _preset_all(model: str, name: str = "dod-parity") -> Preset:
     return Preset(name=name, default=BindingSpec(model=model, thinking="high"))
 
 
-def _run_logged_debate(committee, registry_names, log_path, debate_id):
+def _run_logged_debate(committee, registry_names, log_path, debate_id, *, da=None):
     """Run one debate into a fresh log and return ``(result, events)``.
 
-    ``committee=None`` exercises the legacy (non-binding-routed) path.
+    ``committee=None`` exercises the legacy (non-binding-routed) path. ``da``
+    pins the devil's advocate so a test comparing multiple back-to-back debates
+    is not perturbed by the moderator's per-install rotation (FR-4.3).
     """
     with EventLog(debate_id, path=log_path, clock=lambda: FIXED_NOW) as log:
         result = debate_module.run_debate(
@@ -295,6 +297,7 @@ def _run_logged_debate(committee, registry_names, log_path, debate_id):
             data_package=_mock_data_package(),
             event_log=log,
             committee=committee,
+            da=da,
         )
     return result, read_event_log(log_path)
 
@@ -367,7 +370,13 @@ def test_same_mocked_debate_runs_via_three_adapters_with_identical_structure(
             transport_factory=_dod_transport_factory,
         )
         _result, events = _run_logged_debate(
-            committee, _REGISTRY_3, tmp_path / f"{suffix}.jsonl", f"aapl-20260713-{suffix}"
+            committee,
+            _REGISTRY_3,
+            tmp_path / f"{suffix}.jsonl",
+            f"aapl-20260713-{suffix}",
+            # Pin the DA so the adapter is the only variable across the three
+            # runs; otherwise the per-install rotation gives each a different one.
+            da="warren_buffett",
         )
         runs[model] = events
 

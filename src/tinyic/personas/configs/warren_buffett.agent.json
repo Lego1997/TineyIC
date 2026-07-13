@@ -12,6 +12,7 @@
     ]
   },
   "type": "TinyPerson",
+  "temperament": "balanced",
   "persona": {
     "name": "Warren Buffett",
     "age": 95,

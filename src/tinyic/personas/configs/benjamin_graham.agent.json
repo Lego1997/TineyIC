@@ -12,6 +12,7 @@
     ]
   },
   "type": "TinyPerson",
+  "temperament": "contrarian",
   "persona": {
     "name": "Benjamin Graham",
     "age": 80,

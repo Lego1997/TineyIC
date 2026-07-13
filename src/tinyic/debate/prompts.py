@@ -70,14 +70,49 @@ PHILOSOPHY_HOOKS: dict[str, str] = {
     ),
 }
 
+# Per-turn anti-convergence reinforcement, tightened to ONE line (FR-4.3): the
+# persona's philosophy hook plus a single temperament-specific clause. The
+# "IMPORTANT REMINDER" prefix and the verbatim philosophy hook are load-bearing
+# for the injection assertions in the debate tests.
 REINFORCEMENT_TEMPLATE: str = (
-    "IMPORTANT REMINDER: You are {name}. Your investment philosophy is "
-    "fundamentally distinct from the other committee members. "
-    "{philosophy_hook} Do NOT soften your position to match others. "
-    "If you disagree, say so clearly and explain WHY from YOUR framework. "
-    "A unanimous committee is a failed committee -- the value of this "
-    "debate comes from genuine disagreement."
+    "IMPORTANT REMINDER: You are {name} -- {philosophy_hook} {temperament_line}"
 )
+
+#: Temperament vocabulary for the persona ``temperament`` field (FR-4.3). The
+#: default committee mixes these so the six voices do not drift uniformly
+#: sycophantic; ``contrarian`` is the prompted hard dissenter.
+VALID_TEMPERAMENTS: frozenset[str] = frozenset(
+    {"conciliatory", "balanced", "contrarian"}
+)
+DEFAULT_TEMPERAMENT: str = "balanced"
+
+#: The one temperament clause folded into each reinforcement line. The
+#: contrarian clause is the accuracy-over-agreement mandate that keeps at least
+#: one hard dissenter honest under group pressure.
+TEMPERAMENT_REINFORCEMENT: dict[str, str] = {
+    "contrarian": (
+        "Prioritize accuracy over agreement: press your dissent and do NOT "
+        "soften your position to match the committee."
+    ),
+    "conciliatory": (
+        "Seek common ground only where the evidence earns it, and hold any view "
+        "you still believe is correct."
+    ),
+    "balanced": (
+        "Hold your own view; concede only where the evidence genuinely "
+        "persuades you, and say so plainly when it does not."
+    ),
+}
+
+
+def temperament_clause(temperament: str | None) -> str:
+    """Return the reinforcement clause for ``temperament`` (balanced fallback)."""
+    if not isinstance(temperament, str):
+        return TEMPERAMENT_REINFORCEMENT[DEFAULT_TEMPERAMENT]
+    return TEMPERAMENT_REINFORCEMENT.get(
+        temperament.strip().casefold(),
+        TEMPERAMENT_REINFORCEMENT[DEFAULT_TEMPERAMENT],
+    )
 
 # ---------------------------------------------------------------------------
 # Rotating devil's advocate

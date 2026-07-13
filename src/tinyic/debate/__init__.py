@@ -9,6 +9,7 @@ from tinyic import __version__ as tinyic_version
 from tinyic.events import EventLog, make_debate_id
 from .models import DebatePhase, VoteChoice, Confidence, Vote, Scorecard, DebateResult
 from .models import InvestmentMemo, MemoSection, DisagreementAnalysis, Disagreement
+from .moderator import Moderator
 from .orchestrator import CANONICAL_PHASE_NAMES, DebateOrchestrator
 from .extraction import extract_votes, build_scorecard
 from .memo import generate_memo, extract_disagreements
@@ -53,8 +54,22 @@ def _persona_display_name(persona) -> str:
     )
 
 
+def _persona_temperament(persona) -> str:
+    """Read a persona's anti-sycophancy temperament (FR-4.3), balanced fallback."""
+    value = getattr(persona, "temperament", None)
+    if isinstance(value, str) and value.strip():
+        return value.strip().lower()
+    return "balanced"
+
+
 def _debate_started_payload(
-    ticker: str, company_name: str, personas, committee=None
+    ticker: str,
+    company_name: str,
+    personas,
+    committee=None,
+    *,
+    caps: dict | None = None,
+    moderator_ref: str = "rules",
 ) -> dict:
     """Build non-secret effective-run metadata for the schema-v1 envelope.
 
@@ -63,10 +78,14 @@ def _debate_started_payload(
     making per-persona heterogeneity visible in the public event — and the
     aggregator ``model_ref`` and preset name come from the committee. Without a
     committee the legacy single-model config is recorded (M1 behavior).
+
+    ``caps`` is the moderator's resolved per-phase exchange ceiling (FR-4.2) and
+    ``moderator_ref`` its identity; ``temperament`` is read per persona (FR-4.3).
     """
     from tinytroupe import config_manager
+    from .moderator import DEFAULT_EXCHANGE_CAPS
 
-    caps = {"opening": 1, "cross_exam": 1, "rebuttal": 1, "verdict": 1}
+    resolved_caps = dict(caps) if caps else dict(DEFAULT_EXCHANGE_CAPS)
     if committee is not None:
         persona_records = []
         for persona in personas:
@@ -81,15 +100,15 @@ def _debate_started_payload(
                     "auth_profile": binding.auth_profile
                     or f"{binding.provider}:default",
                     "thinking_level": binding.thinking_level.value,
-                    "temperament": "unspecified",
+                    "temperament": _persona_temperament(persona),
                 }
             )
         effective_config = {
             "preset": getattr(committee, "preset_name", "default"),
             "personas": persona_records,
-            "moderator": "rules",
+            "moderator": moderator_ref,
             "aggregator": committee.aggregator_binding.model_ref,
-            "caps": caps,
+            "caps": resolved_caps,
         }
     else:
         model_ref = _canonical_model_ref()
@@ -101,18 +120,16 @@ def _debate_started_payload(
                 "model_ref": model_ref,
                 "auth_profile": f"{provider}:default",
                 "thinking_level": thinking_level,
-                # Temperament becomes configured in M4. M1 records the absence
-                # explicitly rather than inventing a behavioral classification.
-                "temperament": "unspecified",
+                "temperament": _persona_temperament(persona),
             }
             for persona in personas
         ]
         effective_config = {
             "preset": "default",
             "personas": persona_records,
-            "moderator": "rules",
+            "moderator": moderator_ref,
             "aggregator": model_ref,
-            "caps": caps,
+            "caps": resolved_caps,
         }
     config_hash = hashlib.sha256(
         json.dumps(
@@ -266,6 +283,7 @@ def run_debate(
     preset: str | None = None,
     model: str | None = None,
     thinking: str | None = None,
+    da: str | None = None,
     committee=None,
     config_path=None,
     credentials=None,
@@ -289,6 +307,9 @@ def run_debate(
             is M6.
         model: Per-debate ``provider/model`` override applied to every role.
         thinking: Per-debate thinking-level override applied to every role.
+        da: Devil's-advocate override (``--da``), a persona display or registry
+            name that pins the cross-exam devil's advocate; ``None`` uses the
+            moderator's persisted rotation (FR-4.3).
         committee: Pre-resolved ``tinyic.models.Committee`` (programmatic/tests);
             takes precedence over ``preset``/``model``/``thinking``.
         config_path: Location of ``tinyic.toml`` (defaults to cwd / env).
@@ -317,6 +338,8 @@ def run_debate(
     usage_baseline: dict = {}
     personas = []
     orchestrator = None
+    moderator = None
+    preset_caps = None
     active_event_log = event_log or EventLog(make_debate_id(ticker))
     owns_event_log = event_log is None
     run_started_at = None
@@ -355,6 +378,23 @@ def run_debate(
                 # remaps per call (FR-1.3), so it must not fail committee build.
                 validate_thinking=not has_runtime_override,
             )
+            preset_caps = resolved_preset.caps
+
+        # The moderator (FR-4.1) is a system component, not a debating voice. It
+        # owns the exchange caps (FR-4.2, range-checked here), the devil's-advocate
+        # rotation + override (FR-4.3), phase gating, and steering delivery. Built
+        # before debate_started so the emitted caps/moderator reflect the real
+        # plan, and validated against the committee so a bad --da fails fast.
+        moderator = Moderator(
+            caps=preset_caps,
+            da_override=da,
+            binding_client=(
+                resolved_committee.moderator
+                if resolved_committee is not None
+                else None
+            ),
+        )
+        moderator.validate_override(personas)
 
         if data_package is None:
             stage = "data"
@@ -373,6 +413,8 @@ def run_debate(
                 data_package.company_name,
                 personas,
                 committee=resolved_committee,
+                caps=moderator.exchange_caps,
+                moderator_ref=moderator.moderator_ref,
             ),
         )
         active_event_log.emit(
@@ -392,6 +434,7 @@ def run_debate(
             session=debate_session,
             event_log=active_event_log,
             committee=resolved_committee,
+            moderator=moderator,
         )
         orchestrator.run_debate()
 
@@ -537,6 +580,16 @@ def run_debate(
                             failed_company,
                             personas or persona_names,
                             committee=resolved_committee,
+                            caps=(
+                                moderator.exchange_caps
+                                if moderator is not None
+                                else None
+                            ),
+                            moderator_ref=(
+                                moderator.moderator_ref
+                                if moderator is not None
+                                else "rules"
+                            ),
                         ),
                     )
                 active_event_log.emit(

@@ -1,8 +1,5 @@
 """DebateOrchestrator -- a TinyWorld subclass for structured investment debates."""
 
-import queue
-import threading
-
 from tinytroupe import config_manager
 from tinytroupe.agent import TinyPerson
 from tinytroupe.environment.tiny_world import TinyWorld
@@ -19,6 +16,7 @@ from tinyic.usage import (
 )
 
 from .models import DebatePhase
+from .moderator import Moderator
 from .prompts import (
     CONTEXT_PREAMBLE,
     DEVILS_ADVOCATE_PROMPT,
@@ -26,6 +24,7 @@ from .prompts import (
     PHILOSOPHY_HOOKS,
     REINFORCEMENT_TEMPLATE,
     ROLE_RELEASE_PROMPT,
+    temperament_clause,
 )
 
 
@@ -67,6 +66,7 @@ class DebateOrchestrator(TinyWorld):
         session: Session | None = None,
         event_log: EventLog | None = None,
         committee=None,
+        moderator: Moderator | None = None,
         **kwargs,
     ):
         if len(personas) < MIN_PERSONAS:
@@ -143,6 +143,15 @@ class DebateOrchestrator(TinyWorld):
 
             self.make_everyone_accessible()
 
+            # The moderator is a system component (FR-4.1), never a debating
+            # voice: it owns phase gating, exchange caps, devil's-advocate
+            # rotation, and steering delivery. A rules-only default keeps the
+            # pre-M6 Streamlit path (which constructs the orchestrator directly)
+            # working without an LLM. Validate any --da override now, while the
+            # committee is known, so a bad name fails before the debate runs.
+            self.moderator = moderator if moderator is not None else Moderator()
+            self.moderator.validate_override(self.agents)
+
             # Optional streaming callbacks (set by UI before run_debate)
             self.on_phase_start = None   # Optional[Callable[[str], None]] -- called with phase.value
             self.on_agent_start = None   # Optional[Callable[[str, str], None]] -- called with (agent.name, phase.value)
@@ -153,9 +162,13 @@ class DebateOrchestrator(TinyWorld):
             # Optional phase gate for inter-phase pausing (set by UI)
             self.phase_gate = None     # Optional[threading.Event] -- if set, _step waits for it before proceeding
 
-            # Anti-convergence: devil's advocate rotation state
-            self._da_index = 0
+            # Devil's-advocate rotation is owned by the moderator (persisted
+            # per-install counter, B8 fix); the orchestrator only caches the
+            # current selection for role-release bookkeeping.
             self._current_devils_advocate = None
+            # Monotonic turn ordinal, stable across any number of exchange-rounds
+            # within a phase (so turn ids never collide when a cap allows >1).
+            self._turn_seq = 0
         except Exception:
             if world_initialized:
                 self.dispose()
@@ -181,16 +194,20 @@ class DebateOrchestrator(TinyWorld):
     # ------------------------------------------------------------------
 
     def _get_reinforcement_prompt(self, agent) -> str:
-        """Build a persona-specific reinforcement prompt for *agent*."""
+        """Build the one-line, temperament-aware reinforcement for *agent* (FR-4.3)."""
         hook = PHILOSOPHY_HOOKS.get(
             agent.name, "Stay true to your unique perspective."
         )
-        return REINFORCEMENT_TEMPLATE.format(name=agent.name, philosophy_hook=hook)
+        temperament = getattr(agent, "temperament", None)
+        return REINFORCEMENT_TEMPLATE.format(
+            name=agent.name,
+            philosophy_hook=hook,
+            temperament_line=temperament_clause(temperament),
+        )
 
     def _select_devils_advocate(self):
-        """Pick the next devil's advocate via round-robin and store the result."""
-        da = self.agents[self._da_index % len(self.agents)]
-        self._da_index += 1
+        """Delegate devil's-advocate selection to the moderator and cache it."""
+        da = self.moderator.select_devils_advocate(self.agents)
         self._current_devils_advocate = da
         return da
 
@@ -227,10 +244,16 @@ class DebateOrchestrator(TinyWorld):
     def _canonical_phase(self, phase: DebatePhase) -> str:
         return CANONICAL_PHASE_NAMES[phase]
 
-    def _turn_id(self, agent_index: int) -> str:
-        """Return a stable ID derived only from deterministic debate order."""
-        ordinal = self._phase_index * len(self.agents) + agent_index + 1
-        return f"turn-{ordinal:04d}"
+    def _next_turn_id(self) -> str:
+        """Return the next monotonic turn ID in deterministic debate order.
+
+        A running counter (rather than a positional formula) keeps ids unique
+        and gap-free even when a phase runs more than one exchange-round under
+        its cap; for the one-round-per-phase base protocol it reproduces the
+        historical ``turn-0001``.. sequence exactly.
+        """
+        self._turn_seq += 1
+        return f"turn-{self._turn_seq:04d}"
 
     @staticmethod
     def _action_texts(actions: list, action_type: str) -> list[str]:
@@ -466,10 +489,8 @@ class DebateOrchestrator(TinyWorld):
             self.current_phase = DebatePhase.COMPLETE
             return {}
 
-        # Wait for phase gate if set (inter-phase pause)
-        if self.phase_gate is not None:
-            self.phase_gate.wait()
-            self.phase_gate.clear()  # Reset for next phase
+        # The moderator gates inter-phase pausing (existing phase_gate semantics).
+        self.moderator.gate_phase(self.phase_gate)
 
         phase = self.PHASE_ORDER[self._phase_index]
         self.current_phase = phase
@@ -496,81 +517,88 @@ class DebateOrchestrator(TinyWorld):
         if phase == DebatePhase.REBUTTAL and self._current_devils_advocate is not None:
             self._current_devils_advocate.listen(ROLE_RELEASE_PROMPT)
 
-        # Agents act sequentially in stable order
+        # The moderator bounds this phase to its cap (FR-4.2). The Stage-1 base
+        # protocol requests one round per phase; a round is every persona acting
+        # once in stable order. rounds_for never exceeds the phase cap, so a
+        # debate can never run past its declared ceiling.
+        rounds = self.moderator.rounds_for(canonical_phase)
         agents_actions: dict = {}
-        for agent_index, agent in enumerate(self.agents):
-            # Drain message queue before each agent acts
-            self._process_message_queue()
+        turn_count = 0
+        for _exchange in range(rounds):
+            for agent in self.agents:
+                # Drain message queue before each agent acts
+                self._process_message_queue()
 
-            # Anti-convergence: inject persona-specific reinforcement (ALL phases)
-            reinforcement = self._get_reinforcement_prompt(agent)
-            agent.listen(reinforcement)
+                # Anti-convergence: inject persona-specific reinforcement (ALL phases)
+                reinforcement = self._get_reinforcement_prompt(agent)
+                agent.listen(reinforcement)
 
-            # Devil's advocate: inject DA prompt during CROSS_EXAM only
-            if phase == DebatePhase.CROSS_EXAM and agent == self._current_devils_advocate:
-                agent.listen(DEVILS_ADVOCATE_PROMPT)
+                # Devil's advocate: inject DA prompt during CROSS_EXAM only
+                if phase == DebatePhase.CROSS_EXAM and agent == self._current_devils_advocate:
+                    agent.listen(DEVILS_ADVOCATE_PROMPT)
 
-            turn_id = self._turn_id(agent_index)
-            self._emit_event(
-                "turn_started",
-                {
-                    "turn_id": turn_id,
-                    "persona": agent.name,
-                    "phase": canonical_phase,
-                    "role": CANONICAL_TURN_ROLES[phase],
-                },
-            )
-
-            # Notify: agent about to act
-            if self.on_agent_start:
-                self.on_agent_start(agent.name, phase.value)
-
-            binding_client = (
-                self.committee.client_for(agent.name)
-                if self.committee is not None
-                else None
-            )
-            if binding_client is not None:
-                # Binding-routed turn: stream think/talk deltas and capture
-                # native per-call usage at the adapter boundary.
-                committed_actions, latest, binding_usage = self._run_bound_turn(
-                    agent, binding_client, turn_id
-                )
-                agents_actions[agent.name] = latest
-                self._emit_committed_turn(
-                    agent=agent,
-                    phase=phase,
-                    turn_id=turn_id,
-                    actions=latest,
-                    committed_actions=committed_actions,
-                    usage_delta={},
-                    binding_usage=binding_usage,
-                )
-            else:
-                # Legacy turn: snapshot the process-global counter delta (M1).
-                usage_before = self._usage_snapshot()
-                committed_actions = agent.act(return_actions=True)
-                latest = agent.pop_latest_actions()
-                agents_actions[agent.name] = latest
-                self._handle_actions(agent, latest)
-                usage_after = self._usage_snapshot()
-                usage_delta = (
-                    diff_cost_counters(usage_after, usage_before)
-                    if usage_before and usage_after
-                    else {}
-                )
-                self._emit_committed_turn(
-                    agent=agent,
-                    phase=phase,
-                    turn_id=turn_id,
-                    actions=latest,
-                    committed_actions=committed_actions,
-                    usage_delta=usage_delta,
+                turn_id = self._next_turn_id()
+                turn_count += 1
+                self._emit_event(
+                    "turn_started",
+                    {
+                        "turn_id": turn_id,
+                        "persona": agent.name,
+                        "phase": canonical_phase,
+                        "role": CANONICAL_TURN_ROLES[phase],
+                    },
                 )
 
-            # Notify: agent finished
-            if self.on_agent_done:
-                self.on_agent_done(agent.name, phase.value, latest)
+                # Notify: agent about to act
+                if self.on_agent_start:
+                    self.on_agent_start(agent.name, phase.value)
+
+                binding_client = (
+                    self.committee.client_for(agent.name)
+                    if self.committee is not None
+                    else None
+                )
+                if binding_client is not None:
+                    # Binding-routed turn: stream think/talk deltas and capture
+                    # native per-call usage at the adapter boundary.
+                    committed_actions, latest, binding_usage = self._run_bound_turn(
+                        agent, binding_client, turn_id
+                    )
+                    agents_actions[agent.name] = latest
+                    self._emit_committed_turn(
+                        agent=agent,
+                        phase=phase,
+                        turn_id=turn_id,
+                        actions=latest,
+                        committed_actions=committed_actions,
+                        usage_delta={},
+                        binding_usage=binding_usage,
+                    )
+                else:
+                    # Legacy turn: snapshot the process-global counter delta (M1).
+                    usage_before = self._usage_snapshot()
+                    committed_actions = agent.act(return_actions=True)
+                    latest = agent.pop_latest_actions()
+                    agents_actions[agent.name] = latest
+                    self._handle_actions(agent, latest)
+                    usage_after = self._usage_snapshot()
+                    usage_delta = (
+                        diff_cost_counters(usage_after, usage_before)
+                        if usage_before and usage_after
+                        else {}
+                    )
+                    self._emit_committed_turn(
+                        agent=agent,
+                        phase=phase,
+                        turn_id=turn_id,
+                        actions=latest,
+                        committed_actions=committed_actions,
+                        usage_delta=usage_delta,
+                    )
+
+                # Notify: agent finished
+                if self.on_agent_done:
+                    self.on_agent_done(agent.name, phase.value, latest)
 
         self._phase_history.append(phase.value)
         self._emit_event(
@@ -578,7 +606,7 @@ class DebateOrchestrator(TinyWorld):
             {
                 "phase": canonical_phase,
                 "index": self._phase_index,
-                "turn_count": len(self.agents),
+                "turn_count": turn_count,
             },
         )
         self._phase_index += 1
@@ -589,34 +617,19 @@ class DebateOrchestrator(TinyWorld):
         return agents_actions
 
     def _process_message_queue(self):
-        """Drain the message queue, injecting user messages into the debate.
+        """Deliver queued user steering at a turn boundary via the moderator.
 
-        Messages are tuples of (text, target_agent_name_or_None).
-        If target is None, broadcast to all agents.
-        If target is a valid agent name, deliver via agent.listen() to that agent
-        and broadcast an observation to others.
+        The moderator owns steering delivery points (FR-4.1); the queue
+        semantics are unchanged -- messages are ``(text, target_or_None)`` tuples,
+        targeted delivery reaches the named persona with an observation relayed to
+        the others, and an untargeted message broadcasts.
         """
-        if self.message_queue is None:
-            return
-
-        while True:
-            try:
-                text, target = self.message_queue.get_nowait()
-            except queue.Empty:
-                break
-
-            if target and target in self.name_to_agent:
-                # Targeted message: direct to target, observation to others
-                target_agent = self.name_to_agent[target]
-                target_agent.listen(f"[Moderator to {target}]: {text}")
-                for agent in self.agents:
-                    if agent.name != target:
-                        agent.listen(
-                            f"[Moderator asked {target}]: {text}"
-                        )
-            else:
-                # Broadcast to all agents
-                self.broadcast(f"[Moderator]: {text}")
+        self.moderator.deliver_steering(
+            self.message_queue,
+            agents=self.agents,
+            name_to_agent=self.name_to_agent,
+            broadcast=self.broadcast,
+        )
 
     # ------------------------------------------------------------------
     # Convenience runner
