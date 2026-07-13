@@ -426,6 +426,10 @@ def run_debate(
     committee=None,
     config_path=None,
     credentials=None,
+    transport_factory=None,
+    steering=None,
+    message_queue=None,
+    phase_gate=None,
 ) -> DebateResult:
     """Run a complete investment committee debate.
 
@@ -454,6 +458,19 @@ def run_debate(
         config_path: Location of ``tinyic.toml`` (defaults to cwd / env).
         credentials: ``CredentialProvider`` for building the committee's
             transports (defaults to a config-aware auth-profile manager).
+        transport_factory: Optional wire-transport builder forwarded to
+            ``build_committee`` (the offline-test seam that injects scripted
+            transports, as in ``test_m2_dod``); production leaves it ``None`` to
+            use the provider registry.
+        steering: Optional :class:`~tinyic.debate.steering.SteeringInbox` wired to
+            the orchestrator so live/headless steer/queue/interrupt reach the
+            moderator's delivery points (M6). Its event log is bound to this
+            debate's log, and any command still undelivered at the end is dropped
+            with an explicit ``steering_dropped`` before the terminal event.
+        message_queue: Optional legacy ``queue.Queue`` of ``(text, target)`` tuples
+            (pre-M6 steering path), delivered without steering events.
+        phase_gate: Optional ``threading.Event`` for inter-phase pausing (the TUI
+            pause/step control); ``None`` runs straight through.
 
     Returns:
         DebateResult with scorecard, transcript, and phase history.
@@ -481,6 +498,10 @@ def run_debate(
     preset_caps = None
     active_event_log = event_log or EventLog(make_debate_id(ticker))
     owns_event_log = event_log is None
+    if steering is not None:
+        # Bind the inbox to this debate's log so its steering_* acknowledgements
+        # land in the same append-only stream as the turns they steer.
+        steering.bind_event_log(active_event_log)
     run_started_at = None
     stage = "setup"
     research_usage: dict = {}
@@ -514,6 +535,9 @@ def run_debate(
                 # The policy/legal switch must apply before subscription
                 # candidates inspect tokens or construct official runtimes.
                 resolved_credentials = AuthManager.from_config(config_path)
+            build_kwargs = {}
+            if transport_factory is not None:
+                build_kwargs["transport_factory"] = transport_factory
             resolved_committee = build_committee(
                 resolved_preset,
                 persona_pairs,
@@ -522,6 +546,7 @@ def run_debate(
                 # --model/--thinking override is a runtime choice the adapter
                 # remaps per call (FR-1.3), so it must not fail committee build.
                 validate_thinking=not has_runtime_override,
+                **build_kwargs,
             )
             preset_caps = resolved_preset.caps
 
@@ -581,6 +606,10 @@ def run_debate(
             committee=resolved_committee,
             moderator=moderator,
         )
+        # Wire the live steering/control channels (M6) and pause gate.
+        orchestrator.steering_inbox = steering
+        orchestrator.message_queue = message_queue
+        orchestrator.phase_gate = phase_gate
         orchestrator.run_debate()
 
         stage = "extraction"
@@ -731,6 +760,10 @@ def run_debate(
             for phase in orchestrator._phase_history
             if phase in canonical_by_value
         ]
+        # Drop any steering still undelivered (explicit steering_dropped) while
+        # the log is open, so the terminal event stays last.
+        if steering is not None:
+            steering.close(reason="debate_ended")
         ended_at = active_event_log.now()
         duration_s = max(
             0.0, (ended_at - run_started_at).total_seconds()
@@ -749,6 +782,9 @@ def run_debate(
     except Exception as exc:
         if not active_event_log.terminal:
             try:
+                if steering is not None:
+                    # Drop undelivered steering before the terminal error event.
+                    steering.close(reason="debate_error")
                 if not active_event_log.started:
                     failed_ticker = str(
                         getattr(data_package, "ticker", None) or ticker

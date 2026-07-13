@@ -260,14 +260,32 @@ class Moderator:
                 text, target = message_queue.get_nowait()
             except _queue.Empty:
                 break
-            if target and target in name_to_agent:
-                target_agent = name_to_agent[target]
-                target_agent.listen(f"[Moderator to {target}]: {text}")
-                for agent in agents:
-                    if agent.name != target:
-                        agent.listen(f"[Moderator asked {target}]: {text}")
-            else:
-                broadcast(f"[Moderator]: {text}")
+            self.relay_message(
+                text,
+                target,
+                agents=agents,
+                name_to_agent=name_to_agent,
+                broadcast=broadcast,
+            )
+
+    def relay_message(
+        self, text, target, *, agents, name_to_agent, broadcast
+    ) -> None:
+        """Relay one steering message with the ``[Moderator]`` procedure framing.
+
+        Targeted messages reach the named persona and are relayed to the others
+        as an observation; an untargeted (or unresolved-target) message
+        broadcasts. Shared by the legacy tuple queue (:meth:`deliver_steering`)
+        and the M6 engine inbox, so both deliver identically.
+        """
+        if target and target in name_to_agent:
+            target_agent = name_to_agent[target]
+            target_agent.listen(f"[Moderator to {target}]: {text}")
+            for agent in agents:
+                if agent.name != target:
+                    agent.listen(f"[Moderator asked {target}]: {text}")
+        else:
+            broadcast(f"[Moderator]: {text}")
 
 
 __all__ = [
