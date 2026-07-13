@@ -732,7 +732,7 @@ def run_debate(
             )
             # Legacy counters are not model-attributed. Capture the effective
             # debate model alongside the scoped snapshot so later rendering
-            # never prices a switched model as GPT-5.2 by accident.
+            # never prices a switched model as the default by accident.
             cost_stats["model_ref"] = _canonical_model_ref()
 
         result = DebateResult(
@@ -899,8 +899,8 @@ def get_debate_cost_stats(result: DebateResult) -> dict:
         )
         if model_ref is None:
             # Compatibility for legacy TinyWorld counters, which predate model
-            # attribution and were always priced as the configured GPT-5.2.
-            model_ref = "openai/gpt-5.2"
+            # attribution and were always priced as the configured default model.
+            model_ref = "openai/gpt-5.6-sol"
         estimated_cost = estimate_model_keyed_cost(
             {
                 model_ref: {

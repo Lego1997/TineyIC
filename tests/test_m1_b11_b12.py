@@ -347,7 +347,7 @@ def test_b11_debate_cost_stats_are_snapshot_delta_not_process_totals(monkeypatch
         "model_calls": 8,
         "cached_calls": 0,
     }
-    assert result.cost_stats["model_ref"] == "openai/gpt-5.2"
+    assert result.cost_stats["model_ref"] == "openai/gpt-5.6-sol"
 
 
 def test_b11_pricing_sums_model_keyed_rates(monkeypatch):
@@ -389,7 +389,7 @@ def test_b11_pricing_sums_model_keyed_rates(monkeypatch):
 
 
 def test_b11_normal_legacy_counter_shape_uses_recorded_model_ref(monkeypatch):
-    """Production-shaped counters never fall through to GPT-5.2 pricing."""
+    """Production-shaped counters never fall through to default-model pricing."""
     monkeypatch.setattr(
         debate_module,
         "MODEL_PRICES_USD_PER_MILLION",

@@ -34,8 +34,9 @@ from .usage_window import RollingUsageMeter
 DEFAULT_PROVIDER_ENV_REFS: Mapping[str, tuple[str, ...]] = {
     "openai": ("OPENAI_API_KEY",),
     "anthropic": ("ANTHROPIC_API_KEY",),
-    "xai": ("XAI_API_KEY",),
-    "deepseek": ("DEEPSEEK_API_KEY",),
+    # Provider renamed xai -> grok in v2.1; the env var keeps xAI's own name.
+    "grok": ("XAI_API_KEY",),
+    "kimi": ("MOONSHOT_API_KEY", "KIMI_API_KEY"),
     "google": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
 }
 CLAUDE_CODE_OAUTH_TOKEN_REF = "CLAUDE_CODE_OAUTH_TOKEN"
@@ -46,7 +47,9 @@ _SAFE_MESSAGES = {
     "usage_limited": "All usable credentials are temporarily usage-limited.",
     "lane_incompatible": "The selected auth profile belongs to an incompatible lane.",
     "subscription_required": "This model requires a subscription auth profile.",
-    "policy_disabled": "The Anthropic subscription lane is disabled by policy_guard.",
+    "policy_disabled": (
+        "This provider's subscription lane is disabled by policy_guard."
+    ),
 }
 
 
@@ -76,11 +79,25 @@ class AuthCandidate:
     as ``credentials``; API-key adapters therefore receive exactly the selected
     named key when they ask for their historical environment reference.
     Runtime-owned, secretless subscription profiles naturally return ``None``.
+
+    ``alias_refs`` holds the provider's *other* configured environment
+    references (e.g. Kimi's ``MOONSHOT_API_KEY``/``KIMI_API_KEY`` pair, or
+    Google's ``GEMINI_API_KEY``/``GOOGLE_API_KEY``): the candidate is already
+    scoped to one provider, so an adapter asking under any of that provider's
+    documented names receives the one selected secret rather than a spurious
+    "missing credential".
+
+    ``persist_secret`` is the write-back seam for TinyIC-*owned* rotating
+    token documents (currently ``GROK_OAUTH``): after an in-memory refresh
+    rotates the stored document, the transport persists the new secret
+    through it so the profile store never replays a consumed refresh token.
     """
 
     profile: AuthProfile
     source: Literal["profile", "environment"] = "profile"
     credential_ref: str | None = None
+    alias_refs: tuple[str, ...] = ()
+    persist_secret: Callable[[str], None] | None = None
 
     @property
     def ref(self) -> str:
@@ -101,10 +118,10 @@ class AuthCandidate:
     def __call__(self, ref: str) -> str | None:
         if not ref or self.profile.secret is None:
             return None
-        # A candidate is already scoped to one bound provider.  Accept both its
-        # named ref and the adapter's historical env-var ref without exposing
-        # other manager/store credentials to that adapter.
-        if ref not in {self.ref, self.credential_ref}:
+        # A candidate is already scoped to one bound provider.  Accept its
+        # named ref and any of the provider's documented env-var refs without
+        # exposing other manager/store credentials to that adapter.
+        if ref not in {self.ref, self.credential_ref} and ref not in self.alias_refs:
             return None
         value = self.profile.secret.strip()
         return value or None
@@ -153,9 +170,12 @@ class AuthManager:
         meter: RollingUsageMeter | None = None,
         window_estimates: Mapping[str, int] | None = None,
         anthropic_policy_guard: bool = True,
+        grok_policy_guard: bool = True,
     ) -> None:
         if not isinstance(anthropic_policy_guard, bool):
             raise TypeError("anthropic_policy_guard must be a boolean")
+        if not isinstance(grok_policy_guard, bool):
+            raise TypeError("grok_policy_guard must be a boolean")
         self.store = store or ProfileStore()
         self._environ = os.environ if environ is None else environ
         self._provider_env_refs = _normalise_env_refs(provider_env_refs)
@@ -163,6 +183,7 @@ class AuthManager:
         self.meter = meter or RollingUsageMeter(clock=self._clock)
         self._window_estimates = dict(window_estimates or {})
         self._anthropic_policy_guard = anthropic_policy_guard
+        self._grok_policy_guard = grok_policy_guard
         if any(
             not isinstance(value, int) or isinstance(value, bool) or value < 0
             for value in self._window_estimates.values()
@@ -184,15 +205,17 @@ class AuthManager:
         from tinyic.models.presets import load_config
 
         config = load_config(config_path)
-        if "anthropic_policy_guard" in kwargs:
-            raise TypeError(
-                "from_config owns anthropic_policy_guard; construct AuthManager "
-                "directly for programmatic policy control"
-            )
+        for owned in ("anthropic_policy_guard", "grok_policy_guard"):
+            if owned in kwargs:
+                raise TypeError(
+                    f"from_config owns {owned}; construct AuthManager "
+                    "directly for programmatic policy control"
+                )
         return cls(
             anthropic_policy_guard=config["auth"]["anthropic"][
                 "policy_guard"
             ],
+            grok_policy_guard=config["auth"]["grok"]["policy_guard"],
             **kwargs,
         )
 
@@ -201,6 +224,21 @@ class AuthManager:
         """Whether official Claude subscription plumbing may be considered."""
 
         return self._anthropic_policy_guard
+
+    @property
+    def grok_policy_guard(self) -> bool:
+        """Whether the Grok subscription lane may be considered."""
+
+        return self._grok_policy_guard
+
+    def _policy_guard_for(self, provider: str) -> bool:
+        """The configured subscription-lane kill switch for ``provider``."""
+
+        if provider == "anthropic":
+            return self._anthropic_policy_guard
+        if provider == "grok":
+            return self._grok_policy_guard
+        return True
 
     def __call__(self, ref: str) -> str | None:
         """Resolve a named profile ref or a backward-compatible env ref."""
@@ -220,15 +258,14 @@ class AuthManager:
                 profile = None
             if (
                 profile is not None
-                and profile.provider == "anthropic"
                 and profile.lane is AuthLane.SUBSCRIPTION
-                and not self._anthropic_policy_guard
+                and not self._policy_guard_for(profile.provider)
             ):
-                # The guard is a legal boundary: a stored Anthropic
-                # subscription profile must not resolve through the
-                # credential-provider seam when policy_guard is off, mirroring
-                # candidates()' suppression of that lane (not only the literal
-                # CLAUDE_CODE_OAUTH_TOKEN env ref guarded above).
+                # The guard is a legal boundary: a stored subscription-lane
+                # profile (Anthropic or Grok) must not resolve through the
+                # credential-provider seam when its policy_guard is off,
+                # mirroring candidates()' suppression of that lane (not only
+                # the literal CLAUDE_CODE_OAUTH_TOKEN env ref guarded above).
                 return None
             if (
                 profile is not None
@@ -297,9 +334,8 @@ class AuthManager:
                     continue
                 runtime_owners.add(runtime_owner)
             if (
-                provider == "anthropic"
-                and profile.lane is AuthLane.SUBSCRIPTION
-                and not self._anthropic_policy_guard
+                profile.lane is AuthLane.SUBSCRIPTION
+                and not self._policy_guard_for(profile.provider)
             ):
                 saw_policy_disabled = True
                 continue
@@ -316,6 +352,8 @@ class AuthManager:
                 AuthCandidate(
                     profile,
                     credential_ref=self._profile_credential_ref(profile),
+                    alias_refs=self._profile_alias_refs(profile),
+                    persist_secret=self._profile_secret_writer(profile),
                 )
             )
 
@@ -363,6 +401,7 @@ class AuthManager:
                             transient,
                             source="environment",
                             credential_ref=env_ref,
+                            alias_refs=self._provider_env_refs.get(provider, ()),
                         )
                     )
 
@@ -451,7 +490,7 @@ class AuthManager:
         return None, None
 
     def _profile_credential_ref(self, profile: AuthProfile) -> str | None:
-        """Return the sole adapter ref allowed to receive this profile secret."""
+        """Return the primary adapter ref allowed to receive this secret."""
 
         if profile.kind is ProfileKind.CLAUDE_OAUTH_TOKEN:
             return CLAUDE_CODE_OAUTH_TOKEN_REF
@@ -459,6 +498,36 @@ class AuthManager:
             refs = self._provider_env_refs.get(profile.provider, ())
             return refs[0] if refs else None
         return None
+
+    def _profile_alias_refs(self, profile: AuthProfile) -> tuple[str, ...]:
+        """Every documented env ref an adapter may use for this provider's key."""
+
+        if profile.kind is ProfileKind.API_KEY:
+            return self._provider_env_refs.get(profile.provider, ())
+        return ()
+
+    def _profile_secret_writer(
+        self, profile: AuthProfile
+    ) -> Callable[[str], None] | None:
+        """A write-back seam for TinyIC-owned rotating token documents.
+
+        Only ``GROK_OAUTH`` documents rotate today: the OAuth server may
+        rotate the refresh token on redemption, so the refreshed document
+        must replace the stored one or the next process replays a consumed
+        refresh token.  Read-through/runtime kinds return ``None`` — their
+        credentials belong to external tools and are never written.
+        """
+
+        if profile.kind is not ProfileKind.GROK_OAUTH:
+            return None
+        store = self.store
+
+        def write(secret: str) -> None:
+            from dataclasses import replace
+
+            store.put(replace(profile, secret=secret))
+
+        return write
 
     @staticmethod
     def _runtime_owner(profile: AuthProfile) -> str | None:
@@ -469,6 +538,11 @@ class AuthManager:
             return "openai:codex-runtime"
         if profile.kind is ProfileKind.CLAUDE_RUNTIME:
             return "anthropic:claude-runtime"
+        if profile.kind is ProfileKind.GROK_READTHROUGH:
+            # Read-through aliases all view the one ~/.grok/auth.json login;
+            # they are not independent quota fallbacks.  GROK_OAUTH profiles
+            # each own their token document and rotate independently.
+            return "grok:grok-cli"
         return None
 
     def _now(self) -> datetime:

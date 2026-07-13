@@ -62,14 +62,14 @@ PERSONAS: tuple[Persona, ...] = (
     },
     {
         "name": "Benjamin Graham",
-        "model_ref": "openai/gpt-5.6",
+        "model_ref": "openai/gpt-5.6-terra",
         "auth_profile": "openai:key",
         "thinking_level": "medium",
         "temperament": "conciliatory",
     },
     {
         "name": "Peter Lynch",
-        "model_ref": "google/gemini-2.5-pro",
+        "model_ref": "google/gemini-3.5-flash",
         "auth_profile": "google:key",
         "thinking_level": "medium",
         "temperament": "balanced",
@@ -83,8 +83,8 @@ PERSONAS: tuple[Persona, ...] = (
     },
     {
         "name": "Li Lu",
-        "model_ref": "deepseek/deepseek-reasoner",
-        "auth_profile": "deepseek:key",
+        "model_ref": "kimi/kimi-k2.6",
+        "auth_profile": "kimi:key",
         "thinking_level": "high",
         "temperament": "balanced",
     },
@@ -94,7 +94,7 @@ _MODEL_BY_PERSONA = {p["name"]: p["model_ref"] for p in PERSONAS}
 
 MODERATOR = {
     "name": "Moderator",
-    "model_ref": "openai/gpt-5.6-mini",
+    "model_ref": "openai/gpt-5.6-luna",
     "auth_profile": "openai:key",
     "thinking_level": "low",
 }

@@ -566,7 +566,13 @@ def test_d2_file_logging_defaults_to_info_and_root_level_is_initialized() -> Non
 
 @pytest.mark.parametrize(
     "environment_name",
-    ["OPENAI_API_KEY", "AZURE_OPENAI_KEY", "ANTHROPIC_AUTH_TOKEN"],
+    [
+        "OPENAI_API_KEY",
+        "AZURE_OPENAI_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "MOONSHOT_API_KEY",
+        "KIMI_API_KEY",
+    ],
 )
 def test_d2_logging_filter_redacts_configured_credentials(
     monkeypatch, environment_name

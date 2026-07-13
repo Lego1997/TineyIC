@@ -462,15 +462,30 @@ def test_same_mocked_debate_runs_via_three_adapters_with_identical_structure(
 # Cases are validated against the REAL shipped registry (default_registry), so
 # this pins the v1 provider catalog's thinking profiles, not a hand-built one.
 
+# The adaptive/effort wire shape shared by fable-5 / opus-4-8 / sonnet-5.
+def _adaptive(effort: str) -> dict:
+    return {"thinking": {"type": "adaptive"}, "output_config": {"effort": effort}}
+
+
 # (model_ref, level, runtime, effective, params) -> resolved & included as-is.
 _THINKING_INCLUDED = [
     ("openai/gpt-5.2", "high", False, "high", {"reasoning_effort": "high"}),
     ("openai/gpt-5.2", "minimal", False, "minimal", {"reasoning_effort": "minimal"}),
     ("openai/gpt-5.6-sol", "high", False, "high", {"reasoning": {"effort": "high"}}),
-    ("anthropic/claude-opus-4-8", "high", False, "high", {"budget_tokens": 8192}),
-    ("anthropic/claude-opus-4-8", "max", False, "max", {"budget_tokens": 32768}),
-    ("google/gemini-2.5-pro", "medium", False, "medium", {"thinkingBudget": 8192}),
-    ("deepseek/deepseek-reasoner", "low", False, "low", {"reasoning_effort": "low"}),
+    # The gpt-5.6 family carries "off" as the documented "none" effort value.
+    ("openai/gpt-5.6-sol", "off", False, "off", {"reasoning": {"effort": "none"}}),
+    ("openai/gpt-5.6-luna", "minimal", False, "minimal", {"reasoning_effort": "minimal"}),
+    # Anthropic adaptive scheme: thinking + output_config, never budget_tokens.
+    ("anthropic/claude-fable-5", "high", False, "high", _adaptive("high")),
+    ("anthropic/claude-opus-4-8", "high", False, "high", _adaptive("high")),
+    ("anthropic/claude-opus-4-8", "max", False, "max", _adaptive("max")),
+    # haiku-4-5 keeps the legacy budget scheme.
+    ("anthropic/claude-haiku-4-5", "high", False, "high", {"budget_tokens": 8192}),
+    ("google/gemini-3.5-flash", "medium", False, "medium", {"reasoning_effort": "medium"}),
+    ("grok/grok-4.5", "high", False, "high", {"reasoning_effort": "high"}),
+    # Kimi thinking is on by default; the toggle is explicit either way.
+    ("kimi/kimi-k2.6", "high", False, "high", {"thinking": {"type": "enabled"}}),
+    ("kimi/kimi-k2.6", "off", False, "off", {"thinking": {"type": "disabled"}}),
     ("ollama/qwen3:32b", "high", False, "high", {"think": True}),
     ("ollama/qwen3:32b", "off", False, "off", {"think": False}),
     # Unknown model -> the provider's default effort profile (custom/local still work).
@@ -495,10 +510,15 @@ _THINKING_REMAPPED = [
     ("openai/gpt-5.2", "max", "xhigh", {"reasoning_effort": "xhigh"}),
     ("openai/gpt-5.2", "off", "minimal", {"reasoning_effort": "minimal"}),
     ("openai/gpt-5.6-sol", "max", "xhigh", {"reasoning": {"effort": "xhigh"}}),
-    ("anthropic/claude-opus-4-8", "minimal", "low", {"budget_tokens": 2048}),
-    ("anthropic/claude-opus-4-8", "off", "low", {"budget_tokens": 2048}),
-    ("google/gemini-2.5-pro", "xhigh", "high", {"thinkingBudget": 24576}),
-    ("deepseek/deepseek-reasoner", "max", "high", {"reasoning_effort": "high"}),
+    # Always-thinking Anthropic models: off/minimal remap to the low effort rung.
+    ("anthropic/claude-fable-5", "off", "low", _adaptive("low")),
+    ("anthropic/claude-opus-4-8", "minimal", "low", _adaptive("low")),
+    ("anthropic/claude-opus-4-8", "off", "low", _adaptive("low")),
+    ("anthropic/claude-haiku-4-5", "minimal", "low", {"budget_tokens": 2048}),
+    ("google/gemini-3.5-flash", "xhigh", "high", {"reasoning_effort": "high"}),
+    # grok-4.5 cannot disable reasoning: off remaps up to low at runtime.
+    ("grok/grok-4.5", "off", "low", {"reasoning_effort": "low"}),
+    ("grok/grok-4.5", "max", "high", {"reasoning_effort": "high"}),
     ("openai/gpt-9-experimental", "xhigh", "high", {"reasoning_effort": "high"}),
 ]
 
@@ -519,8 +539,12 @@ def test_thinking_gate_remapped_at_runtime_but_rejected_at_config_time(
         resolve_binding_thinking(binding, runtime=False)
 
 
-# Grok reasons by default with no thinking knob -> omit at every level/mode.
-_THINKING_OMITTED = [("xai/grok-4", "off"), ("xai/grok-4", "high"), ("xai/grok-4", "max")]
+# Models without any thinking knob -> omit at every level/mode.
+_THINKING_OMITTED = [
+    ("ollama/llama3.1:8b", "off"),
+    ("ollama/llama3.1:8b", "high"),
+    ("ollama/gemma4", "max"),
+]
 
 
 @pytest.mark.parametrize("runtime", [False, True])
@@ -538,10 +562,14 @@ def test_thinking_gate_omitted_for_models_without_a_knob(model_ref, level, runti
 _THINKING_REJECTED = [
     ("openai/gpt-5.2", "off", ("minimal", "low", "medium", "high", "xhigh")),
     ("openai/gpt-5.2", "max", ("minimal", "low", "medium", "high", "xhigh")),
+    # Always-thinking Anthropic models: "off" is a hard config-time reject.
+    ("anthropic/claude-fable-5", "off", ("low", "medium", "high", "xhigh", "max")),
     ("anthropic/claude-opus-4-8", "off", ("low", "medium", "high", "xhigh", "max")),
     ("anthropic/claude-opus-4-8", "minimal", ("low", "medium", "high", "xhigh", "max")),
-    ("google/gemini-2.5-pro", "xhigh", ("low", "medium", "high")),
-    ("deepseek/deepseek-reasoner", "xhigh", ("low", "medium", "high")),
+    ("google/gemini-3.5-flash", "xhigh", ("minimal", "low", "medium", "high")),
+    # grok-4.5 cannot disable reasoning; its dial is exactly low|medium|high.
+    ("grok/grok-4.5", "off", ("low", "medium", "high")),
+    ("grok/grok-4.5", "xhigh", ("low", "medium", "high")),
     ("openai/gpt-9-experimental", "max", ("low", "medium", "high")),
 ]
 
@@ -671,7 +699,7 @@ model = "anthropic/claude-opus-4-8"
 thinking = "minimal"
 
 [presets.p.personas.benjamin_graham]
-model = "deepseek/deepseek-reasoner"
+model = "kimi/kimi-k2.6"
 thinking = "low"
 """
 
@@ -695,7 +723,7 @@ def test_preset_field_precedence_role_and_persona_override_committee_default(tmp
         graham.thinking_level.value,
         graham.auth_profile,
         graham.params,
-    ) == ("deepseek/deepseek-reasoner", "low", "openai:work", {"temperature": 0.3})
+    ) == ("kimi/kimi-k2.6", "low", "openai:work", {"temperature": 0.3})
 
     # Aggregator: model wins; thinking/auth/params inherited.
     aggregator = preset.aggregator_binding()
@@ -739,7 +767,7 @@ def test_per_debate_override_is_highest_precedence(tmp_path):
     # A single-dimension override leaves the other dimension's pins intact.
     thinking_only = base.with_overrides(thinking="off")
     graham_pin = thinking_only.persona_binding("benjamin_graham")
-    assert graham_pin.model_ref == "deepseek/deepseek-reasoner"  # model pin preserved
+    assert graham_pin.model_ref == "kimi/kimi-k2.6"  # model pin preserved
     assert graham_pin.thinking_level.value == "off"  # thinking forced
     assert thinking_only.aggregator_binding().model_ref == "anthropic/claude-opus-4-8"
 
@@ -820,9 +848,9 @@ def test_missing_config_everywhere_falls_back_to_builtin_default(tmp_path, monke
     preset = load_preset()
     assert preset.name == "default"
     # FR-1.4 built-in default: one strong model everywhere.
-    assert preset.persona_binding("warren_buffett").model_ref == "openai/gpt-5.2"
-    assert preset.aggregator_binding().model_ref == "openai/gpt-5.2"
-    assert preset.moderator_binding().model_ref == "openai/gpt-5.2"
+    assert preset.persona_binding("warren_buffett").model_ref == "openai/gpt-5.6-sol"
+    assert preset.aggregator_binding().model_ref == "openai/gpt-5.6-sol"
+    assert preset.moderator_binding().model_ref == "openai/gpt-5.6-sol"
 
 
 # ==========================================================================

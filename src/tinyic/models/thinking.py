@@ -242,6 +242,46 @@ class ThinkingProfile:
 
         return cls(supported=supported, strategy=render)
 
+    @classmethod
+    def adaptive_effort(
+        cls, mapping: Mapping[ThinkingLevel, str]
+    ) -> "ThinkingProfile":
+        """Adaptive thinking plus an effort knob (current Anthropic scheme):
+        ``{"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}``.
+
+        Models on this scheme reject ``budget_tokens`` outright; levels outside
+        ``mapping`` (``off``/``minimal`` on always-thinking models) follow the
+        usual FR-1.3 semantics — config-time reject, runtime remap to nearest.
+        """
+        table = dict(mapping)
+
+        def render(level: ThinkingLevel) -> dict[str, Any]:
+            return {
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": table[level]},
+            }
+
+        return cls(supported=table.keys(), strategy=render)
+
+    @classmethod
+    def toggle(
+        cls,
+        param_key: str,
+        *,
+        supported: Iterable[ThinkingLevel] = THINKING_LADDER,
+        off: ThinkingLevel = ThinkingLevel.OFF,
+    ) -> "ThinkingProfile":
+        """Typed enable/disable object, e.g. Kimi's default-on thinking:
+        ``{"thinking": {"type": "disabled"}}`` at ``off``, else
+        ``{"thinking": {"type": "enabled"}}`` (the provider default)."""
+
+        def render(level: ThinkingLevel) -> dict[str, Any]:
+            return {
+                param_key: {"type": "disabled" if level == off else "enabled"}
+            }
+
+        return cls(supported=supported, strategy=render)
+
     # -- query & resolution ------------------------------------------------
 
     @property

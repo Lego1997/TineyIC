@@ -31,6 +31,12 @@ def isolate_tinyic_run_logs(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("TINYIC_RUNS_DIR", str(tmp_path / "tinyic-runs"))
     monkeypatch.setenv("TINYIC_STATE_DIR", str(tmp_path / "tinyic-state"))
+    # The user config overlay (~/.tinyic/tinyic.toml) deep-merges over every
+    # loaded config; point it into the sandbox so a developer's real overlay
+    # never leaks into (or is written by) the offline suite.
+    monkeypatch.setenv(
+        "TINYIC_USER_CONFIG", str(tmp_path / "tinyic-user" / "tinyic.toml")
+    )
 
 
 @pytest.fixture
@@ -44,8 +50,8 @@ def has_api_key():
 
 @pytest.fixture
 def has_xai_key():
-    """Check if XAI_API_KEY is available, skip if not."""
+    """Check if XAI_API_KEY (the Grok credential) is available, skip if not."""
     key = os.getenv("XAI_API_KEY")
     if not key:
-        pytest.skip("XAI_API_KEY not set -- skipping xAI API test")
+        pytest.skip("XAI_API_KEY not set -- skipping Grok API test")
     return key

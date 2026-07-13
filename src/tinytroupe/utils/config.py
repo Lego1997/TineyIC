@@ -243,6 +243,10 @@ class CredentialRedactionFilter(logging.Filter):
         "XAI_API_KEY",
         "GOOGLE_API_KEY",
         "GEMINI_API_KEY",
+        "MOONSHOT_API_KEY",
+        "KIMI_API_KEY",
+        # DeepSeek left the product in v2.1, but a user's shell may still
+        # export the key; redacting a stale env secret costs nothing.
         "DEEPSEEK_API_KEY",
         "AZURE_OPENAI_API_KEY",
         "AZURE_OPENAI_KEY",

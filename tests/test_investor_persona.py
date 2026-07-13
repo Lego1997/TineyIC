@@ -79,13 +79,13 @@ class TestInvestorPersonaLiveAPI:
 
     @pytest.mark.live_api
     @pytest.mark.timeout(120)
-    def test_listen_act_gpt52(self, has_api_key):
-        """FOUND-03: InvestorPersona can listen() and act() using GPT-5.2.
+    def test_listen_act_default_model(self, has_api_key):
+        """FOUND-03: InvestorPersona can listen() and act() using the default model.
 
         Validates the full chain:
-        InvestorPersona -> TinyPerson -> openai_client -> GPT-5.2 with reasoning_effort=xhigh
+        InvestorPersona -> TinyPerson -> openai_client -> the configured default model with reasoning_effort=xhigh
         """
-        persona = InvestorPersona(name="GPT52 Test Investor")
+        persona = InvestorPersona(name="Default Model Test Investor")
         persona["nationality"] = "American"
         persona["occupation"] = {
             "title": "Value Investor",

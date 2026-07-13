@@ -41,9 +41,16 @@ The five steps (FR-2.4)
    a real one-token live check only under ``live_api``). A failing verify **never
    persists the route and never overwrites an existing working profile**: the
    ephemeral candidate is checked *before* anything is written.
+   A verified lane then earns a **MODEL** step: pick that provider's model as
+   the committee default from the static catalog (context window + thinking
+   capability shown when known), with an explicit refresh action querying the
+   provider's live listing. The pick persists to the *user overlay*
+   (``~/.tinyic/tinyic.toml``) via ``set_user_default_binding`` — the shipped
+   ``tinyic.toml`` is never written.
 5. **SUMMARY** — a final card mirroring each persona's resolved binding
-   ``{model, auth lane, thinking}`` from the default preset, where credentials
-   were stored (keyring vs file), and the next-step hint.
+   ``{model, auth lane, thinking}`` from the default preset, the per-provider
+   outcome + chosen model, where credentials were stored (keyring vs file),
+   and the next-step hint.
 
 Re-running is an idempotent verify-and-repair pass: providers that already work
 default to *keep current*, and only what the user explicitly reconfigures is
@@ -95,9 +102,9 @@ __all__ = [
 PROVIDER_LABELS: dict[str, str] = {
     "openai": "OpenAI",
     "anthropic": "Anthropic",
+    "grok": "Grok",
     "google": "Google",
-    "xai": "xAI",
-    "deepseek": "DeepSeek",
+    "kimi": "Kimi",
     "ollama": "Ollama (local)",
 }
 
@@ -123,15 +130,25 @@ BEST_FOR: dict[tuple[str, str], str] = {
         "Anthropic API."
     ),
     ("google", "api_key"): (
-        "Best for: Gemini access via a Google AI Studio API key. Billed per "
-        "token."
+        "Best for: Gemini access via a Google AI Studio API key. API key only: "
+        "Google's terms prohibit third-party reuse of consumer-subscription "
+        "OAuth (the June 2026 Antigravity transition), so TinyIC ships no "
+        "Google subscription lane. Billed per token."
     ),
-    ("xai", "api_key"): (
-        "Best for: Grok access (and X / Twitter sentiment) via an xAI API key. "
-        "Billed per token."
+    ("grok", "subscription"): (
+        "Best for: your SuperGrok / X Premium+ plan via the official grok CLI "
+        "login (~/.grok/auth.json, read-only) or a TinyIC device-code sign-in. "
+        "No per-token bill; entitlement is checked server-side by xAI."
     ),
-    ("deepseek", "api_key"): (
-        "Best for: low-cost reasoning via a DeepSeek API key. Billed per token."
+    ("grok", "api_key"): (
+        "Best for: Grok access (and X / Twitter sentiment) via an xAI API key "
+        "(XAI_API_KEY). Billed per token."
+    ),
+    ("kimi", "api_key"): (
+        "Best for: low-cost frontier reasoning via a Moonshot AI API key "
+        "(MOONSHOT_API_KEY), with optional server-side web search. Billed per "
+        "token; international endpoint api.moonshot.ai by default, China "
+        "endpoint api.moonshot.cn via MOONSHOT_BASE_URL."
     ),
     ("ollama", "local"): (
         "Best for: fully local, private, offline inference. No credentials are "
@@ -151,6 +168,19 @@ POLICY_DISABLED_MSG = (
     "Anthropic subscription lane is turned off — use an API key instead."
 )
 
+# Always shown on the Grok subscription branch.
+GROK_POLICY_NOTE = (
+    "Policy: reuses your own Grok sign-in through the official OAuth endpoints "
+    "(device code / grok-CLI read-through; TinyIC never rewrites "
+    "~/.grok/auth.json). xAI enforces subscription entitlement server-side and "
+    "has not published an explicit third-party policy for this lane. Governed "
+    "by the `[auth.grok] policy_guard` switch in tinyic.toml."
+)
+GROK_POLICY_DISABLED_MSG = (
+    "Disabled by policy_guard (auth.grok.policy_guard = false). The Grok "
+    "subscription lane is turned off — use an XAI_API_KEY instead."
+)
+
 # Secret-free, human explanations for the reason codes a verify/connect can
 # surface. Kept local so the wizard never leaks the doctor's internal message
 # table or any runtime/exception text.
@@ -167,9 +197,15 @@ REASON_HINTS: dict[str, str] = {
     "lane_incompatible": "That profile belongs to another lane.",
     "unsupported_thinking_level": "The model rejects the selected thinking level.",
     "unknown_provider": "The provider is not registered.",
+    "subscription_inactive": (
+        "The provider reports no active subscription on this account."
+    ),
+    "refresh_failed": "The live catalog refresh did not succeed.",
+    "refresh_unsupported": "This provider publishes no usable live catalog.",
+    "config_write_failed": "The user config overlay could not be written.",
 }
 
-_PROVIDER_ORDER = ("openai", "anthropic", "google", "xai", "deepseek", "ollama")
+_PROVIDER_ORDER = ("openai", "anthropic", "grok", "google", "kimi", "ollama")
 _STATUS_MARK = {"ok": ("✓", "bold green"), "warning": ("▲", "bold yellow"),
                 "error": ("✗", "bold red")}
 
@@ -211,6 +247,7 @@ class OnboardScreen(str, Enum):
     CHOOSE = "choose"
     CONNECT_KEY = "connect_key"
     CONNECT_SUB = "connect_sub"
+    MODEL = "model"
     SUMMARY = "summary"
 
 
@@ -250,6 +287,8 @@ class ProviderPlan:
     persisted_lane: str | None = None
     error: str | None = None
     verifying: bool = False
+    #: ``provider/model`` picked on the MODEL step (persisted to the overlay).
+    chosen_model: str | None = None
 
     @property
     def already_ok(self) -> bool:
@@ -288,6 +327,8 @@ class OnboardSummary:
     rows: tuple[SummaryRow, ...]
     backend: str
     preset: str
+    #: The resolved committee-wide default model (after the user overlay).
+    default_model: str | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -308,6 +349,13 @@ def _default_openai_login_factory():
     from tinyic.auth.openai import CodexLoginSession
 
     return CodexLoginSession()
+
+
+def _default_grok_login_factory():
+    """Open one TinyIC-owned Grok device-code login session."""
+    from tinyic.auth.grok import GrokDeviceLoginSession
+
+    return GrokDeviceLoginSession()
 
 
 # --------------------------------------------------------------------------- #
@@ -337,6 +385,8 @@ class OnboardController:
         config_path: str | None = None,
         verify_probe: Callable[[object, object], object] | None = None,
         openai_login_factory: Callable[[], object] | None = None,
+        grok_login_factory: Callable[[], object] | None = None,
+        catalog_factory: Callable[[], object] | None = None,
     ) -> None:
         self.manager = manager
         self.store = manager.store
@@ -346,6 +396,10 @@ class OnboardController:
         # so the interactive wizard and headless ``doctor`` can never drift.
         self.verify_probe = verify_probe or live_token_probe
         self.openai_login_factory = openai_login_factory or _default_openai_login_factory
+        self.grok_login_factory = grok_login_factory or _default_grok_login_factory
+        # The MODEL step's catalog seam: static snapshots are offline; only the
+        # explicit refresh action queries a provider's live model listing.
+        self.catalog_factory = catalog_factory or self._default_catalog_service
 
         self.screen = OnboardScreen.DETECT
         self.report: DoctorReport | None = None
@@ -356,6 +410,10 @@ class OnboardController:
         self._cursor = 0
         self._highlight = 0
         self._sub_stage = "menu"  # "menu" | "device_wait"
+        self._catalog_service: object | None = None
+        self._model_listings: tuple = ()
+        self._model_warning: str | None = None
+        self._model_refresh_allowed = False
 
         # Device-code login is kept alive between start() and wait().
         self._login_cm: object | None = None
@@ -433,6 +491,10 @@ class OnboardController:
     def challenge(self) -> object | None:
         return self._challenge
 
+    @property
+    def model_warning(self) -> str | None:
+        return self._model_warning
+
     def choices(self) -> list[Choice]:
         """The selectable rows for the current menu screen (empty on input screens)."""
         if self.screen is OnboardScreen.DETECT:
@@ -444,6 +506,9 @@ class OnboardController:
         if self.screen is OnboardScreen.CONNECT_SUB and self._sub_stage == "menu":
             plan = self.current_plan()
             return self._sub_choices(plan) if plan else []
+        if self.screen is OnboardScreen.MODEL:
+            plan = self.current_plan()
+            return self._model_choices(plan) if plan else []
         if self.screen is OnboardScreen.SUMMARY:
             return [Choice("redetect", "Re-run detection"), Choice("finish", "Finish")]
         return []
@@ -473,16 +538,28 @@ class OnboardController:
                     plan.provider == "anthropic"
                     and not self.manager.anthropic_policy_guard
                 )
+                grok_off = plan.provider == "grok" and not getattr(
+                    self.manager, "grok_policy_guard", True
+                )
+                if plan.provider == "anthropic":
+                    note = ANTHROPIC_POLICY_NOTE
+                elif plan.provider == "grok":
+                    note = GROK_POLICY_NOTE
+                else:
+                    note = None
+                disabled_reason = None
+                if anthropic_off:
+                    disabled_reason = POLICY_DISABLED_MSG
+                elif grok_off:
+                    disabled_reason = GROK_POLICY_DISABLED_MSG
                 choices.append(
                     Choice(
                         "subscription",
                         "Use your subscription",
-                        enabled=not anthropic_off,
+                        enabled=not (anthropic_off or grok_off),
                         detail=best_for(plan.provider, "subscription"),
-                        note=ANTHROPIC_POLICY_NOTE
-                        if plan.provider == "anthropic"
-                        else None,
-                        disabled_reason=POLICY_DISABLED_MSG if anthropic_off else None,
+                        note=note,
+                        disabled_reason=disabled_reason,
                     )
                 )
             elif branch == "api_key":
@@ -546,6 +623,35 @@ class OnboardController:
                     note=ANTHROPIC_POLICY_NOTE,
                 )
             )
+        elif plan.provider == "grok":
+            detected = plan.lanes.get("subscription")
+            if detected is not None and detected.status == "ok":
+                choices.append(
+                    Choice(
+                        "reuse",
+                        "Reuse existing Grok CLI sign-in",
+                        detail=(
+                            "A working ~/.grok/auth.json sign-in was detected. "
+                            "Reuse it read-through — TinyIC never rewrites the "
+                            "Grok CLI's credentials and never redeems its "
+                            "refresh token; if the sign-in expires, refresh "
+                            "it by running the grok CLI."
+                        ),
+                        note=GROK_POLICY_NOTE,
+                    )
+                )
+            choices.append(
+                Choice(
+                    "device",
+                    "Sign in with Grok (device code)",
+                    detail=(
+                        "Shows a URL and a one-time code; authorize in a "
+                        "browser on any device. The resulting tokens are "
+                        "TinyIC's own and are stored in the keyring."
+                    ),
+                    note=GROK_POLICY_NOTE,
+                )
+            )
         elif plan.provider == "ollama":
             choices.append(
                 Choice(
@@ -555,6 +661,50 @@ class OnboardController:
                 )
             )
         choices.append(Choice("back", "← Back"))
+        return choices
+
+    def _model_choices(self, plan: ProviderPlan) -> list[Choice]:
+        """The MODEL step menu: catalog rows, optional refresh, keep-current."""
+        choices: list[Choice] = []
+        for listing in self._model_listings:
+            parts: list[str] = []
+            if listing.context_window is not None:
+                parts.append(f"context {listing.context_window:,}")
+            if listing.max_output is not None:
+                parts.append(f"max out {listing.max_output:,}")
+            if listing.thinking_capable is not None:
+                parts.append(
+                    "thinking" if listing.thinking_capable else "no thinking"
+                )
+            if listing.source == "live":
+                parts.append("live")
+            choices.append(
+                Choice(
+                    f"model:{listing.model_id}",
+                    listing.model_id,
+                    detail=" · ".join(parts) or "No catalog metadata.",
+                )
+            )
+        if self._model_refresh_allowed:
+            choices.append(
+                Choice(
+                    "refresh",
+                    "Refresh from the provider",
+                    detail=(
+                        "Query the provider's live model listing with this "
+                        "lane's credentials. Failures fall back to the static "
+                        "catalog."
+                    ),
+                )
+            )
+        current = self._committee_default_model()
+        choices.append(
+            Choice(
+                "keep_default",
+                "Keep the current committee default",
+                detail=f"Leave the default model unchanged ({current or 'built-in'}).",
+            )
+        )
         return choices
 
     # -- navigation ------------------------------------------------------- #
@@ -594,6 +744,9 @@ class OnboardController:
         if self.screen is OnboardScreen.CONNECT_SUB and self._sub_stage == "menu":
             choice = self.current_choice()
             return self._activate_sub(choice) if choice else ("navigate", None)
+        if self.screen is OnboardScreen.MODEL:
+            choice = self.current_choice()
+            return self._activate_model(choice) if choice else ("navigate", None)
         if self.screen is OnboardScreen.SUMMARY:
             choice = self.current_choice()
             if choice and choice.id == "finish":
@@ -636,12 +789,19 @@ class OnboardController:
             return ("navigate", None)
         plan.error = None
         if choice.id == "reuse":
+            if plan.provider == "grok":
+                return ("verify", self.confirm_grok_readthrough)
             return ("verify", self.confirm_readthrough)
         if choice.id == "runtime":
             return ("verify", self.confirm_runtime)
         if choice.id == "ollama":
             return ("verify", self.confirm_ollama)
         if choice.id == "device":
+            if plan.provider == "grok" and not getattr(
+                self.manager, "grok_policy_guard", True
+            ):
+                plan.error = "policy_disabled"
+                return ("navigate", None)
             try:
                 self.start_subscription_login()
             except Exception:
@@ -651,11 +811,32 @@ class OnboardController:
             return ("device", None)
         return ("navigate", None)
 
+    def _activate_model(self, choice: Choice) -> tuple[str, object | None]:
+        plan = self.current_plan()
+        if plan is None:
+            return ("navigate", None)
+        plan.error = None
+        if choice.id == "refresh":
+            # The live listing may block on the network; run it off-thread
+            # exactly like a verify tail.
+            return ("verify", self.refresh_model_catalog)
+        if choice.id == "keep_default":
+            self._advance()
+            return ("navigate", None)
+        if choice.id.startswith("model:"):
+            self.choose_model(choice.id.partition(":")[2])
+        return ("navigate", None)
+
     def back(self) -> bool:
         """Back out one step. Returns ``False`` only when the app should exit."""
         screen = self.screen
         if screen is OnboardScreen.DETECT:
             return False
+        if screen is OnboardScreen.MODEL:
+            # The lane is already verified and persisted; escaping the model
+            # pick keeps the current committee default and moves on.
+            self._advance()
+            return True
         if screen is OnboardScreen.CHOOSE:
             if self._cursor > 0:
                 self._cursor -= 1
@@ -739,6 +920,21 @@ class OnboardController:
             ref="openai:codex",
         )
 
+    def confirm_grok_readthrough(self) -> bool:
+        """Persist a secretless read-through marker for a Grok CLI sign-in."""
+        plan = self.current_plan()
+        if plan is None:
+            return False
+        if not getattr(self.manager, "grok_policy_guard", True):
+            plan.error = "policy_disabled"
+            return False
+        return self._verify_and_persist(
+            plan,
+            kind=ProfileKind.GROK_READTHROUGH,
+            lane="subscription",
+            ref="grok:grok-cli",
+        )
+
     def confirm_runtime(self) -> bool:
         """Persist the Anthropic Claude-runtime route marker (policy-gated)."""
         plan = self.current_plan()
@@ -766,7 +962,13 @@ class OnboardController:
         from tinyic.auth.openai import LoginMode
 
         self._close_login()
-        cm = self.openai_login_factory()
+        plan = self.current_plan()
+        factory = (
+            self.grok_login_factory
+            if plan is not None and plan.provider == "grok"
+            else self.openai_login_factory
+        )
+        cm = factory()
         session = cm.__enter__()
         try:
             challenge = session.start(LoginMode.DEVICE_CODE)
@@ -801,6 +1003,20 @@ class OnboardController:
             self._sub_stage = "menu"
             return False
         self._sub_stage = "menu"
+        if plan.provider == "grok":
+            # TinyIC owns the Grok device-code tokens: persist the token
+            # document as the profile secret (keyring-first store).
+            secret = getattr(result, "profile_secret", None)
+            if not isinstance(secret, str) or not secret:
+                plan.error = "invalid_credential"
+                return False
+            return self._verify_and_persist(
+                plan,
+                kind=ProfileKind.GROK_OAUTH,
+                lane="subscription",
+                ref="grok:supergrok",
+                secret=secret,
+            )
         return self._verify_and_persist(
             plan,
             kind=ProfileKind.OPENAI_OAUTH,
@@ -871,8 +1087,112 @@ class OnboardController:
             plan.persisted_lane = lane
         plan.outcome = "verified"
         plan.error = None
+        # A verified lane earns the MODEL step: pick this provider's model as
+        # the committee default (offline static catalog; refresh is explicit).
+        self._enter_model(plan)
+        return True
+
+    # -- MODEL: the committee-default model picker ------------------------- #
+
+    def _default_catalog_service(self):
+        from tinyic.models.catalog import CatalogService
+
+        # Reuse the wizard's own auth manager so a just-persisted key is the
+        # credential a refresh rides, and the same config path for presets.
+        return CatalogService(
+            credentials=self.manager, config_path=self.config_path
+        )
+
+    def _catalog(self):
+        if self._catalog_service is None:
+            self._catalog_service = self.catalog_factory()
+        return self._catalog_service
+
+    def _enter_model(self, plan: ProviderPlan) -> None:
+        try:
+            (catalog,) = self._catalog().snapshot(plan.provider, refresh=False)
+        except Exception:
+            # No catalog for this provider — skip the step, never block setup.
+            self._advance()
+            return
+        self._model_listings = tuple(catalog.listings)
+        self._model_warning = None
+        try:
+            self._model_refresh_allowed = bool(
+                self._catalog().can_refresh(plan.provider)
+            )
+        except Exception:
+            self._model_refresh_allowed = False
+        self.screen = OnboardScreen.MODEL
+        self._highlight = 0
+
+    def refresh_model_catalog(self) -> bool:
+        """Explicitly refresh the current provider's live model listing."""
+        plan = self.current_plan()
+        if plan is None:
+            return False
+        try:
+            (catalog,) = self._catalog().snapshot(plan.provider, refresh=True)
+        except Exception:
+            self._model_warning = "refresh_failed"
+            return False
+        self._model_listings = tuple(catalog.listings)
+        self._model_warning = catalog.warning
+        self._highlight = min(
+            self._highlight, max(0, len(self.choices()) - 1)
+        )
+        return catalog.warning is None
+
+    def choose_model(self, model_id: str) -> bool:
+        """Persist ``model_id`` as the committee default (user overlay only)."""
+        plan = self.current_plan()
+        if plan is None:
+            return False
+        model_ref = f"{plan.provider}/{model_id}"
+        thinking = self._thinking_for_default(plan.provider, model_id)
+        try:
+            from tinyic.models.presets import set_user_default_binding
+
+            set_user_default_binding(model_ref, thinking=thinking)
+        except Exception:
+            plan.error = "config_write_failed"
+            return False
+        plan.chosen_model = model_ref
+        plan.error = None
         self._advance()
         return True
+
+    def _committee_default_model(self) -> str | None:
+        try:
+            return self._load_default_preset().default.model
+        except Exception:
+            return None
+
+    def _thinking_for_default(self, provider: str, model: str) -> str | None:
+        """Nearest supported thinking when the current default level won't fit.
+
+        Returns ``None`` (write no thinking key) when the current committee
+        default thinking already suits the chosen model, so the overlay stays
+        minimal; otherwise the nearest supported level rides along and the
+        merged config keeps passing strict config-time validation (FR-1.3).
+        """
+        from tinyic.models.presets import BUILTIN_DEFAULT_THINKING
+        from tinyic.models.thinking import ThinkingLevel, nearest_supported
+
+        try:
+            current = self._load_default_preset().default.thinking
+        except Exception:
+            current = None
+        level = ThinkingLevel(current or BUILTIN_DEFAULT_THINKING)
+        try:
+            from tinyic.models.registry import default_registry
+
+            profile = default_registry().get(provider).thinking_profile(model)
+        except Exception:
+            return None
+        if not profile.supported or level in profile.supported:
+            return None
+        return nearest_supported(level, profile.supported).value
 
     @staticmethod
     def _build_candidate(
@@ -889,6 +1209,10 @@ class OnboardController:
             return AuthCandidate(
                 profile, credential_ref=env_refs[0] if env_refs else None
             )
+        if kind is ProfileKind.GROK_OAUTH:
+            # TinyIC-owned tokens: the JSON token document is the secret.
+            profile = AuthProfile(ref, kind, AuthLane.SUBSCRIPTION, secret)
+            return AuthCandidate(profile)
         # Secretless subscription route markers (read-through / runtime / oauth).
         profile = AuthProfile(ref, kind, AuthLane.SUBSCRIPTION)
         return AuthCandidate(profile)
@@ -941,7 +1265,10 @@ class OnboardController:
                 )
             )
         self.summary = OnboardSummary(
-            rows=tuple(rows), backend=self._storage_backend(), preset=preset.name
+            rows=tuple(rows),
+            backend=self._storage_backend(),
+            preset=preset.name,
+            default_model=preset.default.model,
         )
 
     def _load_default_preset(self):
@@ -1074,6 +1401,7 @@ class OnboardApp(App):
             OnboardScreen.CHOOSE: "choose",
             OnboardScreen.CONNECT_KEY: "connect · api key",
             OnboardScreen.CONNECT_SUB: "connect · subscription",
+            OnboardScreen.MODEL: "model",
             OnboardScreen.SUMMARY: "summary",
         }[self.controller.screen]
         text.append(f"   {step}", style="dim")
@@ -1082,6 +1410,7 @@ class OnboardApp(App):
             OnboardScreen.CHOOSE,
             OnboardScreen.CONNECT_KEY,
             OnboardScreen.CONNECT_SUB,
+            OnboardScreen.MODEL,
         }:
             position = f"   {self.controller.cursor + 1}/{len(self.controller.plans)}"
             text.append(position, style="dim")
@@ -1097,6 +1426,8 @@ class OnboardApp(App):
             return self._render_key()
         if screen is OnboardScreen.CONNECT_SUB:
             return self._render_sub()
+        if screen is OnboardScreen.MODEL:
+            return self._render_model()
         return self._render_summary()
 
     def _render_detect(self) -> Text:
@@ -1198,6 +1529,32 @@ class OnboardApp(App):
         text.append_text(self._error_line(plan))
         return text
 
+    def _render_model(self) -> Text:
+        plan = self.controller.current_plan()
+        text = Text()
+        if plan is None:
+            return text
+        text.append(
+            f"Pick a committee default model — {provider_label(plan.provider)}\n",
+            style="bold underline",
+        )
+        text.append(
+            "Writes [presets.default] to your user overlay "
+            "(~/.tinyic/tinyic.toml) — the shipped tinyic.toml is never "
+            "modified. esc keeps the current default.\n\n",
+            style="dim",
+        )
+        text.append_text(self._menu_lines())
+        warning = self.controller.model_warning
+        if warning:
+            text.append(
+                f"\n▲ Refresh degraded — {warning}: {reason_hint(warning)}\n",
+                style="yellow",
+            )
+            text.append("  Showing the static catalog.\n", style="dim")
+        text.append_text(self._error_line(plan))
+        return text
+
     def _render_summary(self) -> Text:
         summary = self.controller.summary
         text = Text()
@@ -1216,6 +1573,28 @@ class OnboardApp(App):
             else:
                 text.append(f"  · unresolved: {row.reason}", style="red")
             text.append("\n")
+        if self.controller.plans:
+            text.append("\nProviders\n", style="bold")
+            for plan in self.controller.plans:
+                text.append(f"  {provider_label(plan.provider):<15}", style="bold")
+                outcome = plan.outcome or "untouched"
+                text.append(
+                    outcome,
+                    style="green" if plan.outcome == "verified" else "dim",
+                )
+                if plan.persisted_lane:
+                    text.append(f" · {plan.persisted_lane}", style="cyan")
+                    if plan.persisted_ref:
+                        text.append(f" ({plan.persisted_ref})", style="dim")
+                text.append(
+                    f" · model {plan.chosen_model}" if plan.chosen_model
+                    else " · model unchanged",
+                    style="cyan" if plan.chosen_model else "dim",
+                )
+                text.append("\n")
+        if summary.default_model:
+            text.append("\nCommittee default model: ", style="bold")
+            text.append(f"{summary.default_model}\n", style="cyan")
         text.append(
             f"\nCredentials stored in: {summary.backend}\n", style="bold"
         )
@@ -1271,6 +1650,10 @@ class OnboardApp(App):
         text.append("↑↓ move", style="bold")
         if screen is OnboardScreen.DETECT:
             text.append("  ·  enter begin · q quit", style="dim")
+        elif screen is OnboardScreen.MODEL:
+            text.append(
+                "  ·  enter choose · esc keep current · q quit", style="dim"
+            )
         elif screen is OnboardScreen.SUMMARY:
             text.append("  ·  enter select · esc re-detect · q quit", style="dim")
         else:
@@ -1382,6 +1765,8 @@ def build_controller(
     report_factory: Callable[[], DoctorReport] | None = None,
     verify_probe: Callable[[object, object], object] | None = None,
     openai_login_factory: Callable[[], object] | None = None,
+    grok_login_factory: Callable[[], object] | None = None,
+    catalog_factory: Callable[[], object] | None = None,
 ) -> OnboardController:
     """Build a production controller, wiring the default doctor-report seam."""
     manager = manager or AuthManager.from_config(config_path)
@@ -1402,6 +1787,8 @@ def build_controller(
         config_path=config_path,
         verify_probe=verify_probe,
         openai_login_factory=openai_login_factory,
+        grok_login_factory=grok_login_factory,
+        catalog_factory=catalog_factory,
     )
 
 

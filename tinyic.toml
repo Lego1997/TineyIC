@@ -11,7 +11,7 @@
 #   * `default_preset`  — which preset is used when the caller names none.
 #   * `[presets.<name>]` — one committee. Its top-level keys are the
 #     committee-wide *default* binding, inherited by any role that omits a field:
-#       - `model`        required "provider/model" ref (e.g. "openai/gpt-5.2")
+#       - `model`        required "provider/model" ref (e.g. "openai/gpt-5.6-sol")
 #       - `thinking`     off | minimal | low | medium | high | xhigh | max
 #       - `auth_profile` optional; resolved by the M3 auth profile store
 #       - `[presets.<name>.params]` optional provider-agnostic knobs (temperature…)
@@ -30,9 +30,17 @@ default_preset = "default"
 [auth.anthropic]
 policy_guard = true
 
+# Same kill switch for the Grok (xAI) subscription lane — a read-through of
+# your own grok-CLI sign-in (~/.grok/auth.json) or TinyIC's own device-code
+# tokens. xAI has not published an explicit third-party policy for this lane;
+# false skips it before any token read, and an XAI_API_KEY profile in
+# auth_order remains available as overflow.
+[auth.grok]
+policy_guard = true
+
 # One strong model for the whole committee — the recommended starting point.
 [presets.default]
-model = "openai/gpt-5.2"
+model = "openai/gpt-5.6-sol"
 thinking = "high"
 auth_profile = "openai:default"
 
@@ -44,7 +52,7 @@ temperature = 0.7
 # two personas pinned to their own models. Personas not listed here (Munger,
 # Lynch, Marks, Li Lu) inherit the committee default binding above.
 [presets.heterogeneous]
-model = "openai/gpt-5.2"
+model = "openai/gpt-5.6-sol"
 thinking = "high"
 
 [presets.heterogeneous.params]
@@ -55,13 +63,13 @@ model = "anthropic/claude-opus-4-8"
 thinking = "high"
 
 [presets.heterogeneous.moderator]
-model = "openai/gpt-5.2"
+model = "openai/gpt-5.6-luna"
 thinking = "minimal"
 
 [presets.heterogeneous.personas.warren_buffett]
-model = "openai/gpt-5.2"
+model = "openai/gpt-5.6-sol"
 thinking = "xhigh"
 
 [presets.heterogeneous.personas.benjamin_graham]
-model = "deepseek/deepseek-reasoner"
+model = "kimi/kimi-k2.6"
 thinking = "high"

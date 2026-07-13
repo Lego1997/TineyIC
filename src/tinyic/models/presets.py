@@ -18,7 +18,7 @@ FR-1.4) by overriding individual roles on top of a committee-wide default.
     # keys are the committee-wide default binding, inherited by every role that
     # does not override them.
     [presets.default]
-    model = "openai/gpt-5.2"          # required "provider/model" ref
+    model = "openai/gpt-5.6-sol"      # required "provider/model" ref
     thinking = "high"                  # off|minimal|low|medium|high|xhigh|max
     auth_profile = "openai:default"    # optional; resolved by M3 auth profiles
 
@@ -28,29 +28,46 @@ FR-1.4) by overriding individual roles on top of a committee-wide default.
     # A heterogeneous committee: role tables override the committee default and
     # inherit any field they omit (here, thinking/params from the default).
     [presets.mixed]
-    model = "openai/gpt-5.2"
+    model = "openai/gpt-5.6-sol"
     thinking = "high"
 
     [presets.mixed.aggregator]
     model = "anthropic/claude-opus-4-8"
 
     [presets.mixed.moderator]
-    model = "openai/gpt-5.2"
+    model = "openai/gpt-5.6-luna"
     thinking = "minimal"           # config-time levels must be model-supported
 
     # Persona overrides are keyed by snake_case registry name; unlisted personas
     # fall back to the committee default binding.
     [presets.mixed.personas.benjamin_graham]
-    model = "deepseek/deepseek-reasoner"
+    model = "kimi/kimi-k2.6"
 
 Resolution: a role binding inherits ``thinking``, ``auth_profile``, and
 ``params`` from the preset's committee default for any field it does not set;
 ``model`` is required somewhere on the inheritance chain (role or default).
+
+Config precedence (v2.1)
+------------------------
+
+Two files feed ``load_config``:
+
+1. the **base** config — the explicit ``path`` argument, else ``$TINYIC_CONFIG``,
+   else ``./tinyic.toml``, else the built-in default preset.  The repo's
+   ``tinyic.toml`` is the shipped baseline and is never written by TinyIC.
+2. the **user overlay** — ``$TINYIC_USER_CONFIG`` else ``~/.tinyic/tinyic.toml``.
+   When present it is deep-merged *over* the base (tables merge recursively,
+   scalars/arrays in the overlay win), so a key set in the overlay always beats
+   the same key in the base.  The onboarding wizard persists the user's chosen
+   committee default binding here via :func:`set_user_default_binding` and
+   writes **only** this file.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -62,13 +79,19 @@ from .thinking import ThinkingLevel, UnsupportedThinkingLevelError
 
 #: Built-in fallback when no ``tinyic.toml`` is present: one strong model
 #: everywhere (FR-1.4's ``default`` preset), so a committee always resolves.
-BUILTIN_DEFAULT_MODEL = "openai/gpt-5.2"
+BUILTIN_DEFAULT_MODEL = "openai/gpt-5.6-sol"
 BUILTIN_DEFAULT_THINKING = "high"
 DEFAULT_PRESET_NAME = "default"
 #: Environment override for the config file location (else ``./tinyic.toml``).
 CONFIG_ENV_VAR = "TINYIC_CONFIG"
 CONFIG_FILENAME = "tinyic.toml"
-DEFAULT_AUTH_CONFIG = {"anthropic": {"policy_guard": True}}
+#: Environment override for the user overlay location (else ``~/.tinyic/tinyic.toml``).
+USER_CONFIG_ENV_VAR = "TINYIC_USER_CONFIG"
+#: Legal/policy kill switches, one per subscription-capable provider lane.
+DEFAULT_AUTH_CONFIG = {
+    "anthropic": {"policy_guard": True},
+    "grok": {"policy_guard": True},
+}
 
 
 class PresetError(ValueError):
@@ -352,41 +375,82 @@ def _config_path(path: str | Path | None) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def user_config_path() -> Path:
+    """The user overlay location: ``$TINYIC_USER_CONFIG`` else ``~/.tinyic/tinyic.toml``."""
+    env_path = os.environ.get(USER_CONFIG_ENV_VAR)
+    if env_path:
+        return Path(env_path).expanduser()
+    return Path.home() / ".tinyic" / CONFIG_FILENAME
+
+
+def _deep_merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge ``overlay`` over ``base``: tables recurse, everything else replaces."""
+    merged: dict[str, Any] = {key: value for key, value in base.items()}
+    for key, value in overlay.items():
+        existing = merged.get(key)
+        if isinstance(existing, Mapping) and isinstance(value, Mapping):
+            merged[key] = _deep_merge(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _builtin_raw_config() -> dict[str, Any]:
+    """The raw-mapping equivalent of :func:`builtin_default_preset`."""
+    return {
+        "default_preset": DEFAULT_PRESET_NAME,
+        "presets": {
+            DEFAULT_PRESET_NAME: {
+                "model": BUILTIN_DEFAULT_MODEL,
+                "thinking": BUILTIN_DEFAULT_THINKING,
+            }
+        },
+    }
+
+
+def _load_toml(resolved: Path, *, what: str) -> dict[str, Any]:
+    try:
+        with resolved.open("rb") as stream:
+            return tomllib.load(stream)
+    except tomllib.TOMLDecodeError as exc:
+        raise PresetError(f"{what} {resolved} is not valid TOML: {exc}") from exc
+
+
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
     """Parse ``tinyic.toml`` into ``{presets, default_preset, auth}``.
 
-    A missing file yields the built-in ``default`` preset only, so the model
-    layer works before a user writes any config.
+    A missing base file yields the built-in ``default`` preset, so the model
+    layer works before a user writes any config.  The user overlay (see the
+    module docstring) is deep-merged over the base whenever it exists.
     """
     resolved = _config_path(path)
     if resolved is None:
-        return {
-            "presets": {DEFAULT_PRESET_NAME: builtin_default_preset()},
-            "default_preset": DEFAULT_PRESET_NAME,
-            "auth": {
-                provider: dict(settings)
-                for provider, settings in DEFAULT_AUTH_CONFIG.items()
-            },
-        }
-    if not resolved.is_file():
-        raise PresetError(f"config file not found: {resolved}")
-    with resolved.open("rb") as stream:
-        raw = tomllib.load(stream)
+        raw: dict[str, Any] = _builtin_raw_config()
+    else:
+        if not resolved.is_file():
+            raise PresetError(f"config file not found: {resolved}")
+        raw = _load_toml(resolved, what="config file")
+    overlay_path = user_config_path()
+    if overlay_path.is_file():
+        raw = _deep_merge(raw, _load_toml(overlay_path, what="user config overlay"))
+    where = str(resolved) if resolved is not None else "the TinyIC config"
     auth_table = raw.get("auth", {})
     if not isinstance(auth_table, Mapping):
-        raise PresetError(f"{resolved} [auth] must be a table")
-    anthropic_table = auth_table.get("anthropic", {})
-    if not isinstance(anthropic_table, Mapping):
-        raise PresetError(f"{resolved} [auth.anthropic] must be a table")
-    policy_guard = anthropic_table.get("policy_guard", True)
-    if not isinstance(policy_guard, bool):
-        raise PresetError(
-            f"{resolved} auth.anthropic.policy_guard must be a boolean"
-        )
-    auth = {"anthropic": {"policy_guard": policy_guard}}
+        raise PresetError(f"{where} [auth] must be a table")
+    auth: dict[str, dict[str, bool]] = {}
+    for provider in DEFAULT_AUTH_CONFIG:
+        provider_table = auth_table.get(provider, {})
+        if not isinstance(provider_table, Mapping):
+            raise PresetError(f"{where} [auth.{provider}] must be a table")
+        policy_guard = provider_table.get("policy_guard", True)
+        if not isinstance(policy_guard, bool):
+            raise PresetError(
+                f"{where} auth.{provider}.policy_guard must be a boolean"
+            )
+        auth[provider] = {"policy_guard": policy_guard}
     presets_table = raw.get("presets", {})
     if not isinstance(presets_table, Mapping) or not presets_table:
-        raise PresetError(f"{resolved} defines no [presets.*] tables")
+        raise PresetError(f"{where} defines no [presets.*] tables")
     presets = {
         str(name): Preset.from_mapping(str(name), spec)
         for name, spec in presets_table.items()
@@ -394,7 +458,7 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     default_preset = raw.get("default_preset", DEFAULT_PRESET_NAME)
     if default_preset not in presets:
         raise PresetError(
-            f"default_preset {default_preset!r} is not a defined preset in {resolved}"
+            f"default_preset {default_preset!r} is not a defined preset in {where}"
         )
     return {
         "presets": presets,
@@ -424,6 +488,95 @@ def load_preset(name: str | None = None, path: str | Path | None = None) -> Pres
     return preset
 
 
+# --------------------------------------------------------------------------- #
+# The user overlay writer (the only TinyIC-written config file)
+# --------------------------------------------------------------------------- #
+
+_BARE_TOML_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _toml_key(key: str) -> str:
+    return key if _BARE_TOML_KEY.fullmatch(key) else json.dumps(key)
+
+
+def _toml_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_scalar(item) for item in value) + "]"
+    raise PresetError(
+        f"cannot serialize {type(value).__name__} into the user config overlay"
+    )
+
+
+def _dump_toml(table: Mapping[str, Any], prefix: tuple[str, ...] = ()) -> list[str]:
+    """Serialize the narrow scalar/table shape the overlay uses (no writer dep)."""
+    lines: list[str] = []
+    subtables: list[tuple[str, Mapping[str, Any]]] = []
+    for key, value in table.items():
+        if isinstance(value, Mapping):
+            subtables.append((str(key), value))
+        else:
+            lines.append(f"{_toml_key(str(key))} = {_toml_scalar(value)}")
+    for key, value in subtables:
+        path = (*prefix, key)
+        if lines and lines[-1] != "":
+            lines.append("")
+        lines.append("[" + ".".join(_toml_key(part) for part in path) + "]")
+        lines.extend(_dump_toml(value, path))
+    return lines
+
+
+def set_user_default_binding(
+    model_ref: str, *, thinking: str | None = None
+) -> Path:
+    """Persist ``model_ref`` as the committee default in the *user overlay*.
+
+    Writes ``[presets.default] model`` (and ``thinking`` when given) into the
+    overlay at :func:`user_config_path`, preserving any other overlay content.
+    The repo/base ``tinyic.toml`` is never touched — the overlay deep-merges
+    over it at load (overlay wins; see the module docstring).  Returns the
+    written path.
+    """
+    from .binding import parse_model_ref
+
+    parse_model_ref(model_ref)  # validate "provider/model" before writing
+    if thinking is not None:
+        thinking = ThinkingLevel(thinking).value
+    path = user_config_path()
+    raw: dict[str, Any] = {}
+    if path.is_file():
+        raw = _load_toml(path, what="user config overlay")
+    presets_table = raw.get("presets", {})
+    if not isinstance(presets_table, Mapping):
+        raise PresetError(f"user config overlay {path} [presets] must be a table")
+    raw["presets"] = dict(presets_table)
+    default_table = raw["presets"].get(DEFAULT_PRESET_NAME, {})
+    if not isinstance(default_table, Mapping):
+        raise PresetError(
+            f"user config overlay {path} [presets.{DEFAULT_PRESET_NAME}] must be a table"
+        )
+    default_table = dict(default_table)
+    default_table["model"] = model_ref
+    if thinking is not None:
+        default_table["thinking"] = thinking
+    raw["presets"][DEFAULT_PRESET_NAME] = default_table
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = (
+        "# TinyIC user overlay — written by `tinyic onboard`; deep-merged over\n"
+        "# the shipped tinyic.toml (overlay wins). Safe to edit or delete.\n"
+    )
+    body = "\n".join(_dump_toml(raw)) + "\n"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(header + body, encoding="utf-8")
+    os.replace(tmp, path)
+    return path
+
+
 __all__ = [
     "BUILTIN_DEFAULT_MODEL",
     "BUILTIN_DEFAULT_THINKING",
@@ -434,8 +587,11 @@ __all__ = [
     "DEFAULT_PRESET_NAME",
     "Preset",
     "PresetError",
+    "USER_CONFIG_ENV_VAR",
     "builtin_default_preset",
     "load_config",
     "load_preset",
+    "set_user_default_binding",
+    "user_config_path",
     "validate_preset_thinking",
 ]

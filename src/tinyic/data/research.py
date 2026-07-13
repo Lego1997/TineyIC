@@ -57,7 +57,7 @@ def _web_search(query: str) -> str:
         from openai import OpenAI
 
         oai = OpenAI(api_key=api_key)
-        model = config_manager.get("model") or "gpt-5.2"
+        model = config_manager.get("model") or "gpt-5.6-sol"
 
         response = oai.responses.create(
             model=model,

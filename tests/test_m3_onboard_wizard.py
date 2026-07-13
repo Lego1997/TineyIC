@@ -305,6 +305,10 @@ def test_api_key_success_verifies_persists_and_advances(tmp_path):
     assert store.get_auth_order("openai") == ("openai:key",)
     assert controller.plans[0].outcome == "verified"
     assert controller.plans[0].persisted_lane == "api_key"
+    # A verified lane earns the MODEL step; keeping the default advances.
+    assert controller.screen is OnboardScreen.MODEL
+    _select(controller, "keep_default")
+    controller.activate()
     assert controller.current_plan().provider == "anthropic"
 
 
@@ -432,6 +436,10 @@ def test_ollama_verify_persists_nothing(tmp_path):
     assert calls == [None]
     assert store.list(provider="ollama") == ()
     assert plan.outcome == "verified"
+    # The verified local lane still gets a MODEL step before the summary.
+    assert controller.screen is OnboardScreen.MODEL
+    _select(controller, "keep_default")
+    controller.activate()
     assert controller.screen is OnboardScreen.SUMMARY
 
 
@@ -462,6 +470,9 @@ def test_device_code_login_renders_code_and_persists_oauth_on_success(tmp_path):
     marker = store.get("openai:chatgpt")
     assert marker.kind is ProfileKind.OPENAI_OAUTH
     assert marker.secret is None and marker.lane is AuthLane.SUBSCRIPTION
+    assert controller.screen is OnboardScreen.MODEL
+    _select(controller, "keep_default")
+    controller.activate()
     assert controller.current_plan().provider == "anthropic"
 
 
@@ -667,6 +678,10 @@ async def test_app_api_key_flow_persists_via_pilot(tmp_path):
         await pilot.press("enter")
         await pilot.pause()
         assert store.get("openai:key") is not None
+        # The verified lane lands on the MODEL step; esc keeps the default.
+        assert controller.screen is OnboardScreen.MODEL
+        await pilot.press("escape")
+        await pilot.pause()
         assert controller.current_plan().provider == "anthropic"
 
 

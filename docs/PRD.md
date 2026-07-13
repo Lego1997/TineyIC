@@ -97,7 +97,7 @@ Threading model: the debate loop runs in one worker thread owned by the session 
 
 **FR-1.1 ModelBinding.** Every LLM consumer (each persona, the moderator, the aggregator, extraction, data-pipeline synthesis) resolves a `ModelBinding = {model_ref, auth_profile, thinking_level, params}` where `model_ref = "provider/model"` (e.g. `anthropic/claude-opus-4-8`, `openai/gpt-5.6-sol`, `ollama/qwen3:32b`). Bindings come from config presets (FR-1.4) with per-debate CLI/TUI overrides.
 
-**FR-1.2 Provider adapters (in-house; no LiteLLM).** A small adapter SDK (`register_provider(...)`) over **four wire formats**: `openai-chat`, `openai-responses`, `anthropic-messages`, `openai-compatible` (custom base URL — covers Ollama, vLLM, OpenRouter, LiteLLM-proxy users). v1 bundled providers: OpenAI (key + subscription runtime), Anthropic (key + subscription runtime), Google Gemini (key), xAI (key), DeepSeek (key), Ollama/local (compatible). Each adapter owns: request/response mapping, **token streaming with usage** (deltas surfaced as events), retry/backoff classification, model catalog, thinking-parameter mapping, and error normalization. Adding a provider must require only a new adapter module + registry entry.
+**FR-1.2 Provider adapters (in-house; no LiteLLM).** A small adapter SDK (`register_provider(...)`) over **four wire formats**: `openai-chat`, `openai-responses`, `anthropic-messages`, `openai-compatible` (custom base URL — covers Ollama, vLLM, OpenRouter, LiteLLM-proxy users). v1 bundled providers: OpenAI (key + subscription runtime), Anthropic (key + subscription runtime), Google Gemini (key), xAI (key), DeepSeek (key), Ollama/local (compatible). Each adapter owns: request/response mapping, **token streaming with usage** (deltas surfaced as events), retry/backoff classification, model catalog, thinking-parameter mapping, and error normalization. Adding a provider must require only a new adapter module + registry entry. *(Amended by §15.1, 2026-07-14: the provider matrix is now openai · anthropic · grok · google · kimi · ollama.)*
 
 **FR-1.3 Thinking ladder.** One normalized enum `off | minimal | low | medium | high | xhigh | max`, **capability-gated per model** via the adapter's `thinking_profile(model)`: unsupported levels are rejected with the valid set (config) or remapped to nearest (runtime override), and the parameter is *omitted* entirely for models that reject it. Mappings: OpenAI `reasoning_effort` / Responses `reasoning.effort`; Anthropic extended-thinking budgets (documented level→budget table); Gemini `thinkingBudget`/`thinkingLevel`; DeepSeek `reasoning_effort`; Ollama `think`. On the ChatGPT-subscription lane, effort maps to **model tier** (there is no numeric knob there — see research brief §3). Reasoning/thinking content returned by providers is captured into THINK events, unifying "watch it think" across providers.
 
@@ -115,7 +115,7 @@ Threading model: the debate loop runs in one worker thread owned by the session 
 
 **FR-2.3 Anthropic subscription lane (via official plumbing only).** "Use your Claude subscription" = a **`claude-agent-sdk` runtime binding** (with `claude -p` subprocess fallback) that reuses the user's own logged-in Claude Code; identity-honest (never spoofing another client); accepts a user-minted `CLAUDE_CODE_OAUTH_TOKEN` for headless use. **TinyIC must not implement a Claude.ai OAuth flow of its own — that remains prohibited.** Per the June 15, 2026 reinstatement, usage draws from the user's Pro/Max limits; the onboarding copy states the policy plainly, links Anthropic's support article, and the lane sits behind a `policy_guard` config so a future policy change can disable it with a clear message instead of stranding configs (this policy changed three times in 2026 — see research brief §1).
 
-**FR-2.4 Onboarding (`tinyic onboard`).** OpenClaw-pattern wizard, TUI-native: **detect** (env keys, `~/.codex/auth.json`, Claude Code login, local Ollama) → per-provider **two-branch chooser** (subscription vs API key, "best for" copy, policy note on the Claude lane) → **live 1-token verification** (refuses to finish on failure) → persist only the verified route → summary card of each persona's resolved binding. Re-running is an idempotent verify-and-repair pass; it never silently replaces a working config. `tinyic doctor` is the headless equivalent with reason-coded probes (`missing_credential`, `expired`, `unsupported_thinking_level`, `policy_disabled`, …).
+**FR-2.4 Onboarding (`tinyic onboard`).** OpenClaw-pattern wizard, TUI-native: **detect** (env keys, `~/.codex/auth.json`, Claude Code login, local Ollama) → per-provider **two-branch chooser** (subscription vs API key, "best for" copy, policy note on the Claude lane) → **live 1-token verification** (refuses to finish on failure) → persist only the verified route → summary card of each persona's resolved binding. Re-running is an idempotent verify-and-repair pass; it never silently replaces a working config. `tinyic doctor` is the headless equivalent with reason-coded probes (`missing_credential`, `expired`, `unsupported_thinking_level`, `policy_disabled`, …). *(Amended by §15.2–15.3, 2026-07-14: a Grok subscription branch and a post-verification MODEL step.)*
 
 ---
 
@@ -212,3 +212,48 @@ Sequencing rule: product code never merges ahead of its defect-class tests. Fork
 3. `Claude Code`/Codex can run a debate end-to-end via the documented headless contract without human input.
 4. All 33 defect classes have merged acceptance tests; cost display shows real, per-debate, per-persona numbers.
 5. A mixed-provider committee (≥3 providers incl. one subscription lane and one local model) completes a debate.
+
+---
+
+## 15. v2.1 amendment (2026-07-14) — provider matrix, Grok lane, Kimi, model selector
+
+> **Status: implemented.** This section amends the v1 spec; where they disagree, this section wins. §§1–14 are kept as written for the historical record. Provider facts below were verified against official provider documentation on 2026-07-14.
+
+### 15.1 Provider matrix refresh (amends FR-1.2)
+
+The bundled provider set is now **openai · anthropic · grok · google · kimi · ollama**.
+
+- **`xai` → `grok` is a hard rename.** No alias — `xai/...` model refs no longer resolve. The env var stays `XAI_API_KEY` and the base URL `api.x.ai/v1` (xAI's own conventions survive the rename).
+- **DeepSeek is removed from the product entirely** (owner decision).
+- **Kimi (Moonshot AI) is added**: `openai-chat` wire against `https://api.moonshot.ai/v1`, with `MOONSHOT_BASE_URL` selecting the China endpoint (`https://api.moonshot.cn/v1`); credentials resolve `MOONSHOT_API_KEY` then `KIMI_API_KEY`. Catalog: `kimi-k2.6`, `kimi-k2.5` (the `kimi-k2-*-preview` generation was discontinued 2026-05-25 and is not shipped). Kimi thinking is ON by default — the ladder's `off` renders `{"thinking":{"type":"disabled"}}`, and reasoning streams as `reasoning_content` (already handled by the chat adapter). The `KimiChatAdapter` adds the **opt-in server-side `$web_search` builtin** (`params.web_search = true` on the binding): declared as a `builtin_function`, driven by the echo protocol (on `finish_reason="tool_calls"` the client returns `function.arguments` verbatim as the tool message and re-sends; the server injects results), tool frames never leak into the visible stream, usage summed across rounds. Moonshot requires thinking **disabled** for `$web_search`; a violating binding is rejected at transport construction. *Recorded finding:* Kimi Work's China financial datasets are product-only (no API) — a pipeline-level China-market data source is tracked as a follow-up, out of scope for v2.1.
+- **Google is API-key-only by policy, not by omission.** Google's terms explicitly prohibit third-party reuse of consumer-subscription OAuth following the June 2026 Antigravity transition, so TinyIC deliberately ships no Google subscription lane; the onboarding copy states this as the design reason.
+
+### 15.2 Grok subscription lane (extends FR-2.2/FR-2.3's pattern)
+
+A third subscription lane joins OpenAI and Anthropic, modeled on both:
+
+- **Read-through** of the official grok CLI's sign-in (`~/.grok/auth.json`, current and legacy document shapes) — strictly read-only: TinyIC **never rewrites the CLI's file and never redeems its refresh token** (redemption can rotate/invalidate the CLI's own copy server-side — the FR-2.2 refresh-rotation hazard, applied). A stale file sign-in surfaces as the stable reason `expired`; the user refreshes it by running the grok CLI, or switches to the device-code lane below.
+- **Device-code OAuth** (RFC 8628 with PKCE S256) against `auth.x.ai` using the public desktop client id, producing a TinyIC-owned token profile (keyring-first). Both profile kinds are provider-scoped to `grok` and subscription-lane-only; all read-through aliases share one rotation owner (one CLI login is not two quota fallbacks).
+- Subscription traffic is the same OpenAI-chat wire with a Bearer token; the base URL is overridable via `GROK_SUBSCRIPTION_BASE_URL`. xAI enforces entitlement **server-side**: the 403 maps to the stable, secret-free reason code `subscription_inactive` and advances `auth_order` rotation (e.g. to an `XAI_API_KEY` overflow) with zero replay.
+- **Policy posture: unverified but tolerated.** xAI has published no explicit third-party policy for this lane; the onboarding copy says so plainly, and the lane sits behind `[auth.grok] policy_guard` in `tinyic.toml` (default **on**), exactly parallel to the Anthropic guard. Like every subscription lane it is additive, never load-bearing.
+- `tinyic doctor` gains the (`grok`, `subscription`) lane under the existing reason-code contract; `onboard` gains the corresponding subscription branch (SuperGrok / X Premium+ copy).
+
+### 15.3 Model selector (amends FR-2.4 and FR-6.1)
+
+- **Catalog service** (`models/catalog.py`): one normalized view of "which models can this install run" — the static registry catalogs enriched with pinned context/output metadata, merged with **explicit-only** live refresh per provider (anthropic `/v1/models`, google `/v1beta/models`, grok `/v1/language-models`, kimi `{base}/models` — all metadata-rich — plus ollama's local `/api/tags`; OpenAI stays static-only because its listing returns bare ids). Each provider degrades independently to its static catalog with a stable warning code; static entries are never dropped by a lagging listing; credentials ride the adapters' own seams and go into request headers, never URLs.
+- **`tinyic models [provider] [--refresh] [--json]`** — FR-6.1's `tinyic models list [--provider P]` shipped with this syntax: an aligned human table with `[WARN]` degrade lines, or one schema-versioned, secret-free JSON document. Degraded refreshes still exit 0 (the command succeeded); an unknown provider exits 2.
+- **Wizard MODEL step:** in `tinyic onboard`, a verified lane earns a model-picker step — that provider's catalog (context window and thinking capability shown when known), an optional off-thread live refresh gated by `CatalogService.can_refresh`, and the pick persisted as the committee default; `esc` keeps the current default.
+- **User overlay:** the pick is written to `~/.tinyic/tinyic.toml` (`$TINYIC_USER_CONFIG` override) via `set_user_default_binding`, which writes **only** the overlay. The overlay deep-merges *over* the base config (explicit path / `$TINYIC_CONFIG` / `./tinyic.toml` / built-in); the repo's `tinyic.toml` is never written by TinyIC.
+
+### 15.4 Catalog refresh (current as of 2026-07-14)
+
+| Provider | Shipped catalog | Thinking mapping |
+|---|---|---|
+| openai | `gpt-5.6-sol` (Responses-routed; no longer subscription-only), `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.2` (legacy, still servable) | `reasoning_effort` / nested `reasoning.effort`; `none`…`xhigh` (ladder `off` → `none`; `max` remaps to `xhigh` at runtime) |
+| anthropic | `claude-fable-5`, `claude-opus-4-8`, `claude-sonnet-5`, `claude-haiku-4-5` | **adaptive scheme** on fable-5 / opus-4-8 / sonnet-5: `thinking={"type":"adaptive"}` + `output_config.effort` `low`…`max` (`budget_tokens` is a 400 there; these models cannot disable thinking — `off`/`minimal` follow FR-1.3 reject/remap); haiku-4-5 keeps legacy `budget_tokens` |
+| grok | `grok-4.5`, `grok-4.3`, `grok-4.20` | `reasoning_effort` `low\|medium\|high`; grok-4.5 cannot disable reasoning (`off` = config-time reject, runtime remap → `low`) |
+| google | `gemini-3.5-flash`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite` (`gemini-2.5-pro` dropped ahead of its 2026-10-16 shutdown) | effort knob on the OpenAI-compat endpoint, stripped gracefully if the server rejects it |
+| kimi | `kimi-k2.6`, `kimi-k2.5` | default-on toggle: `off` → `{"thinking":{"type":"disabled"}}`, else enabled |
+| ollama | `qwen3:32b`, `qwen3.5`, `deepseek-r1:14b`, `llama3.1:8b`, `gemma4` | `think` flag where the model supports it |
+
+The `default` preset (FR-1.4) is now `openai/gpt-5.6-sol` @ `high`; the bundled `heterogeneous` preset demonstrates a Kimi Graham, an Anthropic aggregator, and a `gpt-5.6-luna` minimal-thinking moderator. The usage price table covers every catalog model as of the same date. The event schema (§7) is unchanged — v2.1 added no event types and no payload fields.
