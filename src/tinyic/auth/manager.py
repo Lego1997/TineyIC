@@ -220,6 +220,18 @@ class AuthManager:
                 profile = None
             if (
                 profile is not None
+                and profile.provider == "anthropic"
+                and profile.lane is AuthLane.SUBSCRIPTION
+                and not self._anthropic_policy_guard
+            ):
+                # The guard is a legal boundary: a stored Anthropic
+                # subscription profile must not resolve through the
+                # credential-provider seam when policy_guard is off, mirroring
+                # candidates()' suppression of that lane (not only the literal
+                # CLAUDE_CODE_OAUTH_TOKEN env ref guarded above).
+                return None
+            if (
+                profile is not None
                 and not profile.is_expired(now=self._now())
                 and not self.is_usage_limited(profile.ref)
                 and profile.secret is not None

@@ -30,6 +30,21 @@ field. ``ok`` describes whether every *required selected-preset binding* has a
 viable route. Optional provider/lane probes may warn without making the report
 unhealthy. Within schema v1, new reason codes are additive and consumers must
 treat unknown codes as non-secret diagnostic labels.
+
+Report-level failures that occur before any real provider lane can be probed
+use a reserved pseudo-provider ``"tinyic"`` (never a model provider) with one
+of two pseudo-lanes:
+
+* ``"configuration"`` — the selected preset / ``tinyic.toml`` could not be
+  loaded or validated (reason ``invalid_preset``), or preset probe collection
+  itself failed (reason ``probe_failed``);
+* ``"credential_store"`` — the auth-profile manager / credential store could
+  not be constructed (reason ``probe_failed``).
+
+Onboarding wizards must recognize these ``tinyic``/``configuration`` and
+``tinyic``/``credential_store`` probes as whole-run diagnostics and render them
+as such, rather than as a fixable provider/lane the user can add a credential
+to.
 """
 
 from __future__ import annotations
@@ -51,6 +66,11 @@ _SAFE_CODE = re.compile(r"^[a-z][a-z0-9_]*$")
 # These are the provider/lane combinations shipped by the v1 registry.  Keeping
 # the list explicit makes schema-v1 output predictable for the onboarding TUI;
 # a selected custom provider is still added as an ``api_key`` lane below.
+#
+# The reserved pseudo-provider ``"tinyic"`` is intentionally absent here: it is
+# emitted only for report-level failures (pseudo-lanes ``"configuration"`` and
+# ``"credential_store"``; see the module docstring) that precede any real
+# provider-lane probe, so it is never one of these enumerable registry lanes.
 _BUILTIN_LANES = (
     ("openai", "api_key"),
     ("openai", "subscription"),

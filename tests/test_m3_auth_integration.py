@@ -214,6 +214,33 @@ def test_registry_dispatches_claude_profile_to_official_subscription_runtime(
     assert child.binding.model_ref == "anthropic/claude-opus-4-8"
 
 
+def test_call_seam_suppresses_stored_anthropic_subscription_when_guard_off(
+    tmp_path: Path,
+) -> None:
+    """The direct credential-provider seam honors the Anthropic policy guard.
+
+    A stored Anthropic subscription profile resolved by ref through
+    ``AuthManager.__call__`` must return ``None`` when ``policy_guard`` is off
+    (a legal boundary), mirroring ``candidates()`` suppression, and must return
+    the secret when the guard is on. Regression: previously only the literal
+    ``CLAUDE_CODE_OAUTH_TOKEN`` env ref was guarded in ``__call__``, so a stored
+    subscription profile ref leaked its secret through this seam.
+    """
+    profile = AuthProfile(
+        "anthropic:oauth",
+        ProfileKind.CLAUDE_OAUTH_TOKEN,
+        AuthLane.SUBSCRIPTION,
+        "user-minted-oauth-token",
+    )
+    store = _store(tmp_path, profile)
+
+    guarded = AuthManager(store, environ={}, anthropic_policy_guard=True)
+    assert guarded(profile.ref) == "user-minted-oauth-token"
+
+    unguarded = AuthManager(store, environ={}, anthropic_policy_guard=False)
+    assert unguarded(profile.ref) is None
+
+
 def test_committee_default_is_one_shared_auth_manager() -> None:
     seen: list[object] = []
 

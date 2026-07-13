@@ -118,7 +118,6 @@ class RotatingTransport:
 
     def generate(self, request: ChatRequest) -> Iterator[ChatStreamEvent]:
         """Generate once, rotating only on a pre-output usage-limit block."""
-        saw_pre_output_limit = False
         for index in self._candidate_indices():
             candidate = self._candidates[index]
             if self._manager.is_usage_limited(candidate):
@@ -176,7 +175,6 @@ class RotatingTransport:
                         retry_after=error.retry_after,
                         provider=binding_provider(self.binding),
                     ) from None
-                saw_pre_output_limit = True
                 continue
             except ProviderError as error:
                 raise _sanitized_provider_error(
@@ -210,9 +208,8 @@ class RotatingTransport:
                 yield buffered_final
             return
 
-        reason = "usage_limited" if saw_pre_output_limit else "usage_limited"
         raise AuthResolutionError(
-            reason,
+            "usage_limited",
             provider=binding_provider(self.binding),
             auth_profile=self.binding.auth_profile,
         )
