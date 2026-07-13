@@ -2,7 +2,7 @@
 
 M0 established the console script and ``--help`` path; M5 adds ``tinyic replay``
 to render a recorded event log in the Textual TUI. M3 adds the headless
-``doctor`` seam; its TUI ``onboard`` consumer is intentionally separate.
+``doctor`` seam and its interactive twin ``tinyic onboard`` (the FR-2.4 wizard).
 Additional product commands land in their own milestones. The parser keeps
 subcommands *optional* so a bare ``tinyic`` and ``tinyic --help`` both work.
 """
@@ -59,6 +59,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.set_defaults(func=_cmd_doctor)
 
+    onboard = subparsers.add_parser(
+        "onboard",
+        help="Interactive setup wizard: detect, choose a lane, verify, persist.",
+        description=(
+            "Walk auth setup in a full-screen TUI (FR-2.4): detect existing "
+            "access, choose a subscription or API-key lane per provider, verify "
+            "with a live one-token check, and persist only verified routes. "
+            "Re-running is an idempotent verify-and-repair pass."
+        ),
+    )
+    onboard.add_argument("--config", help="Path to tinyic.toml.")
+    onboard.set_defaults(func=_cmd_onboard)
+
     return parser
 
 
@@ -69,6 +82,16 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     from .tui.app import run_replay
 
     run_replay(args.path)
+    return 0
+
+
+def _cmd_onboard(args: argparse.Namespace) -> int:
+    """Launch the interactive onboarding wizard (FR-2.4)."""
+    # Import lazily so ``--help``/``doctor``/``replay`` stay import-light and do
+    # not pull in the Textual stack until an interactive wizard is requested.
+    from .tui.onboard import run_onboard
+
+    run_onboard(config_path=args.config)
     return 0
 
 
