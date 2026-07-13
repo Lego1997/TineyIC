@@ -23,8 +23,14 @@ def pytest_configure(config):
 
 @pytest.fixture(autouse=True)
 def isolate_tinyic_run_logs(tmp_path, monkeypatch):
-    """Keep default append-only debate logs inside each offline test sandbox."""
+    """Keep default logs and per-install state inside each offline test sandbox.
+
+    Redirecting ``TINYIC_STATE_DIR`` per test means the devil's-advocate rotation
+    counter starts fresh at 0 for each test (deterministic DA = agents[0]) and a
+    debate never reads or writes the developer's real ``~/.tinyic/state.json``.
+    """
     monkeypatch.setenv("TINYIC_RUNS_DIR", str(tmp_path / "tinyic-runs"))
+    monkeypatch.setenv("TINYIC_STATE_DIR", str(tmp_path / "tinyic-state"))
 
 
 @pytest.fixture

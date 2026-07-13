@@ -6,6 +6,11 @@ from pathlib import Path
 from tinytroupe.agent import TinyPerson
 from tinytroupe.session import Session
 
+#: Anti-sycophancy temperament (FR-4.3) when a config omits one. Kept as a plain
+#: string here so the persona layer does not depend on the debate package; the
+#: reinforcement builder maps any unknown value to this same balanced clause.
+DEFAULT_TEMPERAMENT = "balanced"
+
 
 class InvestorPersona(TinyPerson):
     """An investor persona that extends TinyPerson with investment-specific behavior.
@@ -24,6 +29,8 @@ class InvestorPersona(TinyPerson):
     ):
         super().__init__(name=name, session=session, **kwargs)
         self._philosophy_config_path = philosophy_config_path
+        # Anti-sycophancy temperament (FR-4.3); a config may override it below.
+        self.temperament = DEFAULT_TEMPERAMENT
 
         try:
             if philosophy_config_path:
@@ -48,6 +55,13 @@ class InvestorPersona(TinyPerson):
         path = Path(config_path)
         with open(path) as f:
             spec = json.load(f)
+
+        # Temperament is top-level metadata (sibling to "persona"), so it steers
+        # the debate reinforcement without being merged into the TinyTroupe
+        # persona definitions. Normalize; an absent/blank value stays balanced.
+        raw_temperament = str(spec.get("temperament") or "").strip().lower()
+        if raw_temperament:
+            self.temperament = raw_temperament
 
         # The .agent.json format has persona data under the "persona" key
         persona_data = spec.get("persona", spec).copy()

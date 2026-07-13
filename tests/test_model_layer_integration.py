@@ -632,6 +632,39 @@ def _act_via_binding(self, *, return_actions=False, **_kwargs):
     return committed if return_actions else self
 
 
+def _mock_memo(debate_result, data_package, **_kwargs):
+    """Stub the FR-4.5 memo so the aggregator's counters reflect extraction only.
+
+    The memo/disagreement synthesis routes through the aggregator binding; these
+    mixed-committee tests assert the aggregator's *extraction* usage/cost, so the
+    synthesis LLM calls are stubbed out (mirroring how the DoD suite stubs them).
+    """
+    from tinyic.debate.models import InvestmentMemo, MemoSection
+
+    def _section(title: str) -> MemoSection:
+        return MemoSection(title=title, content=f"{title}: stub.")
+
+    return InvestmentMemo(
+        ticker=debate_result.ticker,
+        company_name=debate_result.company_name,
+        executive_summary=_section("Executive Summary"),
+        investment_thesis=_section("Investment Thesis"),
+        key_risks=_section("Key Risks"),
+        valuation_discussion=_section("Valuation Discussion"),
+        final_verdict=_section("Final Verdict"),
+    )
+
+
+def _mock_disagreements(debate_result, **_kwargs):
+    from tinyic.debate.models import DisagreementAnalysis
+
+    return DisagreementAnalysis(
+        ticker=debate_result.ticker,
+        company_name=debate_result.company_name,
+        disagreements=[],
+    )
+
+
 @pytest.fixture
 def _mocked_committee_debate(monkeypatch):
     monkeypatch.setattr(InvestorPersona, "act", _act_via_binding)
@@ -639,6 +672,8 @@ def _mocked_committee_debate(monkeypatch):
         InvestorPersona, "consolidate_episode_memories", lambda _self: False
     )
     monkeypatch.setattr(TinyPerson, "communication_display", False)
+    monkeypatch.setattr(debate_module, "generate_memo", _mock_memo)
+    monkeypatch.setattr(debate_module, "extract_disagreements", _mock_disagreements)
 
 
 def _run_mixed_debate(tmp_path):

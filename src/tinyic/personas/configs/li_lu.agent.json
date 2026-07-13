@@ -12,6 +12,7 @@
     ]
   },
   "type": "TinyPerson",
+  "temperament": "conciliatory",
   "persona": {
     "name": "Li Lu",
     "age": 55,

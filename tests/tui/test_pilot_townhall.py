@@ -34,10 +34,12 @@ from tinyic.tui.widgets import (
     TurnCard,
 )
 
+from tests.support import m4_debate as M4
 from tests.support import synthetic_events as G
 
 PHASES_IN_ORDER = ["opening", "cross_exam", "rebuttal", "verdict"]
 TOTAL_TURNS = 22  # opening 6 + cross_exam 4 + rebuttal 6 + verdict 6
+M4_COMMITTEE = set(M4.PERSONA_DISPLAY)
 
 
 # --------------------------------------------------------------------------- #
@@ -336,3 +338,67 @@ def test_h_fixture_still_conforms_to_frozen_schema():
     assert is_replayable(events)
     assert events[0].type == "debate_started"
     assert events[-1].type == "debate_completed"
+
+
+# --------------------------------------------------------------------------- #
+# (i) The M4 emission set (thesis_recorded / collapse_metric) renders.
+#
+# These drive the *real* recorded M4 debate (a full six-persona committee run,
+# ``tests/fixtures/m4_full_debate.jsonl``) — the recording the interim synthetic
+# log was a stand-in for — and assert the additive M4 events are not merely
+# tolerated but surfaced: the opening theses stamp the stance badges, and the
+# disagreement-collapse metric raises the "caved" flag on the committee card.
+# --------------------------------------------------------------------------- #
+
+def _m4_events():
+    return read_events(M4.GOLDEN_PATH)
+
+
+async def test_i_m4_opening_theses_render_as_stance_badges():
+    events = _m4_events()
+    assert is_replayable(events)  # a complete, real recording
+
+    app = TownHallApp(events=events, auto_replay=False)
+    async with app.run_test() as pilot:
+        # Fold until every committee member carries a stance — i.e. all six
+        # opening ``thesis_recorded`` events have been rendered into the badges.
+        await _drain_until(
+            app,
+            pilot,
+            lambda: all(
+                (m := app.state.personas.get(name)) is not None and bool(m.stance)
+                for name in M4_COMMITTEE
+            ),
+        )
+        stances = {name: app.state.personas[name].stance for name in M4_COMMITTEE}
+        # The recorded opening theses: four bulls, two bears (Graham + Marks).
+        assert stances["Warren Buffett"] == "bullish"
+        assert stances["Charlie Munger"] == "bullish"
+        assert stances["Benjamin Graham"] == "bearish"
+        assert stances["Howard Marks"] == "bearish"
+
+
+async def test_i_m4_collapse_metric_raises_the_caved_flag():
+    app = TownHallApp(events=_m4_events(), auto_replay=False)
+    async with app.run_test() as pilot:
+        app.replay_all_now()  # tolerate the full additive emission set
+        await pilot.pause()
+
+        # The constructed cave: the disagreement-collapse metric flags Benjamin
+        # Graham and flips his stance to the majority; the standing dissenter
+        # (Howard Marks, who held SELL) is not flagged.
+        graham = app.state.personas["Benjamin Graham"]
+        assert graham.caved is True
+        assert graham.stance == "bullish"  # collapse_metric.stance_after
+        marks = app.state.personas["Howard Marks"]
+        assert marks.caved in (False, None)
+
+        # The flag is visible on the committee card, not just in the view-model.
+        graham_card = next(
+            c for c in app.query(PersonaCard) if c.persona.name == "Benjamin Graham"
+        )
+        assert "caved" in str(graham_card.render()).lower()
+
+        # A complete, terminal-ended recording renders without an incomplete flag.
+        assert app.state.finished is True
+        assert "incomplete" not in str(app.query_one(StatusHeader).render()).lower()

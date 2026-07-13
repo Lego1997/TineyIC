@@ -138,7 +138,38 @@ class BindingSpec:
 
 
 # Role table keys reserved for structural sub-tables, not committee defaults.
-_ROLE_KEYS = frozenset({"aggregator", "moderator", "personas"})
+_ROLE_KEYS = frozenset({"aggregator", "moderator", "personas", "caps"})
+
+# Canonical debate-phase keys accepted in a ``[presets.<name>.caps]`` table
+# (FR-4.2). Bounds on the values are enforced by the moderator's ``resolve_caps``
+# so the numeric policy lives in one place.
+_CAP_PHASES = frozenset({"opening", "cross_exam", "rebuttal", "verdict"})
+
+
+def _parse_caps(
+    data: Any, *, where: str
+) -> dict[str, int] | None:
+    """Parse an optional ``[presets.<name>.caps]`` table into ``{phase: int}``.
+
+    A typo'd phase key or a non-integer value raises at config load; the
+    ``[MIN_EXCHANGES, MAX_EXCHANGES]`` range check is the moderator's, applied
+    when the committee's caps are realized.
+    """
+    if data is None:
+        return None
+    if not isinstance(data, Mapping):
+        raise PresetError(f"{where} must be a table")
+    caps: dict[str, int] = {}
+    for phase, value in data.items():
+        if phase not in _CAP_PHASES:
+            raise PresetError(
+                f"{where}.{phase} is not a debate phase; valid phases: "
+                f"{', '.join(sorted(_CAP_PHASES))}"
+            )
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise PresetError(f"{where}.{phase} must be an integer")
+        caps[str(phase)] = value
+    return caps
 
 
 @dataclass(frozen=True)
@@ -150,6 +181,9 @@ class Preset:
     personas: Mapping[str, BindingSpec] = field(default_factory=dict)
     aggregator: BindingSpec | None = None
     moderator: BindingSpec | None = None
+    #: Optional per-phase exchange caps (FR-4.2); ``None`` means the moderator's
+    #: built-in defaults. Values are range-checked when the committee is built.
+    caps: Mapping[str, int] | None = None
 
     def persona_binding(self, registry_name: str) -> ModelBinding:
         """The binding for ``registry_name`` (snake_case), default if unlisted."""
@@ -198,6 +232,8 @@ class Preset:
             },
             aggregator=override(self.aggregator),
             moderator=override(self.moderator),
+            # A model/thinking override does not touch protocol caps.
+            caps=self.caps,
         )
 
     @classmethod
@@ -226,12 +262,14 @@ class Preset:
             )
             for persona, spec in personas_data.items()
         }
+        caps = _parse_caps(data.get("caps"), where=f"{where}.caps")
         return cls(
             name=name,
             default=default,
             personas=personas,
             aggregator=aggregator,
             moderator=moderator,
+            caps=caps,
         )
 
 
