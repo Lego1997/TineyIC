@@ -17,7 +17,7 @@ class InvestorPersona(TinyPerson):
 
     Adds investment analysis stub methods and philosophy config loading
     for Phase 2 implementation. In Phase 1, this validates that the
-    TinyPerson -> GPT-5.2 chain works correctly.
+    TinyPerson -> LLM chain works correctly.
     """
 
     def __init__(

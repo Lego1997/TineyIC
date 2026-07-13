@@ -96,8 +96,8 @@ PROVIDER_LABELS: dict[str, str] = {
     "openai": "OpenAI",
     "anthropic": "Anthropic",
     "google": "Google",
-    "xai": "xAI",
-    "deepseek": "DeepSeek",
+    "grok": "Grok (xAI)",
+    "kimi": "Kimi (Moonshot AI)",
     "ollama": "Ollama (local)",
 }
 
@@ -126,12 +126,14 @@ BEST_FOR: dict[tuple[str, str], str] = {
         "Best for: Gemini access via a Google AI Studio API key. Billed per "
         "token."
     ),
-    ("xai", "api_key"): (
-        "Best for: Grok access (and X / Twitter sentiment) via an xAI API key. "
-        "Billed per token."
+    ("grok", "api_key"): (
+        "Best for: Grok access (and X / Twitter sentiment) via an xAI API key "
+        "(XAI_API_KEY). Billed per token."
     ),
-    ("deepseek", "api_key"): (
-        "Best for: low-cost reasoning via a DeepSeek API key. Billed per token."
+    ("kimi", "api_key"): (
+        "Best for: low-cost frontier reasoning via a Moonshot AI API key "
+        "(MOONSHOT_API_KEY), with optional server-side web search. Billed per "
+        "token."
     ),
     ("ollama", "local"): (
         "Best for: fully local, private, offline inference. No credentials are "
@@ -169,7 +171,7 @@ REASON_HINTS: dict[str, str] = {
     "unknown_provider": "The provider is not registered.",
 }
 
-_PROVIDER_ORDER = ("openai", "anthropic", "google", "xai", "deepseek", "ollama")
+_PROVIDER_ORDER = ("openai", "anthropic", "google", "grok", "kimi", "ollama")
 _STATUS_MARK = {"ok": ("✓", "bold green"), "warning": ("▲", "bold yellow"),
                 "error": ("✗", "bold red")}
 

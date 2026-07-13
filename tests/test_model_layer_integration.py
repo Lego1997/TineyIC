@@ -174,9 +174,9 @@ def _adapter_for(binding: ModelBinding, _creds):
             http=RepeatingTransport(sse_lines("openai_responses_stream.sse")),
             **common,
         )
-    if model_ref == "deepseek/deepseek-reasoner":
+    if model_ref == "kimi/kimi-k2.6":
         return OpenAIChatAdapter(
-            binding, _creds, base_url="https://api.deepseek.com",
+            binding, _creds, base_url="https://api.moonshot.ai/v1",
             http=RepeatingTransport(EXTRACTION_SSE),
             **common,
         )
@@ -208,9 +208,9 @@ def test_builtin_default_preset_is_one_strong_model_everywhere(tmp_path, monkeyp
     monkeypatch.chdir(tmp_path)
     preset = load_preset()
     assert preset.name == "default"
-    assert preset.persona_binding("warren_buffett").model_ref == "openai/gpt-5.2"
-    assert preset.aggregator_binding().model_ref == "openai/gpt-5.2"
-    assert preset.moderator_binding().model_ref == "openai/gpt-5.2"
+    assert preset.persona_binding("warren_buffett").model_ref == "openai/gpt-5.6-sol"
+    assert preset.aggregator_binding().model_ref == "openai/gpt-5.6-sol"
+    assert preset.moderator_binding().model_ref == "openai/gpt-5.6-sol"
 
 
 def _write_config(tmp_path: Path, body: str) -> Path:
@@ -241,7 +241,7 @@ def test_preset_resolution_inheritance_and_overrides(tmp_path):
         thinking = "minimal"
 
         [presets.mixed.personas.benjamin_graham]
-        model = "deepseek/deepseek-reasoner"
+        model = "kimi/kimi-k2.6"
         thinking = "low"
         """,
     )
@@ -257,7 +257,7 @@ def test_preset_resolution_inheritance_and_overrides(tmp_path):
 
     # listed persona overrides model + thinking, inherits auth + params
     graham = preset.persona_binding("benjamin_graham")
-    assert graham.model_ref == "deepseek/deepseek-reasoner"
+    assert graham.model_ref == "kimi/kimi-k2.6"
     assert graham.thinking_level.value == "low"
     assert graham.auth_profile == "openai:default"
     assert graham.params == {"temperature": 0.7}
@@ -284,7 +284,7 @@ def test_preset_with_overrides_forces_model_and_thinking_across_roles(tmp_path):
         model = "anthropic/claude-opus-4-8"
 
         [presets.default.personas.benjamin_graham]
-        model = "deepseek/deepseek-reasoner"
+        model = "kimi/kimi-k2.6"
         """,
     )
     preset = load_preset(path=path).with_overrides(
@@ -322,12 +322,12 @@ def test_repo_sample_tinyic_toml_default_matches_builtin():
     root = Path(__file__).resolve().parents[1] / "tinyic.toml"
     preset = load_preset(path=root)
     assert preset.name == "default"
-    assert preset.persona_binding("warren_buffett").model_ref == "openai/gpt-5.2"
+    assert preset.persona_binding("warren_buffett").model_ref == "openai/gpt-5.6-sol"
     # the sample also documents a heterogeneous mixed-provider committee
     heterogeneous = load_preset("heterogeneous", path=root)
     assert (
         heterogeneous.persona_binding("benjamin_graham").model_ref
-        == "deepseek/deepseek-reasoner"
+        == "kimi/kimi-k2.6"
     )
     assert (
         heterogeneous.aggregator_binding().model_ref
@@ -537,7 +537,7 @@ def _mixed_preset() -> Preset:
             "benjamin_graham": BindingSpec(model="anthropic/claude-opus-4-8"),
             "charlie_munger": BindingSpec(model="openai/gpt-5.6-sol"),
         },
-        aggregator=BindingSpec(model="deepseek/deepseek-reasoner"),
+        aggregator=BindingSpec(model="kimi/kimi-k2.6"),
     )
 
 
@@ -588,7 +588,7 @@ def test_build_committee_keys_clients_by_display_name_and_resolves_roles():
         committee.persona_bindings["Benjamin Graham"].model_ref
         == "anthropic/claude-opus-4-8"
     )
-    assert committee.aggregator_binding.model_ref == "deepseek/deepseek-reasoner"
+    assert committee.aggregator_binding.model_ref == "kimi/kimi-k2.6"
     assert committee.client_for("Warren Buffett") is committee.persona_clients[
         "Warren Buffett"
     ]
@@ -701,7 +701,7 @@ def test_mixed_committee_debate_records_per_persona_heterogeneity(
     assert by_name["Benjamin Graham"]["model_ref"] == "anthropic/claude-opus-4-8"
     assert by_name["Charlie Munger"]["model_ref"] == "openai/gpt-5.6-sol"
     assert started.payload["preset"] == "test-mixed"
-    assert started.payload["aggregator"] == "deepseek/deepseek-reasoner"
+    assert started.payload["aggregator"] == "kimi/kimi-k2.6"
 
 
 def test_mixed_committee_debate_streams_deltas_between_turn_boundaries(
@@ -797,7 +797,7 @@ def test_mixed_committee_debate_routes_extraction_through_aggregator(
     # / 4 cached). The extraction usage event carries the real cached tokens now
     # (finding 4), not a hardcoded 0.
     payload = extraction_usage[0].payload
-    assert payload["model_ref"] == "deepseek/deepseek-reasoner"
+    assert payload["model_ref"] == "kimi/kimi-k2.6"
     assert payload["input_tokens"] == 150
     assert payload["output_tokens"] == 90
     assert payload["cached_tokens"] == 12
@@ -813,12 +813,12 @@ def test_mixed_committee_debate_routes_extraction_through_aggregator(
         "openai/gpt-5.2",
         "anthropic/claude-opus-4-8",
         "openai/gpt-5.6-sol",
-        "deepseek/deepseek-reasoner",
+        "kimi/kimi-k2.6",
     }
-    assert by_model["deepseek/deepseek-reasoner"]["input_tokens"] == 150
+    assert by_model["kimi/kimi-k2.6"]["input_tokens"] == 150
     # Cached tokens roll up per model alongside input/output (finding 4):
     # aggregator 3x4, Graham 4x5 (anthropic), Munger 4x6 (responses), Buffett 0.
-    assert by_model["deepseek/deepseek-reasoner"]["cached_tokens"] == 12
+    assert by_model["kimi/kimi-k2.6"]["cached_tokens"] == 12
     assert by_model["anthropic/claude-opus-4-8"]["cached_tokens"] == 20
     assert by_model["openai/gpt-5.6-sol"]["cached_tokens"] == 24
     assert by_model["openai/gpt-5.2"]["cached_tokens"] == 0

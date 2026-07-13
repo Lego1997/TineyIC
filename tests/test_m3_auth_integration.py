@@ -149,10 +149,37 @@ def test_run_debate_passes_configured_policy_manager_to_committee(
 
 
 def test_subscription_only_model_rejects_plain_api_key_before_child_transport() -> None:
+    # No bundled catalog model is subscription-only in v2.1 (gpt-5.6-sol went
+    # public), so the gate is exercised through a registry with a flagged spec.
+    from tinyic.models import (
+        ModelSpec,
+        Provider,
+        ThinkingProfile,
+        WireFormat,
+        build_default_registry,
+    )
+
+    registry = build_default_registry()
+    registry.register(
+        Provider(
+            "clubhouse",
+            WireFormat.OPENAI_CHAT,
+            models=[
+                ModelSpec(
+                    "members-only",
+                    ThinkingProfile.omitted(),
+                    subscription_only=True,
+                )
+            ],
+            transport_factory=lambda binding, credentials: object(),
+        )
+    )
+
     with pytest.raises(AuthResolutionError) as caught:
         build_transport(
-            ModelBinding("openai/gpt-5.6-sol"),
+            ModelBinding("clubhouse/members-only"),
             StaticCredentialProvider({"OPENAI_API_KEY": "must-not-be-used"}),
+            registry=registry,
         )
 
     assert caught.value.reason_code == "subscription_required"

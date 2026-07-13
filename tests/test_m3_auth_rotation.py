@@ -285,6 +285,38 @@ def test_candidates_put_explicit_first_then_auth_order_then_transient_env(
     ]
 
 
+def test_kimi_environment_fallback_prefers_moonshot_then_kimi_env_var(
+    tmp_path: Path,
+) -> None:
+    """Kimi's two-var env tuple: MOONSHOT_API_KEY wins over the KIMI_API_KEY
+    fallback (mirroring google's GEMINI/GOOGLE pair)."""
+    store = make_store(tmp_path)
+    binding = ModelBinding("kimi/kimi-k2.6")
+
+    both = AuthManager(
+        store,
+        environ={
+            "MOONSHOT_API_KEY": "moonshot-secret",
+            "KIMI_API_KEY": "kimi-secret",
+        },
+    )
+    (candidate,) = both.candidates(binding)
+    assert candidate.ref == "kimi:env-fallback"
+    assert candidate.credential_ref == "MOONSHOT_API_KEY"
+    assert candidate("MOONSHOT_API_KEY") == "moonshot-secret"
+
+    fallback_only = AuthManager(
+        store, environ={"KIMI_API_KEY": "kimi-secret"}
+    )
+    (candidate,) = fallback_only.candidates(binding)
+    assert candidate.credential_ref == "KIMI_API_KEY"
+    assert candidate("KIMI_API_KEY") == "kimi-secret"
+
+    with pytest.raises(AuthResolutionError) as caught:
+        AuthManager(store, environ={}).candidates(binding)
+    assert caught.value.reason_code == "missing_credential"
+
+
 @pytest.mark.parametrize(
     ("provider", "model", "first_kind", "second_kind"),
     [

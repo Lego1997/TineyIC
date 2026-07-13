@@ -34,8 +34,9 @@ from .usage_window import RollingUsageMeter
 DEFAULT_PROVIDER_ENV_REFS: Mapping[str, tuple[str, ...]] = {
     "openai": ("OPENAI_API_KEY",),
     "anthropic": ("ANTHROPIC_API_KEY",),
-    "xai": ("XAI_API_KEY",),
-    "deepseek": ("DEEPSEEK_API_KEY",),
+    # Provider renamed xai -> grok in v2.1; the env var keeps xAI's own name.
+    "grok": ("XAI_API_KEY",),
+    "kimi": ("MOONSHOT_API_KEY", "KIMI_API_KEY"),
     "google": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
 }
 CLAUDE_CODE_OAUTH_TOKEN_REF = "CLAUDE_CODE_OAUTH_TOKEN"

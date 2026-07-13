@@ -307,15 +307,21 @@ def test_resolution_params_are_detached_copies():
 # --------------------------------------------------------------------------
 
 
-def test_default_registry_has_the_v1_bundled_providers():
+def test_default_registry_has_the_bundled_providers():
+    # v2.1: xai is hard-renamed to grok (old xai/... refs stop resolving),
+    # DeepSeek is removed from the product, Kimi (Moonshot AI) is added.
     assert set(list_providers()) == {
         "openai",
         "anthropic",
         "google",
-        "xai",
-        "deepseek",
+        "grok",
+        "kimi",
         "ollama",
     }
+    with pytest.raises(KeyError):
+        get_provider("xai")
+    with pytest.raises(KeyError):
+        get_provider("deepseek")
 
 
 def test_default_registry_helpers_share_one_instance():
@@ -334,13 +340,49 @@ def test_get_provider_unknown_names_the_registered_set():
 
 
 def test_builtin_wire_formats():
-    # openai + xai + deepseek speak canonical Chat Completions; anthropic
+    # openai + grok + kimi speak canonical Chat Completions; anthropic
     # speaks Messages; google (Gemini) and ollama use the compatible schema.
-    for chat in ("openai", "xai", "deepseek"):
+    for chat in ("openai", "grok", "kimi"):
         assert get_provider(chat).wire_format is WireFormat.OPENAI_CHAT
     assert get_provider("anthropic").wire_format is WireFormat.ANTHROPIC_MESSAGES
     for compatible in ("google", "ollama"):
         assert get_provider(compatible).wire_format is WireFormat.OPENAI_COMPATIBLE
+
+
+def test_builtin_catalog_contents():
+    """The 2026-07-14 catalog refresh, pinned model-by-model."""
+    assert get_provider("openai").catalog() == (
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.2",  # superseded but still servable: kept as legacy
+    )
+    assert get_provider("anthropic").catalog() == (
+        "claude-fable-5",
+        "claude-opus-4-8",
+        "claude-sonnet-5",
+        "claude-haiku-4-5",
+    )
+    assert get_provider("google").catalog() == (
+        "gemini-3.5-flash",
+        "gemini-3.1-pro-preview",
+        "gemini-3.1-flash-lite",
+    )
+    assert get_provider("grok").catalog() == ("grok-4.5", "grok-4.3", "grok-4.20")
+    assert get_provider("kimi").catalog() == ("kimi-k2.6", "kimi-k2.5")
+    assert get_provider("ollama").catalog() == (
+        "qwen3:32b",
+        "qwen3.5",
+        "deepseek-r1:14b",
+        "llama3.1:8b",
+        "gemma4",
+    )
+    # gemini-2.5-pro (shutdown 2026-10-16) is gone from the catalog.
+    assert "gemini-2.5-pro" not in get_provider("google").catalog()
+    # No catalog model is subscription-only anymore (gpt-5.6-sol went public).
+    for name in list_providers():
+        provider = get_provider(name)
+        assert not any(provider.is_subscription_only(m) for m in provider.catalog())
 
 
 def test_registry_register_duplicate_and_replace_semantics():
@@ -376,12 +418,14 @@ def test_build_default_registry_is_isolated_from_the_shared_default():
 
 def test_provider_catalog_and_thinking_profile_fallback():
     openai = get_provider("openai")
-    # the catalog now seeds both a Chat model and a Responses model
-    assert openai.catalog() == ("gpt-5.2", "gpt-5.6-sol")
-    # a listed model uses its own profile
+    # the catalog seeds both Chat models and a Responses model
     assert openai.thinking_profile("gpt-5.2").supports(L.XHIGH) is True
-    # the Responses model routes on the Responses wire format
+    # the gpt-5.6 family carries the "none" effort value on the OFF rung
+    assert openai.thinking_profile("gpt-5.6-terra").supports(L.OFF) is True
+    # the flagship routes on the Responses wire format; terra/luna on Chat
     assert openai.wire_format_for("gpt-5.6-sol") is WireFormat.OPENAI_RESPONSES
+    assert openai.wire_format_for("gpt-5.6-terra") is WireFormat.OPENAI_CHAT
+    assert openai.wire_format_for("gpt-5.6-luna") is WireFormat.OPENAI_CHAT
     # an unlisted model falls back to the provider default (low/medium/high)
     fallback = openai.thinking_profile("some-unlisted-model")
     assert fallback.supported == (L.LOW, L.MEDIUM, L.HIGH)
@@ -412,7 +456,13 @@ def test_resolve_binding_thinking_config_error_bubbles_up():
 
 
 def test_provider_for_binding_resolves_by_ref():
-    assert provider_for_binding(ModelBinding("xai/grok-4")) is get_provider("xai")
+    assert provider_for_binding(ModelBinding("grok/grok-4.5")) is get_provider("grok")
+
+
+def test_old_xai_model_refs_no_longer_resolve():
+    # The rename is hard: xai/... is not aliased and must fail loudly.
+    with pytest.raises(KeyError):
+        provider_for_binding(ModelBinding("xai/grok-4.5"))
 
 
 # --------------------------------------------------------------------------
@@ -587,16 +637,19 @@ def test_builtin_providers_have_wired_transports():
             "OPENAI_API_KEY": "k",
             "ANTHROPIC_API_KEY": "k",
             "XAI_API_KEY": "k",
-            "DEEPSEEK_API_KEY": "k",
+            "MOONSHOT_API_KEY": "k",
             "GEMINI_API_KEY": "k",
         }
     )
     refs = {
         "openai/gpt-5.2": "OpenAIChatAdapter",
+        "openai/gpt-5.6-terra": "OpenAIChatAdapter",
+        # gpt-5.6-sol is public now (no subscription gate) on the Responses wire.
+        "openai/gpt-5.6-sol": "OpenAIResponsesAdapter",
         "anthropic/claude-opus-4-8": "AnthropicMessagesAdapter",
-        "google/gemini-2.5-pro": "OpenAICompatibleAdapter",
-        "xai/grok-4": "OpenAIChatAdapter",
-        "deepseek/deepseek-reasoner": "OpenAIChatAdapter",
+        "google/gemini-3.5-flash": "OpenAICompatibleAdapter",
+        "grok/grok-4.5": "OpenAIChatAdapter",
+        "kimi/kimi-k2.6": "KimiChatAdapter",
         "ollama/qwen3:32b": "OpenAICompatibleAdapter",
     }
     for model_ref, adapter_name in refs.items():
@@ -605,12 +658,42 @@ def test_builtin_providers_have_wired_transports():
         assert isinstance(transport, Transport)
         assert type(transport).__name__ == adapter_name
 
-    # The Responses wire format remains covered separately, but M3's catalog
-    # marks gpt-5.6-sol subscription-only and must reject a Platform key before
-    # constructing the HTTP adapter.
-    subscription = ModelBinding("openai/gpt-5.6-sol")
+
+def test_subscription_only_spec_still_rejects_a_platform_key():
+    # No bundled catalog model is subscription-only anymore, but the gate
+    # itself must keep rejecting a plain key before an HTTP adapter is built.
+    spec = ModelSpec(
+        "members-only", ThinkingProfile.omitted(), subscription_only=True
+    )
+    provider = Provider(
+        "clubhouse",
+        WireFormat.OPENAI_CHAT,
+        models=[spec],
+        transport_factory=lambda binding, credentials: _FakeTransport(
+            binding, credentials
+        ),
+    )
+    register_provider(provider)
+    binding = ModelBinding("clubhouse/members-only")
     with pytest.raises(AuthError, match="subscription auth profile"):
-        provider_for_binding(subscription).new_transport(subscription, creds)
+        provider.new_transport(binding, StaticCredentialProvider({"K": "k"}))
+
+
+def test_kimi_base_url_env_var_selects_the_cn_endpoint(monkeypatch):
+    # MOONSHOT_BASE_URL flips a rebuilt registry between api.moonshot.ai (the
+    # international default) and api.moonshot.cn — read at registry build time.
+    creds = StaticCredentialProvider({"MOONSHOT_API_KEY": "k"})
+    binding = ModelBinding("kimi/kimi-k2.6")
+
+    monkeypatch.delenv("MOONSHOT_BASE_URL", raising=False)
+    international = build_default_registry().get("kimi").new_transport(
+        binding, creds
+    )
+    assert international._base_url == "https://api.moonshot.ai/v1"
+
+    monkeypatch.setenv("MOONSHOT_BASE_URL", "https://api.moonshot.cn/v1")
+    china = build_default_registry().get("kimi").new_transport(binding, creds)
+    assert china._base_url == "https://api.moonshot.cn/v1"
 
 
 def test_transport_factory_receives_binding_and_credential_seam():

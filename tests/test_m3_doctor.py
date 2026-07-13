@@ -253,7 +253,8 @@ def test_doctor_json_is_one_clean_document_in_a_fresh_process(tmp_path):
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
         "XAI_API_KEY",
-        "DEEPSEEK_API_KEY",
+        "MOONSHOT_API_KEY",
+        "KIMI_API_KEY",
     ):
         env.pop(secret_name, None)
     completed = subprocess.run(
@@ -299,8 +300,8 @@ def test_doctor_probes_every_builtin_provider_lane_and_requires_selected_preset(
         ("anthropic", "api_key"),
         ("anthropic", "subscription"),
         ("google", "api_key"),
-        ("xai", "api_key"),
-        ("deepseek", "api_key"),
+        ("grok", "api_key"),
+        ("kimi", "api_key"),
         ("ollama", "local"),
     }
     required = [probe for probe in report.probes if probe.required]
@@ -335,7 +336,7 @@ def test_configured_key_makes_selected_preset_ready_without_live_network(
         "provider": "openai",
         "lane": "api_key",
         "auth_profile": "openai:env-fallback",
-        "model_ref": "openai/gpt-5.2",
+        "model_ref": "openai/gpt-5.6-sol",
         "required": True,
         "status": "ok",
         "reason_code": "ok",
@@ -365,7 +366,7 @@ def test_live_probe_is_explicit_one_token_seam_and_failure_text_is_sanitized(
     )
 
     required = [probe for probe in report.probes if probe.required]
-    assert calls == [("openai/gpt-5.2", "openai:env-fallback")]
+    assert calls == [("openai/gpt-5.6-sol", "openai:env-fallback")]
     assert required[0].reason_code == "probe_failed"
     assert required[0].message == "The live one-token check failed."
     assert "opaque-secret" not in report.to_json()

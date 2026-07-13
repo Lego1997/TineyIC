@@ -67,6 +67,12 @@ BUDGET = ThinkingProfile.budget(
     "budget_tokens", {L.LOW: 2048, L.MEDIUM: 4096, L.HIGH: 8192}
 )
 FLAG = ThinkingProfile.flag("think")
+# The current Anthropic scheme (fable-5 / opus-4-8 / sonnet-5).
+ADAPTIVE = ThinkingProfile.adaptive_effort(
+    {L.LOW: "low", L.MEDIUM: "medium", L.HIGH: "high", L.XHIGH: "xhigh", L.MAX: "max"}
+)
+# Kimi's default-on thinking toggle.
+TOGGLE = ThinkingProfile.toggle("thinking")
 
 
 # --------------------------------------------------------------------------
@@ -135,7 +141,7 @@ def creds() -> StaticCredentialProvider:
             "OPENAI_API_KEY": KEY,
             "ANTHROPIC_API_KEY": KEY,
             "XAI_API_KEY": KEY,
-            "DEEPSEEK_API_KEY": KEY,
+            "MOONSHOT_API_KEY": KEY,
             "GEMINI_API_KEY": KEY,
         }
     )
@@ -198,7 +204,7 @@ def test_openai_chat_stream_orders_deltas_and_extracts_usage():
 
 
 def test_openai_chat_stream_surfaces_reasoning_content():
-    # DeepSeek-style reasoners stream delta.reasoning_content over this wire.
+    # Kimi-style reasoners stream delta.reasoning_content over this wire.
     _transport, events = _openai_chat("openai_chat_reasoning_stream.sse")
     assert kinds(events) == [
         "ReasoningDelta",
@@ -547,10 +553,8 @@ def test_openai_responses_non_streaming_parses_output_items():
 
 
 def _anthropic(fixture, *, stream=True, thinking=None, level="medium", params=None,
-               responses=None):
-    binding = ModelBinding(
-        "anthropic/claude-opus-4-8", thinking_level=level, params=params or {}
-    )
+               responses=None, model="anthropic/claude-opus-4-8"):
+    binding = ModelBinding(model, thinking_level=level, params=params or {})
     transport = ScriptedTransport(
         responses or [FakeResponse(200, lines=sse_lines(fixture))]
     )
@@ -581,11 +585,13 @@ def test_anthropic_stream_captures_thinking_and_assembles_split_usage():
 
 
 def test_anthropic_request_maps_budget_system_and_headers():
+    # claude-haiku-4-5 keeps the legacy enabled/budget_tokens scheme.
     transport, _events = _anthropic(
         "anthropic_messages_stream.sse",
         thinking=BUDGET,
         level="high",
         params={"temperature": 0.7},
+        model="anthropic/claude-haiku-4-5",
     )
     request = transport.sent[0]
     assert request.url == "https://api.anthropic.com/v1/messages"
@@ -599,6 +605,42 @@ def test_anthropic_request_maps_budget_system_and_headers():
     assert body["messages"] == [{"role": "user", "content": "Analyze AAPL."}]
     # extended thinking forbids temperature: it is dropped
     assert "temperature" not in body
+
+
+def test_anthropic_adaptive_scheme_emits_output_config_and_never_budget_tokens():
+    # fable-5 / opus-4-8 / sonnet-5: thinking={"type":"adaptive"} plus
+    # output_config={"effort":...}; budget_tokens would be a 400 there.
+    transport, _events = _anthropic(
+        "anthropic_messages_stream.sse",
+        thinking=ADAPTIVE,
+        level="high",
+        params={"temperature": 0.7},
+    )
+    body = transport.sent[0].body
+    assert body["thinking"] == {"type": "adaptive"}
+    assert body["output_config"] == {"effort": "high"}
+    assert "budget_tokens" not in str(body)
+    assert body["max_tokens"] == 4096  # no budget headroom arithmetic
+    # thinking still forbids sampling knobs: dropped defensively
+    assert "temperature" not in body
+
+
+def test_anthropic_adaptive_off_remaps_to_low_effort_at_runtime():
+    # Always-thinking models cannot disable: a runtime "off" override lands on
+    # the low effort rung instead of failing mid-debate (FR-1.3).
+    transport, _events = _anthropic(
+        "anthropic_messages_stream.sse", thinking=ADAPTIVE, level="off"
+    )
+    body = transport.sent[0].body
+    assert body["thinking"] == {"type": "adaptive"}
+    assert body["output_config"] == {"effort": "low"}
+
+
+def test_anthropic_adaptive_max_effort_is_direct():
+    transport, _events = _anthropic(
+        "anthropic_messages_stream.sse", thinking=ADAPTIVE, level="max"
+    )
+    assert transport.sent[0].body["output_config"] == {"effort": "max"}
 
 
 def test_anthropic_without_thinking_keeps_params_and_default_max_tokens():
@@ -707,6 +749,200 @@ def test_compatible_non_thinking_bad_request_does_not_degrade():
     with pytest.raises(InvalidRequestError):
         list(adapter.generate(ChatRequest(messages(), binding, stream=True)))
     assert len(transport.sent) == 1  # a genuine bad request is not retried
+
+
+# --------------------------------------------------------------------------
+# Kimi (Moonshot) — thinking toggle, reasoning_content, $web_search echo loop
+# --------------------------------------------------------------------------
+
+
+def _kimi(fixtures, *, stream=True, thinking=TOGGLE, level="off", params=None):
+    from tinyic.models.adapters.kimi_chat import KimiChatAdapter
+
+    binding = ModelBinding(
+        "kimi/kimi-k2.6", thinking_level=level, params=params or {}
+    )
+    responses = [FakeResponse(200, lines=sse_lines(name)) for name in fixtures]
+    transport = ScriptedTransport(responses)
+    adapter = KimiChatAdapter(
+        binding,
+        creds(),
+        base_url="https://api.moonshot.ai/v1",
+        credential_ref="MOONSHOT_API_KEY",
+        thinking=thinking,
+        http=transport,
+        retry=RetryPolicy(max_retries=0),
+        sleep=lambda _d: None,
+    )
+    request = ChatRequest(messages(), binding, stream=stream)
+    return transport, list(adapter.generate(request))
+
+
+def test_kimi_thinking_toggle_off_sends_disabled_object():
+    transport, _events = _kimi(["openai_chat_stream.sse"], level="off")
+    body = transport.sent[0].body
+    assert body["thinking"] == {"type": "disabled"}
+
+
+def test_kimi_thinking_any_level_sends_enabled_object():
+    transport, _events = _kimi(["openai_chat_stream.sse"], level="high")
+    assert transport.sent[0].body["thinking"] == {"type": "enabled"}
+
+
+def test_kimi_streams_reasoning_content_like_the_base_chat_wire():
+    _transport, events = _kimi(
+        ["openai_chat_reasoning_stream.sse"], level="high"
+    )
+    assert kinds(events) == [
+        "ReasoningDelta",
+        "ReasoningDelta",
+        "TextDelta",
+        "TextDelta",
+        "Usage",
+        "FinalMessage",
+    ]
+    assert events[-1].reasoning == "Let me think."
+    assert events[-1].text == "Answer: 42"
+
+
+def test_kimi_web_search_echo_loop_end_to_end():
+    """Round 1 finishes with tool_calls; the client echoes arguments back
+    verbatim and loops; round 2 is the grounded prose answer."""
+    transport, events = _kimi(
+        ["kimi_web_search_tool_round.sse", "kimi_web_search_final_round.sse"],
+        level="off",
+        params={"web_search": True},
+    )
+
+    # Two wire rounds, both declaring the builtin tool, neither carrying the
+    # TinyIC-level web_search knob, both with thinking disabled.
+    assert len(transport.sent) == 2
+    for request in transport.sent:
+        assert request.body["tools"] == [
+            {"type": "builtin_function", "function": {"name": "$web_search"}}
+        ]
+        assert "web_search" not in request.body
+        assert request.body["thinking"] == {"type": "disabled"}
+
+    # The echo: assistant turn replays the tool call; the tool turn's content
+    # is function.arguments VERBATIM (the server injects the actual results).
+    first_messages = transport.sent[0].body["messages"]
+    second_messages = transport.sent[1].body["messages"]
+    assert second_messages[: len(first_messages)] == first_messages
+    assistant_echo, tool_echo = second_messages[len(first_messages):]
+    arguments = '{"query":"AAPL outlook"}'
+    assert assistant_echo["role"] == "assistant"
+    assert assistant_echo["tool_calls"] == [
+        {
+            "id": "call-web-1",
+            "type": "builtin_function",
+            "function": {"name": "$web_search", "arguments": arguments},
+        }
+    ]
+    assert tool_echo == {
+        "role": "tool",
+        "tool_call_id": "call-web-1",
+        "name": "$web_search",
+        "content": arguments,
+    }
+
+    # The normalized stream stays prose-only (StreamingActionScanner-safe):
+    # no tool-call JSON ever surfaces as a TextDelta.
+    assert kinds(events) == ["TextDelta", "TextDelta", "Usage", "FinalMessage"]
+    final = events[-1]
+    assert final.text == "Grounded answer."
+    assert final.finish_reason is FinishReason.STOP
+    # Usage is summed across both rounds.
+    assert final.usage == Usage(40 + 90, 6 + 12, 0 + 10)
+
+
+def test_kimi_web_search_requires_thinking_off_at_construction():
+    from tinyic.models.adapters.kimi_chat import KimiChatAdapter
+
+    binding = ModelBinding(
+        "kimi/kimi-k2.6", thinking_level="high", params={"web_search": True}
+    )
+    with pytest.raises(InvalidRequestError, match="thinking 'off'"):
+        KimiChatAdapter(
+            binding,
+            creds(),
+            base_url="https://api.moonshot.ai/v1",
+            credential_ref="MOONSHOT_API_KEY",
+            http=ScriptedTransport([]),
+        )
+
+
+def test_kimi_web_search_loop_is_bounded():
+    from tinyic.models.adapters.kimi_chat import (
+        MAX_WEB_SEARCH_ROUNDS,
+        KimiChatAdapter,
+    )
+
+    tool_rounds = [
+        FakeResponse(200, lines=sse_lines("kimi_web_search_tool_round.sse"))
+        for _ in range(MAX_WEB_SEARCH_ROUNDS + 1)
+    ]
+
+    binding = ModelBinding(
+        "kimi/kimi-k2.6", thinking_level="off", params={"web_search": True}
+    )
+    transport = ScriptedTransport(tool_rounds)
+    adapter = KimiChatAdapter(
+        binding,
+        creds(),
+        base_url="https://api.moonshot.ai/v1",
+        credential_ref="MOONSHOT_API_KEY",
+        thinking=TOGGLE,
+        http=transport,
+        retry=RetryPolicy(max_retries=0),
+        sleep=lambda _d: None,
+    )
+    with pytest.raises(TransientError, match="did not converge"):
+        list(adapter.generate(ChatRequest(messages(), binding, stream=True)))
+    assert len(transport.sent) == MAX_WEB_SEARCH_ROUNDS
+
+
+def test_kimi_without_web_search_takes_the_plain_chat_path():
+    transport, events = _kimi(["openai_chat_stream.sse"], level="off")
+    assert "tools" not in transport.sent[0].body
+    assert events[-1].text == "Hello, world"
+
+
+# --------------------------------------------------------------------------
+# Grok (xAI) — effort dial on the plain Chat Completions wire
+# --------------------------------------------------------------------------
+
+GROK_EFFORT = ThinkingProfile.effort(
+    "reasoning_effort", {L.LOW: "low", L.MEDIUM: "medium", L.HIGH: "high"}
+)
+
+
+def _grok(fixture, *, level="high"):
+    binding = ModelBinding("grok/grok-4.5", thinking_level=level)
+    transport = ScriptedTransport([FakeResponse(200, lines=sse_lines(fixture))])
+    adapter = OpenAIChatAdapter(
+        binding,
+        creds(),
+        base_url="https://api.x.ai/v1",
+        credential_ref="XAI_API_KEY",
+        thinking=GROK_EFFORT,
+        http=transport,
+        sleep=lambda _d: None,
+    )
+    return transport, list(adapter.generate(ChatRequest(messages(), binding, stream=True)))
+
+
+def test_grok_emits_reasoning_effort_and_xai_key_auth():
+    transport, _events = _grok("openai_chat_stream.sse", level="high")
+    request = transport.sent[0]
+    assert request.url == "https://api.x.ai/v1/chat/completions"
+    assert request.headers["authorization"] == f"Bearer {KEY}"
+    assert request.body["reasoning_effort"] == "high"
+
+
+def test_grok_cannot_disable_reasoning_off_remaps_to_low_at_runtime():
+    transport, _events = _grok("openai_chat_stream.sse", level="off")
+    assert transport.sent[0].body["reasoning_effort"] == "low"
 
 
 # --------------------------------------------------------------------------

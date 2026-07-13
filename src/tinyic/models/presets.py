@@ -18,7 +18,7 @@ FR-1.4) by overriding individual roles on top of a committee-wide default.
     # keys are the committee-wide default binding, inherited by every role that
     # does not override them.
     [presets.default]
-    model = "openai/gpt-5.2"          # required "provider/model" ref
+    model = "openai/gpt-5.6-sol"      # required "provider/model" ref
     thinking = "high"                  # off|minimal|low|medium|high|xhigh|max
     auth_profile = "openai:default"    # optional; resolved by M3 auth profiles
 
@@ -28,20 +28,20 @@ FR-1.4) by overriding individual roles on top of a committee-wide default.
     # A heterogeneous committee: role tables override the committee default and
     # inherit any field they omit (here, thinking/params from the default).
     [presets.mixed]
-    model = "openai/gpt-5.2"
+    model = "openai/gpt-5.6-sol"
     thinking = "high"
 
     [presets.mixed.aggregator]
     model = "anthropic/claude-opus-4-8"
 
     [presets.mixed.moderator]
-    model = "openai/gpt-5.2"
+    model = "openai/gpt-5.6-luna"
     thinking = "minimal"           # config-time levels must be model-supported
 
     # Persona overrides are keyed by snake_case registry name; unlisted personas
     # fall back to the committee default binding.
     [presets.mixed.personas.benjamin_graham]
-    model = "deepseek/deepseek-reasoner"
+    model = "kimi/kimi-k2.6"
 
 Resolution: a role binding inherits ``thinking``, ``auth_profile``, and
 ``params`` from the preset's committee default for any field it does not set;
@@ -62,7 +62,7 @@ from .thinking import ThinkingLevel, UnsupportedThinkingLevelError
 
 #: Built-in fallback when no ``tinyic.toml`` is present: one strong model
 #: everywhere (FR-1.4's ``default`` preset), so a committee always resolves.
-BUILTIN_DEFAULT_MODEL = "openai/gpt-5.2"
+BUILTIN_DEFAULT_MODEL = "openai/gpt-5.6-sol"
 BUILTIN_DEFAULT_THINKING = "high"
 DEFAULT_PRESET_NAME = "default"
 #: Environment override for the config file location (else ``./tinyic.toml``).

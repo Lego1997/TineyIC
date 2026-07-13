@@ -82,7 +82,8 @@ def _child_env(tmp_path: Path, *, drop_provider_keys: bool = False) -> dict:
             "ANTHROPIC_API_KEY",
             "XAI_API_KEY",
             "GOOGLE_API_KEY",
-            "DEEPSEEK_API_KEY",
+            "MOONSHOT_API_KEY",
+            "KIMI_API_KEY",
         ):
             env.pop(key, None)
     return env

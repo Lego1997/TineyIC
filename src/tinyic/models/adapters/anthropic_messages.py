@@ -1,13 +1,22 @@
 """Anthropic Messages API adapter (FR-1.2, ``anthropic-messages`` wire format).
 
 ``POST /v1/messages`` with typed SSE events.  System turns become the top-level
-``system`` field; ``max_tokens`` is mandatory.  Extended thinking maps the
-normalized ladder to a documented **level → budget-tokens** table
-(:data:`ANTHROPIC_THINKING_BUDGETS`, the single source of truth the registry
-also builds its profile from), emitted as
-``thinking={"type":"enabled","budget_tokens":N}``.  ``thinking_delta`` blocks
-surface as ``ReasoningDelta`` (FR-1.3).  Usage is assembled from ``message_start``
-(input/cache-read) and the final ``message_delta`` (output).
+``system`` field; ``max_tokens`` is mandatory.  Extended thinking has two wire
+generations, both driven by the model's registry profile:
+
+* **adaptive/effort** (claude-fable-5 / claude-opus-4-8 / claude-sonnet-5):
+  ``thinking={"type":"adaptive"}`` plus ``output_config={"effort":...}`` mapped
+  from the normalized ladder via :data:`ANTHROPIC_ADAPTIVE_EFFORTS`.  These
+  models **reject** ``budget_tokens`` with a 400.
+* **legacy budgets** (claude-haiku-4-5): a documented **level → budget-tokens**
+  table (:data:`ANTHROPIC_THINKING_BUDGETS`), emitted as
+  ``thinking={"type":"enabled","budget_tokens":N}``.
+
+Both tables are the single source of truth the registry builds its profiles
+from, so the capability gate and the wire request never drift.
+``thinking_delta`` blocks surface as ``ReasoningDelta`` (FR-1.3).  Usage is
+assembled from ``message_start`` (input/cache-read) and the final
+``message_delta`` (output).
 
 Auth is ``x-api-key`` plus the required ``anthropic-version`` header — the
 adapter never imports the Anthropic SDK (which isn't a TinyIC dependency); it
@@ -41,15 +50,28 @@ DEFAULT_MAX_TOKENS = 4096
 #: Minimum room reserved for the visible answer when extended thinking is on.
 MIN_ANSWER_TOKENS = 1024
 
-#: Documented normalized-level → extended-thinking budget (tokens).  The
-#: registry's ``claude-opus-4-8`` profile is built from this exact table so the
-#: capability gate and the wire request never drift.
+#: Documented normalized-level → extended-thinking budget (tokens) for the
+#: legacy budget scheme (claude-haiku-4-5).  The registry's haiku profile is
+#: built from this exact table so the capability gate and the wire never drift.
 ANTHROPIC_THINKING_BUDGETS: dict[ThinkingLevel, int] = {
     ThinkingLevel.LOW: 2048,
     ThinkingLevel.MEDIUM: 4096,
     ThinkingLevel.HIGH: 8192,
     ThinkingLevel.XHIGH: 16384,
     ThinkingLevel.MAX: 32768,
+}
+
+#: Normalized-level → ``output_config.effort`` value for the adaptive scheme
+#: (claude-fable-5 / claude-opus-4-8 / claude-sonnet-5).  ``off``/``minimal``
+#: are deliberately absent: these models cannot disable thinking, so ``off`` is
+#: a config-time reject and a runtime remap to ``low`` (FR-1.3), and
+#: ``minimal`` remaps to ``low`` the same way.
+ANTHROPIC_ADAPTIVE_EFFORTS: dict[ThinkingLevel, str] = {
+    ThinkingLevel.LOW: "low",
+    ThinkingLevel.MEDIUM: "medium",
+    ThinkingLevel.HIGH: "high",
+    ThinkingLevel.XHIGH: "xhigh",
+    ThinkingLevel.MAX: "max",
 }
 
 _STOP_REASONS: dict[str, FinishReason] = {
@@ -108,13 +130,24 @@ class AnthropicMessagesAdapter(BaseHttpAdapter):
         if system:
             body["system"] = "\n\n".join(system)
 
-        budget = self._thinking_params(request).get("budget_tokens") if include_thinking else None
+        thinking = self._thinking_params(request) if include_thinking else {}
+        budget = thinking.get("budget_tokens")
         if budget:
+            # Legacy budget scheme (claude-haiku-4-5).
             budget = int(budget)
             body["thinking"] = {"type": "enabled", "budget_tokens": budget}
             # Extended thinking requires max_tokens > budget, and forbids setting
             # temperature/top_p/top_k (must default): drop them defensively.
             body["max_tokens"] = budget + max(answer_tokens, MIN_ANSWER_TOKENS)
+            for forbidden in ("temperature", "top_p", "top_k"):
+                params.pop(forbidden, None)
+        elif "thinking" in thinking:
+            # Adaptive/effort scheme (fable-5 / opus-4-8 / sonnet-5): emit the
+            # resolved profile params verbatim — never budget_tokens (400).
+            body["thinking"] = thinking["thinking"]
+            if "output_config" in thinking:
+                body["output_config"] = thinking["output_config"]
+            # Thinking still forbids sampling knobs: drop them defensively.
             for forbidden in ("temperature", "top_p", "top_k"):
                 params.pop(forbidden, None)
         body.update(params)
@@ -239,6 +272,7 @@ def make_factory(
 
 
 __all__ = [
+    "ANTHROPIC_ADAPTIVE_EFFORTS",
     "ANTHROPIC_THINKING_BUDGETS",
     "ANTHROPIC_VERSION",
     "AnthropicMessagesAdapter",

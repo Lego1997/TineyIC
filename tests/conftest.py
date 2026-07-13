@@ -44,8 +44,8 @@ def has_api_key():
 
 @pytest.fixture
 def has_xai_key():
-    """Check if XAI_API_KEY is available, skip if not."""
+    """Check if XAI_API_KEY (the Grok credential) is available, skip if not."""
     key = os.getenv("XAI_API_KEY")
     if not key:
-        pytest.skip("XAI_API_KEY not set -- skipping xAI API test")
+        pytest.skip("XAI_API_KEY not set -- skipping Grok API test")
     return key

@@ -3,10 +3,12 @@
 Canonical ``POST /chat/completions`` with SSE token streaming.  Streaming
 requests set ``stream_options={"include_usage": true}`` so the terminal usage
 chunk is emitted (review B11).  Thinking maps to the flat top-level
-``reasoning_effort`` knob.  Reasoning tokens streamed as ``delta.reasoning_content``
-(DeepSeek-style reasoners speak this same wire) surface as ``ReasoningDelta``,
-unifying "watch it think" (FR-1.3).  This is also the base for the
-OpenAI-compatible lane (xAI, DeepSeek, and — via a subclass — Ollama/vLLM/proxies).
+``reasoning_effort`` knob (OpenAI's gpt-5.x family and Grok's effort dial both
+land here via their registry profiles).  Reasoning tokens streamed as
+``delta.reasoning_content`` (Kimi-style reasoners speak this same wire) surface
+as ``ReasoningDelta``, unifying "watch it think" (FR-1.3).  This is also the
+base for Grok, Kimi (via :mod:`.kimi_chat`), and — via a subclass — the
+OpenAI-compatible lane (Ollama/vLLM/proxies).
 """
 
 from __future__ import annotations

@@ -15,12 +15,32 @@ COUNTER_FIELDS = (
 )
 
 # Static application data, intentionally not fetched during an offline run.
-# M2's provider catalogs can extend this table while retaining the same
-# model-keyed calculation contract. These rates preserve TinyIC's existing
-# GPT-5.2 compatibility estimate.
-MODEL_PRICES_AS_OF = "2026-07-12"
+# One row per provider-catalog model (tinyic.models.registry), keyed by
+# model_ref, USD per million tokens. Local Ollama models are deliberately
+# absent (free); an unknown model prices as None rather than borrowing rates.
+MODEL_PRICES_AS_OF = "2026-07-14"
 MODEL_PRICES_USD_PER_MILLION: dict[str, dict[str, float]] = {
-    "openai/gpt-5.2": {"input": 2.50, "output": 10.00},
+    # OpenAI
+    "openai/gpt-5.6-sol": {"input": 5.00, "output": 30.00},
+    "openai/gpt-5.6-terra": {"input": 2.50, "output": 15.00},
+    "openai/gpt-5.6-luna": {"input": 1.00, "output": 6.00},
+    "openai/gpt-5.2": {"input": 2.50, "output": 10.00},  # legacy
+    # Anthropic
+    "anthropic/claude-fable-5": {"input": 10.00, "output": 50.00},
+    "anthropic/claude-opus-4-8": {"input": 5.00, "output": 25.00},
+    "anthropic/claude-sonnet-5": {"input": 3.00, "output": 15.00},
+    "anthropic/claude-haiku-4-5": {"input": 1.00, "output": 5.00},
+    # Google (list rates as of the date above)
+    "google/gemini-3.5-flash": {"input": 0.45, "output": 3.50},
+    "google/gemini-3.1-pro-preview": {"input": 2.00, "output": 12.00},
+    "google/gemini-3.1-flash-lite": {"input": 0.10, "output": 0.40},
+    # Grok (xAI)
+    "grok/grok-4.5": {"input": 2.00, "output": 6.00},
+    "grok/grok-4.3": {"input": 1.25, "output": 2.50},
+    "grok/grok-4.20": {"input": 1.25, "output": 2.50},
+    # Kimi (Moonshot AI)
+    "kimi/kimi-k2.6": {"input": 0.95, "output": 4.00},
+    "kimi/kimi-k2.5": {"input": 0.60, "output": 3.00},
 }
 
 

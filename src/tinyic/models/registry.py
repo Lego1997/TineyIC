@@ -15,16 +15,21 @@ matrix (M2 DoD).
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 from .adapters import (
     anthropic_messages,
+    kimi_chat,
     openai_chat,
     openai_compatible,
     openai_responses,
 )
-from .adapters.anthropic_messages import ANTHROPIC_THINKING_BUDGETS
+from .adapters.anthropic_messages import (
+    ANTHROPIC_ADAPTIVE_EFFORTS,
+    ANTHROPIC_THINKING_BUDGETS,
+)
 from .binding import ModelBinding
 from .credentials import CredentialProvider
 from .thinking import ThinkingLevel as _L
@@ -231,10 +236,13 @@ class ProviderRegistry:
 # (M2 wires the transports here; M3 adds subscription runtimes + auth profiles).
 _OPENAI_BASE_URL = openai_chat.DEFAULT_BASE_URL
 _ANTHROPIC_BASE_URL = anthropic_messages.DEFAULT_BASE_URL
-_XAI_BASE_URL = "https://api.x.ai/v1"
-_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+_GROK_BASE_URL = "https://api.x.ai/v1"
 _GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 _OLLAMA_BASE_URL = openai_compatible.DEFAULT_BASE_URL
+#: Env override selecting the Moonshot China endpoint (``api.moonshot.cn``);
+#: unset uses the international ``api.moonshot.ai`` base.  Read when a registry
+#: is built, so ``build_default_registry()`` honors a changed environment.
+KIMI_BASE_URL_ENV_VAR = "MOONSHOT_BASE_URL"
 
 
 def _thinking_lookup(
@@ -283,17 +291,43 @@ def _openai_dispatch_factory(
 
 
 def _builtin_providers() -> tuple[Provider, ...]:
-    """The v1 bundled providers (FR-1.2), with static seed catalogs + transports.
+    """The bundled providers (FR-1.2), with static seed catalogs + transports.
 
     Wire formats: OpenAI on canonical Chat Completions *and* the Responses API
-    (dispatched per model); Anthropic on Messages; xAI and DeepSeek on the
-    OpenAI Chat schema against their own base URLs; Google Gemini and local
-    Ollama on the OpenAI-compatible schema.  A native Gemini adapter is deferred
-    (smallest M2 interpretation): Gemini routes via ``openai-compatible`` and its
-    ``thinkingBudget`` degrades away if that endpoint rejects it.  Subscription
-    runtimes (Codex, Claude) and auth profiles arrive in M3.
+    (dispatched per model); Anthropic on Messages; Grok (xAI) and Kimi
+    (Moonshot AI) on the OpenAI Chat schema against their own base URLs; Google
+    Gemini and local Ollama on the OpenAI-compatible schema.  A native Gemini
+    adapter is deferred: Gemini routes via ``openai-compatible`` and its effort
+    param degrades away if that endpoint rejects it.  Catalogs current as of
+    2026-07-14 (see ``tinyic.usage.MODEL_PRICES_AS_OF``).
     """
+    # gpt-5.6 family: reasoning_effort none|minimal|low|medium|high|xhigh
+    # ("none" carries the ladder's "off"); "max" is not a value -> runtime
+    # remap to xhigh.  gpt-5.6-sol serves both wire formats; it stays routed on
+    # the proven Responses path, terra/luna on Chat Completions.
+    _gpt56_efforts = {
+        _L.OFF: "none",
+        _L.MINIMAL: "minimal",
+        _L.LOW: "low",
+        _L.MEDIUM: "medium",
+        _L.HIGH: "high",
+        _L.XHIGH: "xhigh",
+    }
     openai_models = [
+        ModelSpec(
+            "gpt-5.6-sol",
+            ThinkingProfile.nested_effort(("reasoning", "effort"), _gpt56_efforts),
+            wire_format=WireFormat.OPENAI_RESPONSES,
+        ),
+        ModelSpec(
+            "gpt-5.6-terra",
+            ThinkingProfile.effort("reasoning_effort", _gpt56_efforts),
+        ),
+        ModelSpec(
+            "gpt-5.6-luna",
+            ThinkingProfile.effort("reasoning_effort", _gpt56_efforts),
+        ),
+        # Superseded but still servable; kept as a legacy catalog entry.
         ModelSpec(
             "gpt-5.2",
             ThinkingProfile.effort(
@@ -306,24 +340,6 @@ def _builtin_providers() -> tuple[Provider, ...]:
                     _L.XHIGH: "xhigh",
                 },
             ),
-        ),
-        # A Responses-API model so "openai (both formats)" is reachable end to
-        # end.  Flagged subscription_only (its auth lane is M3); M2 exercises the
-        # wire routing (Chat vs Responses), which is format- not auth-driven.
-        ModelSpec(
-            "gpt-5.6-sol",
-            ThinkingProfile.nested_effort(
-                ("reasoning", "effort"),
-                {
-                    _L.MINIMAL: "minimal",
-                    _L.LOW: "low",
-                    _L.MEDIUM: "medium",
-                    _L.HIGH: "high",
-                    _L.XHIGH: "xhigh",
-                },
-            ),
-            wire_format=WireFormat.OPENAI_RESPONSES,
-            subscription_only=True,
         ),
     ]
     # Unknown OpenAI models: assume a standard low/medium/high effort knob.
@@ -344,9 +360,15 @@ def _builtin_providers() -> tuple[Provider, ...]:
         ),
     )
 
+    # fable-5 / opus-4-8 / sonnet-5 speak the adaptive/effort scheme
+    # (budget_tokens is a 400 there); haiku-4-5 keeps legacy budgets.
+    _anthropic_adaptive = ThinkingProfile.adaptive_effort(ANTHROPIC_ADAPTIVE_EFFORTS)
     anthropic_models = [
+        ModelSpec("claude-fable-5", _anthropic_adaptive),
+        ModelSpec("claude-opus-4-8", _anthropic_adaptive),
+        ModelSpec("claude-sonnet-5", _anthropic_adaptive),
         ModelSpec(
-            "claude-opus-4-8",
+            "claude-haiku-4-5",
             ThinkingProfile.budget("budget_tokens", ANTHROPIC_THINKING_BUDGETS),
         ),
     ]
@@ -363,12 +385,38 @@ def _builtin_providers() -> tuple[Provider, ...]:
         ),
     )
 
+    # Gemini 3.x thinking levels ride the compat endpoint's effort knob; the
+    # OpenAI-compatible adapter strips it gracefully if the server rejects it.
     google_models = [
         ModelSpec(
-            "gemini-2.5-pro",
-            ThinkingProfile.budget(
-                "thinkingBudget",
-                {_L.LOW: 1024, _L.MEDIUM: 8192, _L.HIGH: 24576},
+            "gemini-3.5-flash",
+            ThinkingProfile.effort(
+                "reasoning_effort",
+                {
+                    _L.MINIMAL: "minimal",
+                    _L.LOW: "low",
+                    _L.MEDIUM: "medium",
+                    _L.HIGH: "high",
+                },
+            ),
+        ),
+        ModelSpec(
+            "gemini-3.1-pro-preview",
+            ThinkingProfile.effort(
+                "reasoning_effort",
+                {_L.LOW: "low", _L.MEDIUM: "medium", _L.HIGH: "high"},
+            ),
+        ),
+        ModelSpec(
+            "gemini-3.1-flash-lite",
+            ThinkingProfile.effort(
+                "reasoning_effort",
+                {
+                    _L.MINIMAL: "minimal",
+                    _L.LOW: "low",
+                    _L.MEDIUM: "medium",
+                    _L.HIGH: "high",
+                },
             ),
         ),
     ]
@@ -383,42 +431,57 @@ def _builtin_providers() -> tuple[Provider, ...]:
         ),
     )
 
-    xai_models = [ModelSpec("grok-4", ThinkingProfile.omitted())]
-    xai = Provider(
-        name="xai",
-        # Grok reasons by default with no thinking parameter -> omit entirely.
-        wire_format=WireFormat.OPENAI_CHAT,
-        models=xai_models,
-        transport_factory=openai_chat.make_factory(
-            base_url=_XAI_BASE_URL,
-            credential_ref="XAI_API_KEY",
-            thinking_lookup=_thinking_lookup(xai_models, ThinkingProfile.omitted()),
-        ),
+    # Grok reasons with an effort dial (low|medium|high); grok-4.5 cannot
+    # disable reasoning, so "off" is a config-time reject / runtime remap→low
+    # via the ordinary FR-1.3 semantics.  Env var stays XAI_API_KEY (xAI's own
+    # convention survives the provider rename).
+    _grok_efforts = ThinkingProfile.effort(
+        "reasoning_effort",
+        {_L.LOW: "low", _L.MEDIUM: "medium", _L.HIGH: "high"},
     )
-
-    deepseek_models = [
-        ModelSpec(
-            "deepseek-reasoner",
-            ThinkingProfile.effort(
-                "reasoning_effort",
-                {_L.LOW: "low", _L.MEDIUM: "medium", _L.HIGH: "high"},
-            ),
-        ),
+    grok_models = [
+        ModelSpec("grok-4.5", _grok_efforts),
+        ModelSpec("grok-4.3", _grok_efforts),
+        ModelSpec("grok-4.20", _grok_efforts),
     ]
-    deepseek = Provider(
-        name="deepseek",
+    grok = Provider(
+        name="grok",
         wire_format=WireFormat.OPENAI_CHAT,
-        models=deepseek_models,
+        models=grok_models,
         transport_factory=openai_chat.make_factory(
-            base_url=_DEEPSEEK_BASE_URL,
-            credential_ref="DEEPSEEK_API_KEY",
-            thinking_lookup=_thinking_lookup(
-                deepseek_models, ThinkingProfile.omitted()
-            ),
+            base_url=_GROK_BASE_URL,
+            credential_ref="XAI_API_KEY",
+            thinking_lookup=_thinking_lookup(grok_models, ThinkingProfile.omitted()),
         ),
     )
 
-    ollama_models = [ModelSpec("qwen3:32b", ThinkingProfile.flag("think"))]
+    # Kimi thinking is ON by default: any level -> {"type": "enabled"} and
+    # "off" -> {"type": "disabled"}.  The KimiChatAdapter adds the opt-in
+    # server-side $web_search echo protocol (params.web_search = true).
+    _kimi_toggle = ThinkingProfile.toggle("thinking")
+    kimi_models = [
+        ModelSpec("kimi-k2.6", _kimi_toggle),
+        ModelSpec("kimi-k2.5", _kimi_toggle),
+    ]
+    kimi = Provider(
+        name="kimi",
+        wire_format=WireFormat.OPENAI_CHAT,
+        models=kimi_models,
+        transport_factory=kimi_chat.make_factory(
+            base_url=os.environ.get(KIMI_BASE_URL_ENV_VAR)
+            or kimi_chat.DEFAULT_BASE_URL,
+            credential_ref="MOONSHOT_API_KEY",
+            thinking_lookup=_thinking_lookup(kimi_models, ThinkingProfile.omitted()),
+        ),
+    )
+
+    ollama_models = [
+        ModelSpec("qwen3:32b", ThinkingProfile.flag("think")),
+        ModelSpec("qwen3.5", ThinkingProfile.flag("think")),
+        ModelSpec("deepseek-r1:14b", ThinkingProfile.flag("think")),
+        ModelSpec("llama3.1:8b", ThinkingProfile.omitted()),
+        ModelSpec("gemma4", ThinkingProfile.omitted()),
+    ]
     ollama = Provider(
         name="ollama",
         wire_format=WireFormat.OPENAI_COMPATIBLE,
@@ -430,7 +493,7 @@ def _builtin_providers() -> tuple[Provider, ...]:
             thinking_lookup=_thinking_lookup(ollama_models, ThinkingProfile.omitted()),
         ),
     )
-    return (openai, anthropic, google, xai, deepseek, ollama)
+    return (openai, anthropic, google, grok, kimi, ollama)
 
 
 def build_default_registry() -> ProviderRegistry:
@@ -477,6 +540,7 @@ def resolve_binding_thinking(
 
 
 __all__ = [
+    "KIMI_BASE_URL_ENV_VAR",
     "ModelSpec",
     "Provider",
     "ProviderRegistry",

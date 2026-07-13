@@ -79,8 +79,10 @@ _BUILTIN_LANES = (
     ("anthropic", "api_key"),
     ("anthropic", "subscription"),
     ("google", "api_key"),
-    ("xai", "api_key"),
-    ("deepseek", "api_key"),
+    # A ("grok", "subscription") row lands with the SuperGrok lane work; keep
+    # grok's rows contiguous here so that addition is a one-line diff.
+    ("grok", "api_key"),
+    ("kimi", "api_key"),
     ("ollama", "local"),
 )
 

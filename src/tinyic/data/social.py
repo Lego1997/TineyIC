@@ -38,7 +38,7 @@ def fetch_social_sentiment(
         )
 
         response = client.responses.create(
-            model="grok-4-1-fast-non-reasoning",
+            model="grok-4.3",
             input=[
                 {
                     "role": "user",
