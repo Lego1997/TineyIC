@@ -14,13 +14,17 @@ and draws the result across four panes (FR-5.1):
   chips and live cognitive-state badges (mood / attention / goal).
 
 **One code path for replay and live.** Every event — whether read from a recorded
-log (replay) or, in a later milestone, pulled off a ``queue.Queue`` fed by the
-running engine (live) — travels through :meth:`TownHallApp._apply` →
-``state.dispatch`` → :meth:`TownHallApp._sync`. Replay simply enqueues the
-recorded events into ``self._pending`` and a batched timer drains them
-progressively (FR-5.5: batched ~30 ms UI updates, never a single dump). A live
-producer would call :meth:`TownHallApp.feed` (via ``call_from_thread``) to push
-onto the same queue, and the same pump renders it.
+log (:meth:`TownHallApp.replay`) or pulled off a ``queue.Queue`` a running debate
+feeds (:meth:`TownHallApp.live`) — travels through :meth:`TownHallApp.feed` →
+``state.dispatch`` → :meth:`TownHallApp._sync`. Replay pre-loads the recorded
+events into ``self._pending``; live drains an :class:`~tinyic.tui.live.EventQueueSource`
+onto the *same* ``_pending`` each pump tick. A batched timer then folds
+``_pending`` progressively (FR-5.5: batched ~30 ms UI updates, never a single
+dump). Live applies **no timing compression** — events render as they arrive —
+and the header shows a live "debating…" status until a terminal event
+(``debate_completed`` / ``debate_error``) flips it to complete/error. The
+producer is any thread that ``put``s parsed events on the queue; the renderer
+never imports or touches the engine.
 
 **Interaction (FR-5.2/5.3/5.4).** A bottom composer bar is always visible with a
 mode chip (``Steer`` / ``Queue``, toggled by ``tab``); submitting a line pushes a
@@ -46,6 +50,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.text import Text
 from textual import events
@@ -55,6 +60,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Footer, Input, Static
 
 from .events import Event, is_replayable, read_events
+from .live import EventQueueSource
 from .state import TownHallState, TurnState
 from .steering import ReplaySink, SteeringSink, parse_steering_input
 from .widgets import (
@@ -66,10 +72,14 @@ from .widgets import (
     TurnCard,
 )
 
+if TYPE_CHECKING:
+    import queue
+
 __all__ = [
     "TownHallApp",
     "QuitConfirmScreen",
     "run_replay",
+    "run_live",
     "summarize_event",
     "format_event_line",
     "TRANSCRIPT_CAP",
@@ -351,6 +361,7 @@ class TownHallApp(App):
         log_path: str | Path | None = None,
         *,
         events: list[Event] | None = None,
+        live_queue: "queue.Queue | None" = None,
         batch_size: int = 6,
         tick: float = 0.03,
         auto_replay: bool = True,
@@ -358,8 +369,19 @@ class TownHallApp(App):
     ) -> None:
         super().__init__()
         self.log_path = Path(log_path) if log_path is not None else None
-        if events is not None:
-            self.events: list[Event] = list(events)
+
+        # Mode: **live** is fed by a thread-safe ``queue.Queue`` as events are
+        # produced; **replay** pre-loads a recorded log. Both fold through the
+        # identical ``feed`` → ``dispatch`` → ``_sync`` pump — the only difference
+        # is where events come from and when the stream is considered exhausted.
+        self.live_mode = live_queue is not None
+        self._source: EventQueueSource | None = (
+            EventQueueSource(live_queue) if live_queue is not None else None  # type: ignore[arg-type]
+        )
+        if self.live_mode:
+            self.events: list[Event] = []  # nothing pre-loaded; events stream in
+        elif events is not None:
+            self.events = list(events)
         elif self.log_path is not None:
             self.events = read_events(self.log_path)
         else:
@@ -371,9 +393,9 @@ class TownHallApp(App):
         self.tick = tick
         self.auto_replay = auto_replay
 
-        # The single shared pipeline: events land in ``_pending`` (from replay
-        # now, or a live producer via ``feed``), the pump folds them into
-        # ``state`` and re-syncs the panes.
+        # The single shared pipeline: events land in ``_pending`` (pre-loaded
+        # from replay, or polled off the live source via ``feed``), the pump folds
+        # them into ``state`` and re-syncs the panes.
         self.state = TownHallState()
         self._pending: deque[Event] = deque(self.events)
 
@@ -405,6 +427,24 @@ class TownHallApp(App):
         self._timer = None
         self._replay_complete: asyncio.Event | None = None
 
+    # -- constructors ------------------------------------------------------ #
+
+    @classmethod
+    def replay(cls, log_path: str | Path, **kwargs) -> "TownHallApp":
+        """An app that replays a recorded event log (zero LLM calls)."""
+        return cls(log_path, **kwargs)
+
+    @classmethod
+    def live(cls, event_queue: "queue.Queue", **kwargs) -> "TownHallApp":
+        """An app fed live by a thread-safe queue of parsed :class:`Event`\\ s.
+
+        ``event_queue`` is a ``queue.Queue`` any producer thread ``put``s events
+        onto (e.g. :func:`~tinyic.tui.live.attach_event_log_follower` tailing a
+        running debate's JSONL log). A :data:`~tinyic.tui.live.QUEUE_SENTINEL`
+        (or ``None``) on the queue closes the stream.
+        """
+        return cls(live_queue=event_queue, **kwargs)
+
     # -- composition ------------------------------------------------------- #
 
     def compose(self) -> ComposeResult:
@@ -422,6 +462,18 @@ class TownHallApp(App):
     def on_mount(self) -> None:
         self.sub_title = self._log_label()
         self._replay_complete = asyncio.Event()
+
+        if self.live_mode:
+            # Live: no pre-loaded log. The header shows a running "debating…"
+            # status (set once here, like ``truncated``) until a terminal event
+            # flips ``finished``. Start the pump so it polls the queue as the
+            # producer fills it — even before the first event arrives.
+            self.state.live = True
+            self._sync_controls()
+            if self.auto_replay:
+                self._timer = self.set_interval(self.tick, self._pump)
+            return
+
         # A recorded log is "truncated" (a mid-debate crash) when it never reaches
         # a terminal event. Derived purely from the parsed event stream so the
         # header can surface an explicit incomplete indicator without importing any
@@ -442,25 +494,57 @@ class TownHallApp(App):
     def feed(self, event: Event) -> None:
         """Enqueue one event for rendering.
 
-        Replay pre-loads the whole recorded log; a future live session would call
-        this (through ``call_from_thread``) for each event the engine emits. Both
-        drain through the same pump, so replay and live share one code path.
+        The single entry point onto the shared pump queue. Replay pre-loads the
+        whole recorded log; live polls its :class:`~tinyic.tui.live.EventQueueSource`
+        each tick and calls this for every event the producer queued. Both drain
+        through the same pump, so replay and live share one code path.
         """
         self._pending.append(event)
         if self.auto_replay and self._timer is None and self.is_running:
             self._timer = self.set_interval(self.tick, self._pump)
 
+    def _poll_source(self) -> int:
+        """Move every currently-available live event onto ``_pending`` (non-blocking).
+
+        Live mode's only extra step: the producer thread fills the queue; each
+        pump tick we drain whatever is there onto ``_pending`` through the same
+        ``feed`` seam replay uses, then fold it. A no-op for replay (no source).
+        Runs even while parked at a phase banner so events buffer in ``_pending``
+        rather than backing up in the external queue.
+        """
+        if self._source is None:
+            return 0
+        count = 0
+        for event in self._source.drain():
+            self.feed(event)
+            count += 1
+        return count
+
+    def _source_exhausted(self) -> bool:
+        """True when no more events will ever arrive.
+
+        Replay is finite (pre-loaded). A live source is exhausted once its stream
+        closes (a :data:`~tinyic.tui.live.QUEUE_SENTINEL`) or a terminal debate
+        event has been folded — so the pump keeps polling an open live queue even
+        when ``_pending`` momentarily empties, instead of stopping between events.
+        """
+        if self._source is None:
+            return True
+        return self._source.closed or self.state.finished
+
     def _pump(self) -> None:
-        """Timer tick: fold one batch of pending events, then re-sync the panes.
+        """Timer tick: pull any live events, fold one batch, then re-sync the panes.
 
         Respects the phase gate: while parked at a phase banner (paused mode) the
-        tick is a no-op until ``n`` or a resume clears the hold.
+        fold is a no-op until ``n`` or a resume clears the hold — but the live
+        source is still drained onto ``_pending`` so nothing is lost.
         """
+        self._poll_source()
         if self._holding:
             return
         self._drain_gated()
         self._sync()
-        if not self._pending and not self._holding:
+        if not self._pending and not self._holding and self._source_exhausted():
             self._stop_replay()
 
     def _drain_gated(self) -> None:
@@ -508,18 +592,23 @@ class TownHallApp(App):
         return applied
 
     def replay_all_now(self) -> None:
-        """Fold every pending event immediately and sync once (no pacing).
+        """Fold every currently-available event immediately and sync once (no pacing).
 
-        Used by callers/tests that want the final rendered state deterministically
-        without waiting on the batch timer.
+        Used by callers/tests that want the rendered state deterministically
+        without waiting on the batch timer. It first drains any live source, so it
+        serves both replay and a manually-fed live queue: it stops the debate only
+        when the source is actually exhausted (all recorded events, a live
+        sentinel, or a terminal event), so a mid-debate live fold stays open.
         """
         if self._timer is not None:
             self._timer.stop()
             self._timer = None
         self._holding = False
+        self._poll_source()
         self._apply_batch(len(self._pending) or 0)
         self._sync()
-        self._stop_replay()
+        if self._source_exhausted():
+            self._stop_replay()
 
     def _stop_replay(self) -> None:
         if self._timer is not None:
@@ -913,6 +1002,8 @@ class TownHallApp(App):
     # -- misc -------------------------------------------------------------- #
 
     def _log_label(self) -> str:
+        if self.live_mode:
+            return "live"
         if self.events:
             debate_id = self.events[0].debate_id
             if debate_id:
@@ -924,4 +1015,14 @@ class TownHallApp(App):
 
 def run_replay(log_path: str | Path) -> None:
     """Launch the TUI to replay a recorded event log (zero LLM calls)."""
-    TownHallApp(log_path).run()
+    TownHallApp.replay(log_path).run()
+
+
+def run_live(event_queue: "queue.Queue") -> None:
+    """Launch the TUI to render a live debate fed off ``event_queue``.
+
+    The producer (e.g. :func:`~tinyic.tui.live.attach_event_log_follower`) fills
+    the queue on another thread; the app drains and renders it. Blocks until the
+    stream closes and the user quits.
+    """
+    TownHallApp.live(event_queue).run()

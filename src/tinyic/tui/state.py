@@ -205,6 +205,11 @@ class TownHallState:
         # whole parsed log (see ``TownHallApp.on_mount``) so the header can show
         # an explicit "incomplete" indicator for a truncated replay.
         self.truncated: bool = False
+        # Mode flag: this view is fed by a live event queue rather than a recorded
+        # log. Like ``truncated`` it is a renderer-level fact the app sets once
+        # (not folded per-event), so the header can show a live "debating…" status
+        # until ``finished`` flips it to complete/error.
+        self.live: bool = False
         self.duration_s: float | None = None
 
         # Data package

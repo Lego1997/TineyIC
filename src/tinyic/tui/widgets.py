@@ -103,6 +103,10 @@ class StatusHeader(Static):
         if st.finished:
             line1.append("   ✓ complete" if not st.errored else "   ✗ error",
                          style="green" if not st.errored else "red")
+        elif st.live:
+            # A live feed shows a running status until a terminal event lands;
+            # this is the live counterpart of the truncated-log indicator.
+            line1.append("   ◉ debating…", style="bold cyan")
         elif st.truncated:
             line1.append("   ⚠ incomplete (truncated log)", style="bold yellow")
 
