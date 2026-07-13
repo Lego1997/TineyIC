@@ -433,7 +433,15 @@ def run_debate_command(
     stdin = stdin if stdin is not None else sys.stdin
 
     try:
-        persona_names = resolve_personas(personas)
+        # Resolving a ``--personas`` spec imports the persona registry, which
+        # pulls TinyTroupe and prints its one-time import banner + config dump.
+        # That happens *before* the engine run's own STDOUT->STDERR redirect, so
+        # without this guard ``--headless --json --personas ...`` would leak the
+        # banner onto STDOUT and break the machine channel (FR-6.2). Redirect the
+        # resolution's STDOUT to STDERR too; the default committee needs no import
+        # and is unaffected. STDERR stays the human channel for any banner.
+        with contextlib.redirect_stdout(err):
+            persona_names = resolve_personas(personas)
     except PersonaSelectionError as exc:
         _progress(err, f"tinyic: {exc}")
         return 3
