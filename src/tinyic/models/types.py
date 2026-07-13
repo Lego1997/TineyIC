@@ -87,10 +87,39 @@ class Usage:
     input_tokens: int = 0
     output_tokens: int = 0
     cached_tokens: int = 0
+    auth_profile: str | None = None
+    lane: str = "api_key"
 
     @property
     def total_tokens(self) -> int:
         return self.input_tokens + self.output_tokens
+
+
+@dataclass(frozen=True)
+class UsageWindow:
+    """A subscription lane's local rolling-window message estimate.
+
+    The count intentionally measures TinyIC-completed messages only. Providers
+    share subscription pools with other tools, so this is an estimate rather
+    than an authoritative quota reading (FR-1.5/FR-2.1).
+    """
+
+    auth_profile: str
+    window_used_msgs: int
+    window_estimate_msgs: int
+    resets_at: str | None = None
+    lane: str = "subscription"
+
+    def as_payload(self) -> dict[str, str | int]:
+        payload: dict[str, str | int] = {
+            "auth_profile": self.auth_profile,
+            "lane": self.lane,
+            "window_used_msgs": self.window_used_msgs,
+            "window_estimate_msgs": self.window_estimate_msgs,
+        }
+        if self.resets_at is not None:
+            payload["resets_at"] = self.resets_at
+        return payload
 
 
 @dataclass(frozen=True)
@@ -124,7 +153,7 @@ class FinalMessage:
 
 # A transport yields a stream of these; non-streaming calls yield a single
 # ``FinalMessage`` (optionally preceded by one ``Usage``).
-ChatStreamEvent = TextDelta | ReasoningDelta | Usage | FinalMessage
+ChatStreamEvent = TextDelta | ReasoningDelta | Usage | UsageWindow | FinalMessage
 
 
 @runtime_checkable
@@ -200,6 +229,27 @@ class RateLimitError(ProviderError):
     kind: ClassVar[ErrorKind] = ErrorKind.RATE_LIMIT
 
 
+class UsageLimitError(RateLimitError):
+    """A subscription/profile quota block eligible for auth-order rotation."""
+
+    reason_code = "usage_limited"
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        partial_output: bool = False,
+        retry_after: float | None = None,
+        provider: str | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            retry_after=retry_after,
+            provider=provider,
+        )
+        self.partial_output = bool(partial_output)
+
+
 class TransientError(ProviderError):
     """Transient server/network fault — retryable with backoff."""
 
@@ -230,11 +280,13 @@ __all__ = [
     "TextDelta",
     "Transport",
     "Usage",
+    "UsageWindow",
     "WireFormat",
     "AuthError",
     "InvalidRequestError",
     "ProviderError",
     "RateLimitError",
+    "UsageLimitError",
     "TransientError",
     "is_retryable",
 ]

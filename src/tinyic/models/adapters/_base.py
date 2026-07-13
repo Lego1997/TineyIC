@@ -44,6 +44,7 @@ from ..types import (
     RateLimitError,
     TransientError,
     Usage,
+    UsageLimitError,
     WireFormat,
 )
 from ._http import (
@@ -67,6 +68,16 @@ _KIND_TO_EXCEPTION: dict[ErrorKind, type[ProviderError]] = {
     ErrorKind.TRANSIENT: TransientError,
     ErrorKind.INVALID_REQUEST: InvalidRequestError,
 }
+
+_USAGE_LIMIT_CODES = frozenset(
+    {
+        "insufficient_quota",
+        "billing_hard_limit_reached",
+        "usage_limit_reached",
+        "quota_exceeded",
+        "credit_balance_too_low",
+    }
+)
 
 
 class BaseHttpAdapter:
@@ -232,6 +243,11 @@ class BaseHttpAdapter:
                     return response
                 error = self._classify_http_error(response)
 
+            # An account/profile quota cannot recover by retrying the same
+            # credential. Surface it immediately so the M3 auth-order wrapper
+            # can select the next profile before any output is produced.
+            if isinstance(error, UsageLimitError):
+                raise error
             if error.retryable and attempt < self._retry.max_retries:
                 self._sleep(
                     compute_backoff(attempt, self._retry, error.retry_after)
@@ -254,7 +270,12 @@ class BaseHttpAdapter:
             body_text = ""
         finally:
             response.close()
-        error = _KIND_TO_EXCEPTION[kind](
+        exception_type: type[ProviderError]
+        if self._is_usage_limit_response(body_text):
+            exception_type = UsageLimitError
+        else:
+            exception_type = _KIND_TO_EXCEPTION[kind]
+        error = exception_type(
             self._error_message(status, body_text),
             retry_after=retry_after,
             provider=self._provider_name,
@@ -262,6 +283,28 @@ class BaseHttpAdapter:
         # Attach the raw body so a graceful-degradation hook can inspect it.
         error.response_body = body_text  # type: ignore[attr-defined]
         return error
+
+    @staticmethod
+    def _is_usage_limit_response(body_text: str) -> bool:
+        """Recognize structured account-quota codes, never free-form prose."""
+
+        try:
+            data = json.loads(body_text)
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(data, Mapping):
+            return False
+        error = data.get("error", data)
+        if not isinstance(error, Mapping):
+            return False
+        for field in ("code", "type", "reason"):
+            value = error.get(field)
+            if not isinstance(value, str):
+                continue
+            normalized = value.strip().lower().replace("-", "_")
+            if normalized in _USAGE_LIMIT_CODES:
+                return True
+        return False
 
     def _error_message(self, status: int, body_text: str) -> str:
         detail = self._extract_error_detail(body_text)

@@ -1,12 +1,11 @@
 """The credential seam between the model layer and auth (M3).
 
-M2 designs the seam only: a transport is handed an opaque
+Every transport is handed an opaque
 ``CredentialProvider`` callable that turns a credential *reference* into a
-secret string (or ``None`` when absent).  For now the sole implementation is an
-environment-variable lookup.  M3 (FR-2.x) replaces it with the profile store —
-keyring / ``0600`` file, ordered ``auth_order`` fallback, and the subscription
-runtimes — **without changing this call signature**, so nothing downstream of
-the seam has to change.
+secret string (or ``None`` when absent). M3's default implementation is
+``tinyic.auth.AuthManager``: keyring/``0600`` profiles, ordered ``auth_order``
+fallback, and official subscription runtimes behind the unchanged call
+signature. ``EnvCredentialProvider`` remains a compatibility/test utility.
 
 Secrets resolved here must never be placed into events, logs, or exports.
 """
@@ -22,9 +21,9 @@ from typing import Protocol, runtime_checkable
 class CredentialProvider(Protocol):
     """Resolve a credential reference to a secret, or ``None`` if unavailable.
 
-    ``ref`` is an opaque provider/adapter-defined key.  Today it is an
-    environment-variable name (``"OPENAI_API_KEY"``); M3 will resolve richer
-    references such as ``"openai:work"`` behind the same signature.
+    ``ref`` is an opaque provider/adapter-defined key: an adapter may request
+    its historical environment name (``"OPENAI_API_KEY"``), while the auth
+    manager resolves the already-selected named profile behind this seam.
     """
 
     def __call__(self, ref: str) -> str | None: ...

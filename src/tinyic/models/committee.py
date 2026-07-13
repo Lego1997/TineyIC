@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 
 from .binding import ModelBinding
 from .binding_client import BindingClient, build_transport
-from .credentials import CredentialProvider, EnvCredentialProvider
+from .credentials import CredentialProvider
 from .presets import Preset, validate_preset_thinking
 from .types import Transport
 
@@ -66,6 +66,7 @@ class Committee:
         """
         totals = {field: 0 for field in _COUNTER_FIELDS}
         by_model: dict[str, dict[str, int]] = {}
+        billable_by_model: dict[str, dict[str, int]] = {}
         for client in self._all_clients():
             stats = client.get_cost_stats()
             for field in _COUNTER_FIELDS:
@@ -77,9 +78,26 @@ class Committee:
                 )
                 for field in _COUNTER_FIELDS:
                     bucket[field] += int(per_model.get(field, 0))
+            billable_getter = getattr(client, "get_billable_cost_stats", None)
+            billable_stats = (
+                billable_getter() if callable(billable_getter) else stats
+            )
+            for model_ref, per_model in (
+                billable_stats.get("by_model") or {}
+            ).items():
+                bucket = billable_by_model.setdefault(
+                    model_ref, {field: 0 for field in _COUNTER_FIELDS}
+                )
+                for field in _COUNTER_FIELDS:
+                    bucket[field] += int(per_model.get(field, 0))
         result: dict = dict(totals)
         if by_model:
             result["by_model"] = by_model
+        # Keep plan-metered subscription tokens in ``by_model`` for usage
+        # observability, but price only the API-key subset.  The explicit empty
+        # mapping is meaningful: it says the debate made calls, but none were
+        # billable at Platform token rates.
+        result["billable_by_model"] = billable_by_model
         return result
 
 
@@ -107,7 +125,17 @@ def build_committee(
     override pass ``False`` to keep runtime remap semantics (the config was
     already validated at load; the override is remapped per call by the adapter).
     """
-    creds = credentials if credentials is not None else EnvCredentialProvider()
+    if credentials is None:
+        # Lazy import avoids the auth.manager -> models package initialization
+        # cycle while making named profiles the production default.  Build
+        # from config so the Anthropic legal/policy guard also applies to
+        # callers that construct a committee directly instead of using
+        # ``run_debate``.
+        from tinyic.auth.manager import AuthManager
+
+        creds: CredentialProvider = AuthManager.from_config()
+    else:
+        creds = credentials
 
     if validate_thinking:
         validate_preset_thinking(preset, registry=registry)

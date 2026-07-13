@@ -14,7 +14,13 @@ from __future__ import annotations
 
 from .action_stream import StreamingActionScanner
 from .binding import ModelBinding, ModelRefError, parse_model_ref
-from .binding_client import BindingClient, DeltaSink, UsageSink, build_transport
+from .binding_client import (
+    BindingClient,
+    DeltaSink,
+    UsageSink,
+    UsageWindowSink,
+    build_transport,
+)
 from .committee import Committee, TransportFactory as CommitteeTransportFactory
 from .committee import build_committee
 from .credentials import (
@@ -75,6 +81,8 @@ from .types import (
     TransientError,
     Transport,
     Usage,
+    UsageLimitError,
+    UsageWindow,
     WireFormat,
     is_retryable,
 )
@@ -103,6 +111,8 @@ __all__ = [
     "TextDelta",
     "Transport",
     "Usage",
+    "UsageLimitError",
+    "UsageWindow",
     "WireFormat",
     # error taxonomy
     "ErrorKind",
@@ -134,6 +144,7 @@ __all__ = [
     "StreamingActionScanner",
     "DeltaSink",
     "UsageSink",
+    "UsageWindowSink",
     "build_transport",
     "activate",
     "active_client",

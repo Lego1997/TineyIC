@@ -68,6 +68,7 @@ DEFAULT_PRESET_NAME = "default"
 #: Environment override for the config file location (else ``./tinyic.toml``).
 CONFIG_ENV_VAR = "TINYIC_CONFIG"
 CONFIG_FILENAME = "tinyic.toml"
+DEFAULT_AUTH_CONFIG = {"anthropic": {"policy_guard": True}}
 
 
 class PresetError(ValueError):
@@ -352,7 +353,7 @@ def _config_path(path: str | Path | None) -> Path | None:
 
 
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
-    """Parse a ``tinyic.toml`` into ``{presets, default_preset}``.
+    """Parse ``tinyic.toml`` into ``{presets, default_preset, auth}``.
 
     A missing file yields the built-in ``default`` preset only, so the model
     layer works before a user writes any config.
@@ -362,11 +363,27 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
         return {
             "presets": {DEFAULT_PRESET_NAME: builtin_default_preset()},
             "default_preset": DEFAULT_PRESET_NAME,
+            "auth": {
+                provider: dict(settings)
+                for provider, settings in DEFAULT_AUTH_CONFIG.items()
+            },
         }
     if not resolved.is_file():
         raise PresetError(f"config file not found: {resolved}")
     with resolved.open("rb") as stream:
         raw = tomllib.load(stream)
+    auth_table = raw.get("auth", {})
+    if not isinstance(auth_table, Mapping):
+        raise PresetError(f"{resolved} [auth] must be a table")
+    anthropic_table = auth_table.get("anthropic", {})
+    if not isinstance(anthropic_table, Mapping):
+        raise PresetError(f"{resolved} [auth.anthropic] must be a table")
+    policy_guard = anthropic_table.get("policy_guard", True)
+    if not isinstance(policy_guard, bool):
+        raise PresetError(
+            f"{resolved} auth.anthropic.policy_guard must be a boolean"
+        )
+    auth = {"anthropic": {"policy_guard": policy_guard}}
     presets_table = raw.get("presets", {})
     if not isinstance(presets_table, Mapping) or not presets_table:
         raise PresetError(f"{resolved} defines no [presets.*] tables")
@@ -379,7 +396,11 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
         raise PresetError(
             f"default_preset {default_preset!r} is not a defined preset in {resolved}"
         )
-    return {"presets": presets, "default_preset": str(default_preset)}
+    return {
+        "presets": presets,
+        "default_preset": str(default_preset),
+        "auth": auth,
+    }
 
 
 def load_preset(name: str | None = None, path: str | Path | None = None) -> Preset:
@@ -409,6 +430,7 @@ __all__ = [
     "BindingSpec",
     "CONFIG_ENV_VAR",
     "CONFIG_FILENAME",
+    "DEFAULT_AUTH_CONFIG",
     "DEFAULT_PRESET_NAME",
     "Preset",
     "PresetError",

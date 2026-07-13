@@ -24,6 +24,12 @@
 
 default_preset = "default"
 
+# Legal/policy kill switch for the official Claude Code subscription runtime.
+# False skips that lane before token inspection/process startup; a later
+# Anthropic API-key profile in auth_order remains available as overflow.
+[auth.anthropic]
+policy_guard = true
+
 # One strong model for the whole committee — the recommended starting point.
 [presets.default]
 model = "openai/gpt-5.2"
