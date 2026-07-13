@@ -163,10 +163,16 @@ async def test_live_sentinel_closes_stream_without_terminal():
         assert app._source.closed is True
         assert app._source_exhausted() is True
         assert app._replay_running is False
-        # No terminal event ever arrived, so the debate is not "finished": the
-        # header honestly still reads "debating…" rather than a false "complete".
+        # No terminal event ever arrived, so the debate is not "finished" — and
+        # a closed stream is a *dead* one: the header drops the live "debating…"
+        # pulse for the honest incomplete indicator (never a false "complete"),
+        # and every in-flight cue settles (see test_tui_motion).
         assert app.state.finished is False
-        assert "debating" in _header(app)
+        assert app.state.truncated is True
+        header = _header(app)
+        assert "complete" not in header.replace("incomplete", "")
+        assert "debating" not in header
+        assert "incomplete" in header
 
 
 # --------------------------------------------------------------------------- #

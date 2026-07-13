@@ -66,6 +66,7 @@ git clone https://github.com/Lego1997/TineyIC.git
 cd TineyIC
 
 uv sync            # installs both workspace packages (tinyic + the vendored tinytroupe)
+uv sync --extra cn # optional: China A-share / HK market data via akshare (heavy, opt-in)
 
 tinyic onboard     # interactive wizard: detect access, pick a lane, verify, persist
 tinyic debate AAPL # convene the committee — opens the live Town Hall TUI
@@ -104,6 +105,21 @@ tinyic debate "Costco" --preset heterogeneous --thinking high
 
 A Textual full-screen town hall: watch each persona stream its speech and
 reasoning in real time, expand any THINK block, and steer from the composer.
+
+**The Town Hall.** Terminal-grade data where the numbers live, theater where
+the personas live. The header is a ticker strip — identity, live elapsed /
+token / cost meters, a four-phase stepper — and phases open as centered act
+headers (`ACT II · CROSS-EXAMINATION`, devil's advocate credited). The
+committee bench renders each investor as a medallion card (a two-letter
+monogram on the persona's own color) with their model binding and live
+attention; the current speaker is spotlit in their color while the idle bench
+mutes, and a streaming THINK breathes a soft glyph pulse. Turn cards wear
+their speaker's color and render finished speech as markdown; the verdict
+lands as a real scorecard table inside a double-rule frame, followed by a
+per-model usage rollup. Two registered themes (`tinyic-dark` / `tinyic-light`)
+cover dark and light terminals — `d` cycles them in the town hall and the
+onboarding wizard alike — and a replayed log renders identically to the live
+run that produced it.
 
 <!-- Screenshots coming soon. -->
 > _Screenshots and a recorded demo are coming soon._

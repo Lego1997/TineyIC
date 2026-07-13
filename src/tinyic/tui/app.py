@@ -40,9 +40,10 @@ a :class:`~tinyic.tui.steering.ReplaySink` echoes it into the transcript as a
 skips to the next turn boundary; live records an interrupt request M6 wires to
 the engine) · ``t`` toggle thinking on the selected turn · ``T`` toggle
 all · ``m`` cycle the persona mind view · ``space`` pause/resume auto-advance ·
-``n`` next phase when paused · ``PageUp`` load older transcript cards · ``q``
-quit (confirmed while a debate is still running). Auto-advance is the default;
-paused mode holds at each phase banner until ``n``.
+``n`` next phase when paused · ``PageUp`` load older transcript cards · ``d``
+cycle the registered tinyic-dark/tinyic-light theme · ``q`` quit (confirmed
+while a debate is still running). Auto-advance is the default; paused mode
+holds at each phase banner until ``n``.
 
 **Virtualization (FR-5.5).** ``TownHallState`` keeps every turn, but the widget
 layer mounts only the newest ``TRANSCRIPT_CAP`` transcript cards; older ones are
@@ -65,6 +66,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Input, Static
 
+from . import theme
 from .events import Event, is_replayable, read_events
 from .live import EventQueueSource
 from .state import TownHallState, TurnState
@@ -81,9 +83,11 @@ from .widgets import (
     ArtifactCard,
     PersonaCard,
     PhaseBanner,
+    ScorecardTable,
     StatusHeader,
     SteeringNote,
     TurnCard,
+    UsageTable,
 )
 
 if TYPE_CHECKING:
@@ -285,23 +289,24 @@ class TownHallApp(App):
 
     #empty-note { padding: 1 2; color: $text-muted; }
 
+    /* Act headers (Stage-3): all styling lives in the Rich render (rule +
+       centered letter-spaced title via the theme seam); CSS keeps spacing. */
     .phase-banner {
         padding: 1 0 0 0;
-        color: $accent;
-        text-style: bold;
     }
-    .phase-banner.completed { color: $success; }
 
+    /* Turn cards: the left border wears the speaker's color, set inline by
+       TurnCard.sync (persona hues can't be CSS tokens). The rules below are
+       the pre-sync fallback and the state *backgrounds*; the selected /
+       interrupted border colors are also enforced inline. */
     .turn-card {
         height: auto;
         margin: 1 0 0 0;
         padding: 0 1;
         border-left: thick $panel-lighten-2;
     }
-    .turn-card.completed { border-left: thick $accent; }
     .turn-card.interrupted { border-left: thick $error; }
     .turn-card.selected { border-left: thick $warning; background: $boost; }
-    .turn-card.thinking-live { border-left: thick $warning; }
     .turn-head { text-style: bold; }
     .turn-speech { padding: 0 0 0 2; }
     .turn-think { padding: 0 0 0 2; }
@@ -333,8 +338,28 @@ class TownHallApp(App):
         padding: 0 1;
         border: round $panel-lighten-2;
     }
-    .artifact-card.kind-scorecard { border: round $success; }
+    /* The verdict reveal (Stage-3): when the scorecard lands it arrives inside
+       a double-rule accent frame — presentation-only, identical in replay. */
+    .artifact-card.kind-scorecard { border: double $accent; }
     .artifact-card.kind-debate-error { border: round $error; }
+    .artifact-card.kind-usage-rollup { border: round $accent; }
+    /* Disagreement: literally stance-colored sides — bull left, bear right. */
+    .artifact-card.kind-disagreement {
+        border: round $warning;
+        border-left: thick $success;
+        border-right: thick $error;
+    }
+    /* Collapse check: the border takes the verdict's color. */
+    .artifact-card.kind-collapse-metric.caved {
+        border: round $error;
+        border-left: thick $error;
+    }
+    .artifact-card.kind-collapse-metric.held {
+        border: round $success;
+        border-left: thick $success;
+    }
+    .table-card-summary { height: auto; }
+    .table-card-table { height: auto; }
 
     .older-placeholder {
         height: auto;
@@ -344,13 +369,17 @@ class TownHallApp(App):
         border-bottom: dashed $panel-lighten-2;
     }
 
+    /* The bench (Stage-3): the speaking card's border color is the persona's
+       own hue, set inline by PersonaCard.sync; CSS adds the spotlight boost
+       and mutes the idle bench around it. */
     .persona-card {
         height: auto;
         margin: 1 0 0 0;
         padding: 0 1;
         border: round $panel-lighten-1;
     }
-    .persona-card.speaking { border: round $success; background: $boost; }
+    .persona-card.speaking { background: $boost; }
+    .persona-card.idle { opacity: 65%; }
     .persona-card.mind-expanded { border: round $accent; background: $boost; }
 
     #composer {
@@ -395,6 +424,9 @@ class TownHallApp(App):
         control: ControlSink | None = None,
     ) -> None:
         super().__init__()
+        # Theme (Stage-1): register tinyic-dark/tinyic-light before first paint
+        # and default to dark; `d` cycles (see ``action_toggle_theme``).
+        theme.register(self)
         self.log_path = Path(log_path) if log_path is not None else None
 
         # Mode: **live** is fed by a thread-safe ``queue.Queue`` as events are
@@ -455,7 +487,11 @@ class TownHallApp(App):
             id="composer-input",
         )
         self._persona_widgets: dict[str, PersonaCard] = {}
-        self._item_widgets: dict[str, TurnCard | PhaseBanner | SteeringNote | ArtifactCard] = {}
+        self._item_widgets: dict[
+            str,
+            TurnCard | PhaseBanner | SteeringNote | ArtifactCard
+            | ScorecardTable | UsageTable,
+        ] = {}
         # Transcript virtualization (FR-5.5): only the newest ``_window_size``
         # transcript items stay mounted; ``PageUp`` widens the window and the
         # ``_older_placeholder`` stands in for everything scrolled out above it.
@@ -506,6 +542,9 @@ class TownHallApp(App):
             # flips ``finished``. Start the pump so it polls the queue as the
             # producer fills it — even before the first event arrives.
             self.state.live = True
+            # The header mounted (and synced) before this flag existed; re-sync
+            # so its debating indicator — and its pulse — starts immediately.
+            self._header.sync()
             self._sync_controls()
             if self.auto_replay:
                 self._timer = self.set_interval(self.tick, self._pump)
@@ -651,6 +690,18 @@ class TownHallApp(App):
         if self._timer is not None:
             self._timer.stop()
             self._timer = None
+        # The stream is over. If it died *without* a terminal event — a
+        # truncated replay log, or a live source closed by its sentinel
+        # mid-debate — the fold-side settle never ran: mark the state
+        # incomplete and close its in-flight cues so no speaking spotlight,
+        # bench spinner, live-think block, or header "debating…" pulse
+        # outlives the dead debate. A log with a terminal event never reaches
+        # this branch un-finished, so replay == live is preserved.
+        if self.state.applied_count and not self.state.finished:
+            self.state.live = False
+            self.state.truncated = True
+            self.state.settle()
+            self._sync()
         if self._replay_complete is not None:
             self._replay_complete.set()
 
@@ -668,17 +719,25 @@ class TownHallApp(App):
         self._sync_controls()
 
     def _sync_committee(self) -> None:
-        """Mount/refresh the persona cards and reflect the mind-view expansion."""
+        """Mount/refresh the persona cards and reflect the mind-view expansion.
+
+        Bench muting (Stage-3): while any persona holds the floor, every other
+        card is marked ``idle`` so the spotlight reads at a glance; the moment
+        no one is speaking the whole bench comes back to full weight.
+        """
         committee = self.query_one("#committee", VerticalScroll)
+        any_speaking = any(p.speaking for p in self.state.personas.values())
         new_cards: list[PersonaCard] = []
         for name, pstate in self.state.personas.items():
             card = self._persona_widgets.get(name)
-            if card is None:
+            created = card is None
+            if created:
                 card = PersonaCard(pstate)
                 self._persona_widgets[name] = card
                 new_cards.append(card)
-            else:
-                card.sync()
+            card.idle = any_speaking and not pstate.speaking
+            if not created:
+                card.sync()  # fresh cards sync themselves on mount
         if new_cards:
             committee.mount(*new_cards)
         self._apply_mind_state()
@@ -771,6 +830,12 @@ class TownHallApp(App):
             return TurnCard(item)
         if item.kind == "steering":
             return SteeringNote(item)
+        # Tabular artifacts render as real DataTable cards (Stage-2); a
+        # scorecard with no derivable rows degrades to the generic card.
+        if item.kind == "scorecard" and item.rows:
+            return ScorecardTable(item)
+        if item.kind == "usage_rollup" and item.rows:
+            return UsageTable(item)
         return ArtifactCard(item)
 
     # -- key routing (FR-5.2) --------------------------------------------- #
@@ -813,6 +878,8 @@ class TownHallApp(App):
             self.action_toggle_thinking()
         elif char == "m":
             self.action_cycle_mind()
+        elif char == "d":
+            self.action_toggle_theme()
         elif event.key == "space":
             self.action_toggle_pause()
         elif event.key == "n":
@@ -975,6 +1042,20 @@ class TownHallApp(App):
         if self.is_running:
             self._sync()
 
+    # -- theme (Stage-1: d cycles tinyic-dark / tinyic-light) -------------- #
+
+    def action_toggle_theme(self) -> None:
+        """Cycle between the registered tinyic-dark/tinyic-light themes (``d``).
+
+        CSS ``$tokens`` re-resolve automatically; the explicit ``_sync`` re-runs
+        every mounted widget's ``sync`` so Rich content built through the
+        :mod:`~tinyic.tui.theme` style seam (pills, persona hues, muted labels)
+        is rebuilt for the new variant too.
+        """
+        theme.toggle(self)
+        if self.is_running:
+            self._sync()
+
     # -- phase flow (FR-5.4: space / n) ----------------------------------- #
 
     def action_toggle_pause(self) -> None:
@@ -1021,27 +1102,28 @@ class TownHallApp(App):
         """
         if not self._status_line.is_mounted:
             return
+        dark = theme.is_dark(self)
         mode = self.steer_mode.upper()
         chip = Text()
-        chip.append(
-            f" {mode} ",
-            style="bold black on yellow" if self.steer_mode == "steer" else "bold black on cyan",
-        )
+        chip.append(f" {mode} ", style=theme.pill(self.steer_mode, dark=dark))
         self._mode_chip.update(chip)
 
+        dim = theme.muted(dark=dark)
+        hold_style = f"bold {theme.semantic('warning', dark=dark)}"
+        run_style = f"bold {theme.semantic('success', dark=dark)}"
         status = Text()
         if self._holding:
-            status.append("⏸ holding at phase boundary", style="bold yellow")
-            status.append("  ·  n next phase", style="dim")
+            status.append("⏸ holding at phase boundary", style=hold_style)
+            status.append("  ·  n next phase", style=dim)
         elif self.paused:
-            status.append("⏸ paused", style="bold yellow")
-            status.append("  ·  n next phase", style="dim")
+            status.append("⏸ paused", style=hold_style)
+            status.append("  ·  n next phase", style=dim)
         else:
-            status.append("▶ auto-advance", style="bold green")
+            status.append("▶ auto-advance", style=run_style)
         status.append(
             "     enter compose · tab mode · t/T think · m mind · space pause"
-            " · n next · PgUp older · esc interrupt · q quit",
-            style="dim",
+            " · n next · PgUp older · d theme · esc interrupt · q quit",
+            style=dim,
         )
         self._status_line.update(status)
 

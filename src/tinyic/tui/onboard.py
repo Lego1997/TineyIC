@@ -67,7 +67,7 @@ from enum import Enum
 
 from rich.text import Text
 from textual import events
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Input, Static
 
@@ -80,6 +80,7 @@ from tinyic.auth.manager import (
     AuthResolutionError,
 )
 from tinyic.auth.profiles import AuthLane, AuthProfile, ProfileKind
+from tinyic.tui import theme
 
 __all__ = [
     "OnboardApp",
@@ -206,8 +207,24 @@ REASON_HINTS: dict[str, str] = {
 }
 
 _PROVIDER_ORDER = ("openai", "anthropic", "grok", "google", "kimi", "ollama")
-_STATUS_MARK = {"ok": ("✓", "bold green"), "warning": ("▲", "bold yellow"),
-                "error": ("✗", "bold red")}
+# Lane-status glyphs (the shared vocabulary) + their semantic color kind; the
+# style itself is resolved per theme variant by :func:`status_mark`, so the
+# wizard's marks stay legible on both tinyic-dark and tinyic-light.
+_STATUS_GLYPHS = {"ok": "✓", "warning": "▲", "error": "✗"}
+_STATUS_SEMANTIC = {"ok": "success", "warning": "warning", "error": "error"}
+
+
+def status_mark(status: str, *, dark: bool = True) -> tuple[str, str]:
+    """The wizard's (glyph, style) pair for a lane status, per theme variant.
+
+    Unknown statuses degrade to a muted ``·`` — a forward-compatible probe
+    status still renders as a legible mark.
+    """
+    glyph = _STATUS_GLYPHS.get(status)
+    kind = _STATUS_SEMANTIC.get(status)
+    if glyph is None or kind is None:
+        return "·", theme.muted(dark=dark)
+    return glyph, f"bold {theme.semantic(kind, dark=dark)}"
 
 NEXT_STEP_HINT = "uv run tinyic debate AAPL"
 
@@ -1347,6 +1364,9 @@ class OnboardApp(App):
         threaded_verify: bool = True,
     ) -> None:
         super().__init__()
+        # Theme (Stage-1): same registered tinyic themes and default as the
+        # Town Hall, so onboarding and the debate share one look; `d` cycles.
+        theme.register(self)
         self.controller = controller
         self.threaded_verify = threaded_verify
         self._header = Static(id="onboard-title")
@@ -1374,9 +1394,20 @@ class OnboardApp(App):
     # -- render ----------------------------------------------------------- #
 
     def _clear_key_input(self) -> None:
-        """Wipe the masked key field so a pasted secret can't linger in memory."""
+        """Wipe the masked key field so a pasted secret can't linger in memory.
+
+        Best-effort on the unmount path: when the app is torn down with text
+        still in the field (force-quit mid-paste), the screen stack is already
+        gone and Input's value *watcher* (cursor/selection upkeep) raises
+        ``ScreenStackError``. The reactive value itself is overwritten before
+        watchers run, so the secret is gone either way — swallow only that
+        teardown error, never a live-screen failure.
+        """
         if self._key_input.value:
-            self._key_input.value = ""
+            try:
+                self._key_input.value = ""
+            except ScreenStackError:
+                pass
 
     def _sync(self) -> None:
         self._header.update(self._render_title())
@@ -1394,6 +1425,7 @@ class OnboardApp(App):
         self._status.update(self._render_status())
 
     def _render_title(self) -> Text:
+        dim = theme.muted(dark=theme.is_dark(self))
         text = Text()
         text.append("TinyIC onboarding", style="bold")
         step = {
@@ -1404,7 +1436,7 @@ class OnboardApp(App):
             OnboardScreen.MODEL: "model",
             OnboardScreen.SUMMARY: "summary",
         }[self.controller.screen]
-        text.append(f"   {step}", style="dim")
+        text.append(f"   {step}", style=dim)
         plan = self.controller.current_plan()
         if plan is not None and self.controller.screen in {
             OnboardScreen.CHOOSE,
@@ -1413,7 +1445,7 @@ class OnboardApp(App):
             OnboardScreen.MODEL,
         }:
             position = f"   {self.controller.cursor + 1}/{len(self.controller.plans)}"
-            text.append(position, style="dim")
+            text.append(position, style=dim)
         return text
 
     def render_body(self) -> Text:
@@ -1431,39 +1463,46 @@ class OnboardApp(App):
         return self._render_summary()
 
     def _render_detect(self) -> Text:
+        dark = theme.is_dark(self)
+        dim = theme.muted(dark=dark)
+        warning = theme.semantic("warning", dark=dark)
         text = Text()
         text.append("Detected access\n", style="bold underline")
         text.append(
             "What already works on this machine — env keys, a Codex sign-in, a "
             "Claude Code login, a local Ollama.\n\n",
-            style="dim",
+            style=dim,
         )
         if not self.controller.plans:
-            text.append("No configurable providers were found.\n", style="yellow")
+            text.append("No configurable providers were found.\n", style=warning)
         for plan in self.controller.plans:
             text.append(f"{provider_label(plan.provider)}\n", style="bold")
             for lane in sorted(plan.lanes):
                 text.append_text(self._lane_line(plan.lanes[lane]))
             if plan.outcome == "verified":
-                text.append("   • configured this session ✓\n", style="green")
+                text.append(
+                    "   • configured this session ✓\n",
+                    style=theme.semantic("success", dark=dark),
+                )
         if self.controller.diagnostics:
-            text.append("\nSetup diagnostics\n", style="bold yellow")
+            text.append("\nSetup diagnostics\n", style=f"bold {warning}")
             for diag in self.controller.diagnostics:
                 text.append(
-                    f"   ⚠ {diag.reason_code} — {diag.message}\n", style="yellow"
+                    f"   ⚠ {diag.reason_code} — {diag.message}\n", style=warning
                 )
         text.append("\n")
         text.append_text(self._menu_lines())
         return text
 
     def _lane_line(self, lane: LaneStatus) -> Text:
-        mark, style = _STATUS_MARK.get(lane.status, ("·", "dim"))
+        dark = theme.is_dark(self)
+        mark, style = status_mark(lane.status, dark=dark)
         text = Text()
         text.append(f"   {mark} ", style=style)
-        text.append(f"{lane.lane:<13}", style="cyan")
+        text.append(f"{lane.lane:<13}", style=theme.accent(dark=dark))
         text.append(f"{lane.reason_code}", style=style)
         if lane.auth_profile:
-            text.append(f"  ({lane.auth_profile})", style="dim")
+            text.append(f"  ({lane.auth_profile})", style=theme.muted(dark=dark))
         text.append("\n")
         return text
 
@@ -1474,7 +1513,10 @@ class OnboardApp(App):
             return text
         text.append(f"Configure {provider_label(plan.provider)}\n", style="bold underline")
         if plan.already_ok:
-            text.append("Already working — reconfigure only if you want to.\n", style="green")
+            text.append(
+                "Already working — reconfigure only if you want to.\n",
+                style=theme.semantic("success", dark=theme.is_dark(self)),
+            )
         text.append("\n")
         text.append_text(self._menu_lines())
         text.append_text(self._error_line(plan))
@@ -1497,17 +1539,20 @@ class OnboardApp(App):
         return text
 
     def _render_device(self) -> Text:
+        dark = theme.is_dark(self)
         challenge = self.controller.challenge
         text = Text()
         text.append("Sign in with ChatGPT\n", style="bold underline")
         text.append("\nGo to ", style="none")
         url = getattr(challenge, "verification_url", None) or "(the URL shown by Codex)"
-        text.append(url, style="bold cyan")
+        text.append(url, style=theme.accent(dark=dark))
         text.append("\nand enter the code:\n\n", style="none")
         code = getattr(challenge, "user_code", None) or "…"
-        text.append(f"    {code}\n\n", style="bold green")
-        text.append("Waiting for authorization…  ", style="yellow")
-        text.append("esc to cancel", style="dim")
+        text.append(f"    {code}\n\n", style=f"bold {theme.semantic('success', dark=dark)}")
+        text.append(
+            "Waiting for authorization…  ", style=theme.semantic("warning", dark=dark)
+        )
+        text.append("esc to cancel", style=theme.muted(dark=dark))
         return text
 
     def _render_key(self) -> Text:
@@ -1519,13 +1564,14 @@ class OnboardApp(App):
             f"Enter your {provider_label(plan.provider)} API key\n",
             style="bold underline",
         )
+        dark = theme.is_dark(self)
         text.append(
             "\nInput is hidden and never logged. Press enter to verify with a "
             "one-token live check; esc to cancel.\n",
-            style="dim",
+            style=theme.muted(dark=dark),
         )
         if plan.verifying:
-            text.append("\nVerifying…\n", style="yellow")
+            text.append("\nVerifying…\n", style=theme.semantic("warning", dark=dark))
         text.append_text(self._error_line(plan))
         return text
 
@@ -1538,24 +1584,30 @@ class OnboardApp(App):
             f"Pick a committee default model — {provider_label(plan.provider)}\n",
             style="bold underline",
         )
+        dark = theme.is_dark(self)
+        dim = theme.muted(dark=dark)
         text.append(
             "Writes [presets.default] to your user overlay "
             "(~/.tinyic/tinyic.toml) — the shipped tinyic.toml is never "
             "modified. esc keeps the current default.\n\n",
-            style="dim",
+            style=dim,
         )
         text.append_text(self._menu_lines())
         warning = self.controller.model_warning
         if warning:
             text.append(
                 f"\n▲ Refresh degraded — {warning}: {reason_hint(warning)}\n",
-                style="yellow",
+                style=theme.semantic("warning", dark=dark),
             )
-            text.append("  Showing the static catalog.\n", style="dim")
+            text.append("  Showing the static catalog.\n", style=dim)
         text.append_text(self._error_line(plan))
         return text
 
     def _render_summary(self) -> Text:
+        dark = theme.is_dark(self)
+        dim = theme.muted(dark=dark)
+        accent = theme.accent(dark=dark)
+        success = theme.semantic("success", dark=dark)
         summary = self.controller.summary
         text = Text()
         text.append("Setup summary\n", style="bold underline")
@@ -1564,14 +1616,17 @@ class OnboardApp(App):
         text.append(f"\nResolved committee bindings — preset {summary.preset}\n", style="bold")
         for row in summary.rows:
             text.append(f"  {row.persona:<18}", style="bold")
-            text.append(f"{row.model_ref}", style="cyan")
-            text.append(f"  think {row.thinking}", style="dim")
+            text.append(f"{row.model_ref}", style=accent)
+            text.append(f"  think {row.thinking}", style=dim)
             if row.lane:
-                text.append(f"  · {row.lane}", style="green")
+                text.append(f"  · {row.lane}", style=success)
                 if row.auth_ref:
-                    text.append(f" ({row.auth_ref})", style="dim")
+                    text.append(f" ({row.auth_ref})", style=dim)
             else:
-                text.append(f"  · unresolved: {row.reason}", style="red")
+                text.append(
+                    f"  · unresolved: {row.reason}",
+                    style=theme.semantic("error", dark=dark),
+                )
             text.append("\n")
         if self.controller.plans:
             text.append("\nProviders\n", style="bold")
@@ -1580,84 +1635,109 @@ class OnboardApp(App):
                 outcome = plan.outcome or "untouched"
                 text.append(
                     outcome,
-                    style="green" if plan.outcome == "verified" else "dim",
+                    style=success if plan.outcome == "verified" else dim,
                 )
                 if plan.persisted_lane:
-                    text.append(f" · {plan.persisted_lane}", style="cyan")
+                    text.append(f" · {plan.persisted_lane}", style=accent)
                     if plan.persisted_ref:
-                        text.append(f" ({plan.persisted_ref})", style="dim")
+                        text.append(f" ({plan.persisted_ref})", style=dim)
                 text.append(
                     f" · model {plan.chosen_model}" if plan.chosen_model
                     else " · model unchanged",
-                    style="cyan" if plan.chosen_model else "dim",
+                    style=accent if plan.chosen_model else dim,
                 )
                 text.append("\n")
         if summary.default_model:
             text.append("\nCommittee default model: ", style="bold")
-            text.append(f"{summary.default_model}\n", style="cyan")
+            text.append(f"{summary.default_model}\n", style=accent)
         text.append(
             f"\nCredentials stored in: {summary.backend}\n", style="bold"
         )
-        text.append("Next: ", style="dim")
-        text.append(NEXT_STEP_HINT, style="bold green")
+        text.append("Next: ", style=dim)
+        text.append(NEXT_STEP_HINT, style=f"bold {success}")
         text.append("\n\n")
         text.append_text(self._menu_lines())
         return text
 
     def _menu_lines(self) -> Text:
+        dark = theme.is_dark(self)
+        dim = theme.muted(dark=dark)
         text = Text()
         choices = self.controller.choices()
         highlight = self.controller.highlight
         for index, choice in enumerate(choices):
             selected = index == highlight
             marker = "▶ " if selected else "  "
-            style = "bold" if choice.enabled else "dim strike"
+            style = "bold" if choice.enabled else f"{dim} strike"
             if selected and choice.enabled:
                 style = "bold reverse"
             text.append(f"{marker}{choice.label}\n", style=style)
             if selected:
                 if choice.detail:
-                    text.append(f"    {choice.detail}\n", style="dim")
+                    text.append(f"    {choice.detail}\n", style=dim)
                 if choice.note:
-                    text.append(f"    {choice.note}\n", style="italic yellow")
+                    text.append(
+                        f"    {choice.note}\n",
+                        style=f"italic {theme.semantic('warning', dark=dark)}",
+                    )
                 if not choice.enabled and choice.disabled_reason:
-                    text.append(f"    {choice.disabled_reason}\n", style="red")
+                    text.append(
+                        f"    {choice.disabled_reason}\n",
+                        style=theme.semantic("error", dark=dark),
+                    )
         return text
 
     def _error_line(self, plan: ProviderPlan) -> Text:
+        dark = theme.is_dark(self)
         text = Text()
         if plan.verifying:
-            text.append("\nVerifying…  (one-token live check)\n", style="yellow")
+            text.append(
+                "\nVerifying…  (one-token live check)\n",
+                style=theme.semantic("warning", dark=dark),
+            )
         elif plan.error:
             text.append(
                 f"\n✗ Not saved — {plan.error}: {reason_hint(plan.error)}\n",
-                style="red",
+                style=theme.semantic("error", dark=dark),
             )
-            text.append("  Nothing was overwritten. Try again or pick another lane.\n", style="dim")
+            text.append(
+                "  Nothing was overwritten. Try again or pick another lane.\n",
+                style=theme.muted(dark=dark),
+            )
         return text
 
     def _render_status(self) -> Text:
+        dark = theme.is_dark(self)
+        dim = theme.muted(dark=dark)
         screen = self.controller.screen
         text = Text()
         if screen is OnboardScreen.CONNECT_KEY:
             text.append("type key (hidden)", style="bold")
-            text.append("  ·  enter verify · esc cancel", style="dim")
+            text.append("  ·  enter verify · esc cancel", style=dim)
             return text
         if screen is OnboardScreen.CONNECT_SUB and self.controller.sub_stage == "device_wait":
-            text.append("waiting for authorization…", style="bold yellow")
-            text.append("  ·  esc cancel", style="dim")
+            text.append(
+                "waiting for authorization…",
+                style=f"bold {theme.semantic('warning', dark=dark)}",
+            )
+            text.append("  ·  esc cancel", style=dim)
             return text
         text.append("↑↓ move", style="bold")
         if screen is OnboardScreen.DETECT:
-            text.append("  ·  enter begin · q quit", style="dim")
+            text.append("  ·  enter begin · d theme · q quit", style=dim)
         elif screen is OnboardScreen.MODEL:
             text.append(
-                "  ·  enter choose · esc keep current · q quit", style="dim"
+                "  ·  enter choose · esc keep current · d theme · q quit",
+                style=dim,
             )
         elif screen is OnboardScreen.SUMMARY:
-            text.append("  ·  enter select · esc re-detect · q quit", style="dim")
+            text.append(
+                "  ·  enter select · esc re-detect · d theme · q quit", style=dim
+            )
         else:
-            text.append("  ·  enter select · esc back · q quit", style="dim")
+            text.append(
+                "  ·  enter select · esc back · d theme · q quit", style=dim
+            )
         return text
 
     # -- key routing ------------------------------------------------------ #
@@ -1690,6 +1770,10 @@ class OnboardApp(App):
             return
         elif char is not None and char.isdigit() and char != "0":
             self.controller.select_index(int(char) - 1)
+        elif char == "d":
+            # Cycle the registered tinyic-dark/tinyic-light theme; re-render so
+            # Rich content built through the theme style seam tracks it.
+            theme.toggle(self)
         elif char == "q":
             self.exit()
             return

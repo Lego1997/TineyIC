@@ -12,7 +12,10 @@ dependencies = [
     "python-dotenv",
     "yfinance>=1.2.0",
     "edgartools>=5.25.1",
-    "textual>=0.60",
+    # The theme layer (tinyic/tui/theme.py) imports textual.theme.Theme and
+    # uses App.register_theme / App.theme / App.current_theme — APIs that first
+    # shipped in Textual 0.86.0; 1.0 is the first stable release carrying them.
+    "textual>=1.0",
 ]
 
 [project.optional-dependencies]
