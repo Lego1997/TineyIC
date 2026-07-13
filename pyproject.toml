@@ -17,7 +17,7 @@ tinyic = { workspace = true }
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "live_api: tests that require a live OpenAI API key",
+    "live_api: tests that require live network/provider credentials or runtimes",
 ]
 timeout = 120
 asyncio_mode = "auto"

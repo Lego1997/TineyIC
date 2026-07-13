@@ -34,6 +34,7 @@ from tinyic.models import (
     TransientError,
     Transport,
     Usage,
+    UsageLimitError,
 )
 from tinyic.models.adapters._http import HttpConnectionError, HttpRequest
 from tinyic.models.adapters._retry import (
@@ -386,6 +387,39 @@ def test_rate_limit_honors_retry_after_then_exhausts():
     assert len(transport.sent) == 3  # 1 + 2 retries
     assert sleeps == [2.0, 2.0]  # Retry-After honored on each retry
     assert excinfo.value.retry_after == 2.0
+
+
+def test_structured_account_quota_is_usage_limit_without_same_key_retries():
+    transport = ScriptedTransport(
+        [
+            FakeResponse(
+                429,
+                headers={"Retry-After": "60"},
+                body=(
+                    '{"error":{"message":"opaque account detail",'
+                    '"type":"insufficient_quota",'
+                    '"code":"insufficient_quota"}}'
+                ),
+            )
+        ]
+    )
+    binding = ModelBinding("openai/gpt-5.2")
+    adapter = OpenAIChatAdapter(
+        binding,
+        creds(),
+        base_url="https://api.openai.com/v1",
+        credential_ref="OPENAI_API_KEY",
+        http=transport,
+        retry=RetryPolicy(max_retries=3),
+        sleep=lambda _delay: None,
+    )
+
+    with pytest.raises(UsageLimitError) as caught:
+        list(adapter.generate(ChatRequest(messages(), binding, stream=True)))
+
+    assert caught.value.reason_code == "usage_limited"
+    assert caught.value.retry_after == 60.0
+    assert len(transport.sent) == 1
 
 
 def test_non_retryable_error_is_not_retried():

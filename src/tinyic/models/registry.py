@@ -63,6 +63,7 @@ class Provider:
     models: Iterable[ModelSpec] = ()
     default_thinking: ThinkingProfile = field(default_factory=ThinkingProfile.omitted)
     transport_factory: TransportFactory | None = None
+    auth_required: bool = True
 
     def __post_init__(self) -> None:
         catalog: dict[str, ModelSpec] = {}
@@ -91,6 +92,17 @@ class Provider:
             return spec.wire_format
         return self.wire_format
 
+    def model_spec(self, model: str) -> ModelSpec | None:
+        """Return the catalog entry for ``model``, if this provider has one."""
+
+        return self.models.get(model)  # type: ignore[attr-defined]
+
+    def is_subscription_only(self, model: str) -> bool:
+        """Whether the catalog legally restricts ``model`` to a subscription lane."""
+
+        spec = self.model_spec(model)
+        return bool(spec is not None and spec.subscription_only)
+
     def resolve_thinking(
         self, model: str, level: ThinkingLevel, *, runtime: bool = False
     ) -> ThinkingResolution:
@@ -100,13 +112,62 @@ class Provider:
     def new_transport(
         self, binding: ModelBinding, credentials: CredentialProvider
     ) -> Transport:
-        """Build a transport for ``binding`` (raises until stage 2 wires it)."""
+        """Build a key transport or auth-profile rotating lane for ``binding``."""
         if self.transport_factory is None:
             raise NotImplementedError(
                 f"provider {self.name!r} has no transport yet; provider adapters "
                 "arrive in M2 stage 2"
             )
+        # Import lazily: auth.manager depends on the model binding/types seam.
+        from tinyic.auth.manager import AuthManager, AuthResolutionError
+
+        subscription_only = self.is_subscription_only(binding.model)
+        if isinstance(credentials, AuthManager):
+            if not self.auth_required:
+                # Credentialless local providers should not manufacture an
+                # auth candidate merely to satisfy the rotation wrapper.
+                return self.transport_factory(binding, credentials)
+            return credentials.new_transport(
+                binding,
+                self._new_child_transport,
+                subscription_only=subscription_only,
+            )
+        if subscription_only:
+            # Fail before an API adapter can make a Platform request for a
+            # subscription-only model.
+            raise AuthResolutionError(
+                "subscription_required",
+                provider=self.name.lower(),
+                auth_profile=binding.auth_profile,
+            )
         return self.transport_factory(binding, credentials)
+
+    def _new_child_transport(
+        self, binding: ModelBinding, credentials: CredentialProvider
+    ) -> Transport:
+        """Dispatch one already-resolved auth candidate without changing model."""
+
+        from tinyic.auth.profiles import ProfileKind
+
+        kind = getattr(credentials, "kind", None)
+        if self.name.lower() == "openai" and kind in {
+            ProfileKind.OPENAI_OAUTH,
+            ProfileKind.CODEX_READTHROUGH,
+        }:
+            from .adapters.codex_runtime import CodexRuntimeTransport
+
+            return CodexRuntimeTransport(binding, credentials)
+        if self.name.lower() == "anthropic" and kind in {
+            ProfileKind.CLAUDE_RUNTIME,
+            ProfileKind.CLAUDE_OAUTH_TOKEN,
+        }:
+            from .adapters.claude_runtime import ClaudeRuntimeTransport
+
+            # AuthManager has already enforced its configured policy switch
+            # before a candidate reaches this factory.  The transport keeps a
+            # second default-on guard as defense in depth for direct callers.
+            return ClaudeRuntimeTransport(binding, credentials)
+        return self.transport_factory(binding, credentials)  # type: ignore[misc]
 
 
 # Re-export for annotations without a second import name at call sites.
@@ -362,6 +423,7 @@ def _builtin_providers() -> tuple[Provider, ...]:
         name="ollama",
         wire_format=WireFormat.OPENAI_COMPATIBLE,
         models=ollama_models,
+        auth_required=False,
         transport_factory=openai_compatible.make_factory(
             base_url=_OLLAMA_BASE_URL,
             credential_ref=None,  # local, unauthenticated lane

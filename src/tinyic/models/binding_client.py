@@ -50,12 +50,15 @@ from .types import (
     TextDelta,
     Transport,
     Usage,
+    UsageWindow,
 )
 
 #: Callback receiving each streamed fragment (reasoning or visible text).
 DeltaSink = Callable[[str], None]
 #: Callback receiving a call's terminal usage with its ``model_ref``.
 UsageSink = Callable[[Usage, str], None]
+#: Callback receiving a subscription rolling-window snapshot.
+UsageWindowSink = Callable[[UsageWindow], None]
 
 _COUNTER_FIELDS = (
     "input_tokens",
@@ -134,6 +137,7 @@ class BindingClient:
         on_talk: DeltaSink | None = None,
         on_think: DeltaSink | None = None,
         on_usage: UsageSink | None = None,
+        on_usage_window: UsageWindowSink | None = None,
     ) -> None:
         self.binding = binding
         self._transport = transport
@@ -146,8 +150,14 @@ class BindingClient:
         self.on_talk = on_talk
         self.on_think = on_think
         self.on_usage = on_usage
+        self.on_usage_window = on_usage_window
         self._lock = threading.Lock()
         self._stats = {field: 0 for field in _COUNTER_FIELDS}
+        self._billable_stats = {field: 0 for field in _COUNTER_FIELDS}
+        self._usage_history: list[Usage] = []
+        self.active_auth_profile = getattr(
+            transport, "active_profile_ref", binding.auth_profile
+        )
 
     # -- the slice of the legacy client surface the debate path uses --------
 
@@ -205,6 +215,9 @@ class BindingClient:
                         scanner.feed(event.text)
             elif isinstance(event, Usage):
                 streamed_usage = event
+            elif isinstance(event, UsageWindow):
+                if self.on_usage_window is not None:
+                    self.on_usage_window(event)
             elif isinstance(event, FinalMessage):
                 final = event
 
@@ -235,6 +248,37 @@ class BindingClient:
     def reset_cost_stats(self) -> None:
         with self._lock:
             self._stats = {field: 0 for field in _COUNTER_FIELDS}
+            self._billable_stats = {field: 0 for field in _COUNTER_FIELDS}
+            self._usage_history.clear()
+
+    def get_billable_cost_stats(self) -> dict[str, Any]:
+        """Return counters eligible for API-key dollar estimation.
+
+        Subscription calls remain in :meth:`get_cost_stats` for token/message
+        observability but are excluded here because their usage is plan-metered,
+        not billed at Platform token prices.
+        """
+        with self._lock:
+            stats = {
+                field: self._billable_stats[field] for field in _COUNTER_FIELDS
+            }
+        if stats["model_calls"] or stats["cached_calls"]:
+            stats["by_model"] = {
+                self.binding.model_ref: {
+                    field: stats[field] for field in _COUNTER_FIELDS
+                }
+            }
+        return stats
+
+    def usage_cursor(self) -> int:
+        """Return a stable cursor for later :meth:`usage_since` attribution."""
+        with self._lock:
+            return len(self._usage_history)
+
+    def usage_since(self, cursor: int) -> tuple[Usage, ...]:
+        """Return immutable call usage recorded after ``cursor``."""
+        with self._lock:
+            return tuple(self._usage_history[cursor:])
 
     def set_api_cache(self, cache_api_calls: bool, cache_file_name: str | None = None) -> None:
         """Accept the legacy cache-config call; adapters own their own caching."""
@@ -273,6 +317,15 @@ class BindingClient:
             self._stats["total_tokens"] += usage.total_tokens
             self._stats["cached_tokens"] += usage.cached_tokens
             self._stats["model_calls"] += 1
+            self._usage_history.append(usage)
+            if usage.lane != "subscription":
+                self._billable_stats["input_tokens"] += usage.input_tokens
+                self._billable_stats["output_tokens"] += usage.output_tokens
+                self._billable_stats["total_tokens"] += usage.total_tokens
+                self._billable_stats["cached_tokens"] += usage.cached_tokens
+                self._billable_stats["model_calls"] += 1
+            if usage.auth_profile is not None:
+                self.active_auth_profile = usage.auth_profile
         if self.on_usage is not None:
             self.on_usage(usage, self.binding.model_ref)
 
@@ -301,5 +354,6 @@ __all__ = [
     "BindingClient",
     "DeltaSink",
     "UsageSink",
+    "UsageWindowSink",
     "build_transport",
 ]

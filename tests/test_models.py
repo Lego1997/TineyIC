@@ -593,7 +593,6 @@ def test_builtin_providers_have_wired_transports():
     )
     refs = {
         "openai/gpt-5.2": "OpenAIChatAdapter",
-        "openai/gpt-5.6-sol": "OpenAIResponsesAdapter",
         "anthropic/claude-opus-4-8": "AnthropicMessagesAdapter",
         "google/gemini-2.5-pro": "OpenAICompatibleAdapter",
         "xai/grok-4": "OpenAIChatAdapter",
@@ -605,6 +604,13 @@ def test_builtin_providers_have_wired_transports():
         transport = provider_for_binding(binding).new_transport(binding, creds)
         assert isinstance(transport, Transport)
         assert type(transport).__name__ == adapter_name
+
+    # The Responses wire format remains covered separately, but M3's catalog
+    # marks gpt-5.6-sol subscription-only and must reject a Platform key before
+    # constructing the HTTP adapter.
+    subscription = ModelBinding("openai/gpt-5.6-sol")
+    with pytest.raises(AuthError, match="subscription auth profile"):
+        provider_for_binding(subscription).new_transport(subscription, creds)
 
 
 def test_transport_factory_receives_binding_and_credential_seam():

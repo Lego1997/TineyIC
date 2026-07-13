@@ -287,6 +287,9 @@ class DebateOrchestrator(TinyWorld):
         binding_client.on_usage = (
             lambda usage, model_ref: turn_usages.append(usage)
         )
+        binding_client.on_usage_window = lambda snapshot: self._emit_event(
+            "usage_window", snapshot.as_payload()
+        )
         binding_client.on_reasoning = lambda text: self._emit_event(
             "think_delta", {"turn_id": turn_id, "text": text}
         )
@@ -301,6 +304,7 @@ class DebateOrchestrator(TinyWorld):
                 committed_actions = agent.act(return_actions=True)
         finally:
             binding_client.on_usage = None
+            binding_client.on_usage_window = None
             binding_client.on_reasoning = None
             binding_client.on_talk = None
             binding_client.on_think = None
@@ -315,7 +319,20 @@ class DebateOrchestrator(TinyWorld):
     @staticmethod
     def _aggregate_turn_usage(turn_usages: list, model_ref: str) -> dict:
         """Sum a turn's per-call adapter usage into one attributed record."""
-        return {
+        profiles = [
+            getattr(usage, "auth_profile", None)
+            for usage in turn_usages
+            if getattr(usage, "auth_profile", None)
+        ]
+        lanes = {
+            getattr(usage, "lane", "api_key") for usage in turn_usages
+        }
+        billable = [
+            usage
+            for usage in turn_usages
+            if getattr(usage, "lane", "api_key") != "subscription"
+        ]
+        result = {
             "input_tokens": sum(
                 getattr(usage, "input_tokens", 0) for usage in turn_usages
             ),
@@ -327,7 +344,26 @@ class DebateOrchestrator(TinyWorld):
             ),
             "model_ref": model_ref,
             "calls": len(turn_usages),
+            "billable_input_tokens": sum(
+                getattr(usage, "input_tokens", 0) for usage in billable
+            ),
+            "billable_output_tokens": sum(
+                getattr(usage, "output_tokens", 0) for usage in billable
+            ),
+            "billable_cached_tokens": sum(
+                getattr(usage, "cached_tokens", 0) for usage in billable
+            ),
+            "billable_calls": len(billable),
         }
+        if lanes:
+            result["lane"] = (
+                "subscription" if "subscription" in lanes else "api_key"
+            )
+        if profiles:
+            # A usage-limit rotation can change the actual profile mid-turn;
+            # the successful terminal call's profile is authoritative.
+            result["auth_profile"] = profiles[-1]
+        return result
 
     def _emit_binding_usage(self, agent, turn_id: str, binding_usage: dict):
         """Emit one turn-scoped usage event from native adapter usage.
@@ -339,18 +375,35 @@ class DebateOrchestrator(TinyWorld):
         input_tokens = int(binding_usage.get("input_tokens", 0))
         output_tokens = int(binding_usage.get("output_tokens", 0))
         cached_tokens = int(binding_usage.get("cached_tokens", 0))
-        if not (input_tokens or output_tokens or cached_tokens):
+        calls = int(binding_usage.get("calls", 0))
+        if not (input_tokens or output_tokens or cached_tokens or calls):
             return None
         model_ref = binding_usage.get("model_ref") or self._model_ref()
-        cost = estimate_model_keyed_cost(
-            {
-                model_ref: {
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                }
-            },
-            MODEL_PRICES_USD_PER_MILLION,
-        )
+        if "billable_input_tokens" in binding_usage:
+            billable_input = int(
+                binding_usage.get("billable_input_tokens", 0)
+            )
+            billable_output = int(
+                binding_usage.get("billable_output_tokens", 0)
+            )
+            billable_calls = int(binding_usage.get("billable_calls", 0))
+        elif binding_usage.get("lane", "api_key") == "subscription":
+            billable_input = billable_output = billable_calls = 0
+        else:
+            billable_input = input_tokens
+            billable_output = output_tokens
+            billable_calls = calls
+        cost = None
+        if billable_input or billable_output or billable_calls:
+            cost = estimate_model_keyed_cost(
+                {
+                    model_ref: {
+                        "input_tokens": billable_input,
+                        "output_tokens": billable_output,
+                    }
+                },
+                MODEL_PRICES_USD_PER_MILLION,
+            )
         usage_payload = {
             "turn_id": turn_id,
             "persona": agent.name,

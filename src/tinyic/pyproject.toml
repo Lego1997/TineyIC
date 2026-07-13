@@ -7,6 +7,8 @@ classifiers = [
 ]
 dependencies = [
     "tinytroupe",
+    "claude-agent-sdk>=0.2.116",
+    "keyring>=25.6",
     "python-dotenv",
     "yfinance>=1.2.0",
     "edgartools>=5.25.1",
@@ -25,7 +27,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["tinyic", "tinyic.personas", "tinyic.data", "tinyic.debate", "tinyic.models", "tinyic.models.adapters", "tinyic.ui", "tinyic.tui"]
+packages = ["tinyic", "tinyic.auth", "tinyic.personas", "tinyic.data", "tinyic.debate", "tinyic.models", "tinyic.models.adapters", "tinyic.ui", "tinyic.tui"]
 
 [tool.setuptools.package-dir]
 tinyic = "."

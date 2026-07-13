@@ -74,11 +74,16 @@ def _debate_started_payload(
             binding = committee.persona_bindings.get(display)
             if binding is None:
                 binding = committee.aggregator_binding
+            client = committee.client_for(display)
+            resolved_auth_profile = getattr(
+                client, "active_auth_profile", None
+            )
             persona_records.append(
                 {
                     "name": display,
                     "model_ref": binding.model_ref,
-                    "auth_profile": binding.auth_profile
+                    "auth_profile": resolved_auth_profile
+                    or binding.auth_profile
                     or f"{binding.provider}:default",
                     "thinking_level": binding.thinking_level.value,
                     "temperament": "unspecified",
@@ -228,6 +233,8 @@ def _emit_aggregate_usage(
     usage_delta: dict,
     model_ref: str | None = None,
     cached_tokens: int = 0,
+    billable: bool = True,
+    billable_usage_delta: dict | None = None,
 ) -> None:
     if not any(
         usage_delta.get(field, 0)
@@ -241,8 +248,21 @@ def _emit_aggregate_usage(
         return
     if model_ref is None:
         model_ref = _canonical_model_ref()
-    cost = estimate_model_keyed_cost(
-        {model_ref: usage_delta}, MODEL_PRICES_USD_PER_MILLION
+    pricing_usage = (
+        usage_delta
+        if billable_usage_delta is None
+        else billable_usage_delta
+    )
+    cost = (
+        estimate_model_keyed_cost(
+            {model_ref: pricing_usage}, MODEL_PRICES_USD_PER_MILLION
+        )
+        if billable
+        and any(
+            pricing_usage.get(field, 0)
+            for field in ("input_tokens", "output_tokens", "model_calls")
+        )
+        else None
     )
     payload = {
         "purpose": purpose,
@@ -254,6 +274,31 @@ def _emit_aggregate_usage(
     if cost is not None:
         payload["cost_usd"] = round(cost, 8)
     event_log.emit("usage", payload)
+
+
+def _billable_usage_since(client, cursor: int) -> dict | None:
+    """Return API-key usage since ``cursor``, or ``None`` for legacy clients."""
+    getter = getattr(client, "usage_since", None)
+    if not callable(getter):
+        return None
+    records = getter(cursor)
+    totals = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "cached_tokens": 0,
+        "model_calls": 0,
+        "cached_calls": 0,
+    }
+    for usage in records:
+        if getattr(usage, "lane", "api_key") == "subscription":
+            continue
+        totals["input_tokens"] += int(usage.input_tokens)
+        totals["output_tokens"] += int(usage.output_tokens)
+        totals["total_tokens"] += int(usage.total_tokens)
+        totals["cached_tokens"] += int(usage.cached_tokens)
+        totals["model_calls"] += 1
+    return totals
 
 
 def run_debate(
@@ -293,7 +338,7 @@ def run_debate(
             takes precedence over ``preset``/``model``/``thinking``.
         config_path: Location of ``tinyic.toml`` (defaults to cwd / env).
         credentials: ``CredentialProvider`` for building the committee's
-            transports (defaults to the environment credential provider).
+            transports (defaults to a config-aware auth-profile manager).
 
     Returns:
         DebateResult with scorecard, transcript, and phase history.
@@ -335,6 +380,7 @@ def run_debate(
         if resolved_committee is None and (
             preset is not None or model is not None or thinking is not None
         ):
+            from tinyic.auth.manager import AuthManager
             from tinyic.models import build_committee, load_preset
 
             resolved_preset = load_preset(preset, config_path)
@@ -346,10 +392,15 @@ def run_debate(
             persona_pairs = list(
                 zip(persona_names, [persona.name for persona in personas])
             )
+            resolved_credentials = credentials
+            if resolved_credentials is None:
+                # The policy/legal switch must apply before subscription
+                # candidates inspect tokens or construct official runtimes.
+                resolved_credentials = AuthManager.from_config(config_path)
             resolved_committee = build_committee(
                 resolved_preset,
                 persona_pairs,
-                credentials=credentials,
+                credentials=resolved_credentials,
                 # The config was strict-validated at load_preset; a per-debate
                 # --model/--thinking override is a runtime choice the adapter
                 # remaps per call (FR-1.3), so it must not fail committee build.
@@ -404,8 +455,29 @@ def run_debate(
             aggregator_client = resolved_committee.aggregator
             extraction_before = snapshot_cost_counters(aggregator_client)
             cached_before = _client_cached_tokens(aggregator_client)
-            with _activate_binding(aggregator_client):
-                votes = extract_votes(orchestrator)
+            usage_cursor_getter = getattr(
+                aggregator_client, "usage_cursor", None
+            )
+            usage_cursor = (
+                usage_cursor_getter()
+                if callable(usage_cursor_getter)
+                else 0
+            )
+            previous_window_sink = getattr(
+                aggregator_client, "on_usage_window", None
+            )
+
+            def emit_usage_window(snapshot) -> None:
+                active_event_log.emit("usage_window", snapshot.as_payload())
+                if previous_window_sink is not None:
+                    previous_window_sink(snapshot)
+
+            aggregator_client.on_usage_window = emit_usage_window
+            try:
+                with _activate_binding(aggregator_client):
+                    votes = extract_votes(orchestrator)
+            finally:
+                aggregator_client.on_usage_window = previous_window_sink
             extraction_after = snapshot_cost_counters(aggregator_client)
             cached_after = _client_cached_tokens(aggregator_client)
             extraction_usage = diff_cost_counters(
@@ -417,6 +489,9 @@ def run_debate(
                 usage_delta=extraction_usage,
                 model_ref=resolved_committee.aggregator_binding.model_ref,
                 cached_tokens=max(0, cached_after - cached_before),
+                billable_usage_delta=_billable_usage_since(
+                    aggregator_client, usage_cursor
+                ),
             )
         else:
             extraction_before = snapshot_cost_counters(resolved_client)
@@ -589,8 +664,17 @@ def get_debate_cost_stats(result: DebateResult) -> dict:
     stats = result.cost_stats
     base = stats.get("base_stats", stats)  # handle both TinyWorld and raw formats
 
+    billable_by_model = base.get("billable_by_model")
     by_model = base.get("by_model")
-    if isinstance(by_model, dict):
+    if isinstance(billable_by_model, dict):
+        estimated_cost = (
+            estimate_model_keyed_cost(
+                billable_by_model, MODEL_PRICES_USD_PER_MILLION
+            )
+            if billable_by_model
+            else 0.0
+        )
+    elif isinstance(by_model, dict):
         estimated_cost = estimate_model_keyed_cost(
             by_model, MODEL_PRICES_USD_PER_MILLION
         )
