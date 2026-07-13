@@ -43,6 +43,7 @@ __all__ = [
     "pill",
     "muted",
     "accent",
+    "accent_color",
     "semantic",
     "vote_pill",
 ]
@@ -146,7 +147,11 @@ _PILL_STYLES: dict[bool, dict[str, str]] = {
 }
 
 _MUTED = {True: "#8d8471", False: "#6f6653"}
-_ACCENT = {True: "bold #ffb454", False: "bold #8a5300"}
+_ACCENT_COLOR = {True: "#ffb454", False: "#8a5300"}
+_ACCENT = {
+    True: f"bold {_ACCENT_COLOR[True]}",
+    False: f"bold {_ACCENT_COLOR[False]}",
+}
 
 # The semantic status colors of each registered theme (success/warning/error),
 # so Rich content can color stance/vote/status text with the exact hues the CSS
@@ -182,6 +187,12 @@ def muted(*, dark: bool = True) -> str:
 def accent(*, dark: bool = True) -> str:
     """The amber emphasis style (replaces the hard-coded ``bold cyan``)."""
     return _ACCENT[bool(dark)]
+
+
+def accent_color(*, dark: bool = True) -> str:
+    """The bare accent hue (no attributes) — for rules, borders, and callers
+    that compose their own attribute string (:func:`accent` adds ``bold``)."""
+    return _ACCENT_COLOR[bool(dark)]
 
 
 def semantic(kind: str, *, dark: bool = True) -> str:

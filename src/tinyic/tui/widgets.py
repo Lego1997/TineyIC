@@ -26,7 +26,7 @@ from textual.message import Message
 from textual.widgets import Collapsible, DataTable, Static
 
 from ..persona_style import FALLBACK_COLORS_DARK as _FALLBACK_COLORS  # noqa: F401 - re-export
-from ..persona_style import persona_color, persona_monogram
+from ..persona_style import contrast_foreground, persona_color, persona_monogram
 from .motion import GlyphPulse
 from .state import (
     PHASE_ORDER,
@@ -39,7 +39,7 @@ from .state import (
     humanize_count,
     humanize_duration,
 )
-from .theme import accent, is_dark, muted, pill, semantic, vote_pill
+from .theme import accent, accent_color, is_dark, muted, pill, semantic, vote_pill
 
 __all__ = [
     "StatusHeader",
@@ -51,10 +51,12 @@ __all__ = [
     "UsageTable",
     "PersonaCard",
     "persona_color",
+    "persona_medallion",
     "speech_markdown",
     "build_header_text",
     "build_phase_stepper",
     "build_header_meters",
+    "build_act_header",
     "HEADER_METERS_MIN_WIDTH",
 ]
 
@@ -79,12 +81,40 @@ _PHASE_STEP_LABELS = {
     "rebuttal": "rebuttal",
     "verdict": "verdict",
 }
+# Bench temperament glyphs (Stage-3), from the existing vocabulary — always
+# rendered next to the temperament word, so the glyph decorates, never encodes.
+_TEMPERAMENT_GLYPHS = {"contrarian": "▲", "conciliatory": "▾", "balanced": "—"}
 
 
 def _stance_style(value: str, *, dark: bool) -> str:
     """Bold, theme-tuned style for a stance/vote badge (fallback: plain bold)."""
     kind = _VOTE_SEMANTIC.get(value) or _STANCE_SEMANTIC.get(value)
     return f"bold {semantic(kind, dark=dark)}" if kind else "bold"
+
+
+def persona_medallion(name: str, *, dark: bool = True) -> Text:
+    """The persona's monogram block: `` WB `` on the persona's color.
+
+    The foreground is contrast-computed (:func:`~tinyic.persona_style
+    .contrast_foreground`), so every palette hue — dark set, light set, or a
+    fallback — carries a legible two-letter monogram in both theme variants.
+    """
+    color = persona_color(name, dark=dark)
+    text = Text()
+    text.append(
+        f" {persona_monogram(name)} ",
+        style=f"bold {contrast_foreground(color)} on {color}",
+    )
+    return text
+
+
+def _content_width(widget, fallback: int = 120) -> int:
+    """A widget's current content width, or ``fallback`` before layout."""
+    try:
+        width = int(widget.content_size.width)
+    except Exception:
+        width = 0
+    return width if width > 0 else fallback
 
 
 def speech_markdown(text: str) -> Markdown | Text:
@@ -257,18 +287,10 @@ class StatusHeader(Static):
         self._pulse.set_running(self.state.live and not self.state.finished)
         self.refresh()
 
-    def _render_width(self) -> int:
-        """The current content width, or a wide default before layout."""
-        try:
-            width = int(self.content_size.width)
-        except Exception:
-            width = 0
-        return width if width > 0 else 120
-
     def render(self) -> Text:
         return build_header_text(
             self.state,
-            width=self._render_width(),
+            width=_content_width(self),
             dark=is_dark(self),
             glyph=self._pulse.glyph,
         )
@@ -278,8 +300,74 @@ class StatusHeader(Static):
 # Transcript items
 # --------------------------------------------------------------------------- #
 
+_ROMAN = ("I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII")
+
+
+def _roman(n: int) -> str:
+    """Act numbering for the four-phase protocol (graceful past XII)."""
+    return _ROMAN[n - 1] if 1 <= n <= len(_ROMAN) else str(n)
+
+
+def build_act_header(ph: PhaseState, *, width: int = 80, dark: bool = True) -> Text:
+    """An act header: a full-width rule with the centered, letter-spaced act
+    title — ``──── A C T  I I  ·  C R O S S - E X A M I N A T I O N ────``.
+
+    Pure and width-aware, like the header builders: letter-spacing is dropped
+    first when the title would not fit, so a narrow transcript pane still gets
+    a one-line centered title. States:
+
+    * **current act** — bold title on muted rules;
+    * **the verdict act** — accent weight (title and rules) while it plays;
+    * **completed act** — the muted check treatment: ``✓``, the turn count,
+      everything de-emphasized.
+
+    A devil's-advocate credit renders as a centered second line in the DA
+    persona's color. Derived only from folded phase events, so replay and live
+    render identically.
+    """
+    dim = muted(dark=dark)
+    label = str(_PHASE_LABELS.get(ph.phase, ph.phase.upper() or "?"))
+    title = f"ACT {_roman(ph.index + 1)} · {label}"
+    if ph.completed:
+        title = f"✓ {title}"
+        if ph.turn_count is not None:
+            title += f" · {ph.turn_count} turns"
+        title_style = dim
+        rule_style = dim
+    elif ph.phase == "verdict":
+        # The verdict act gets accent weight the moment it starts (Stage-3).
+        title_style = f"bold {accent_color(dark=dark)}"
+        rule_style = accent_color(dark=dark)
+    else:
+        title_style = "bold"
+        rule_style = dim
+
+    spaced = " ".join(title)  # letter-spacing (word gaps widen to 3 cells)
+    shown = spaced if len(spaced) + 8 <= width else title
+    pad_total = width - len(shown) - 2
+    left = pad_total // 2 if pad_total >= 4 else 2
+    right = pad_total - left if pad_total >= 4 else 2
+
+    text = Text(no_wrap=False)
+    text.append("─" * left, style=rule_style)
+    text.append(f" {shown} ", style=title_style)
+    text.append("─" * right, style=rule_style)
+    if ph.da_persona:
+        credit_label = "devil's advocate · "
+        credit = f"{credit_label}{ph.da_persona}"
+        text.append("\n")
+        text.append(" " * max(0, (width - len(credit)) // 2))
+        text.append(credit_label, style=f"italic {dim}")
+        text.append(
+            str(ph.da_persona),
+            style=f"italic {persona_color(str(ph.da_persona), dark=dark)}",
+        )
+    return text
+
+
 class PhaseBanner(Static):
-    """A full-width rule announcing a phase (and its DA / turn count)."""
+    """An act header announcing a phase (Stage-3): a thin widget over
+    :func:`build_act_header`, passing its live width and theme variant."""
 
     def __init__(self, phase: PhaseState) -> None:
         super().__init__(classes="phase-banner")
@@ -288,21 +376,17 @@ class PhaseBanner(Static):
     def on_mount(self) -> None:
         self.sync()
 
+    def on_resize(self, event) -> None:  # noqa: ANN001 - textual event
+        self.refresh()  # re-center / re-evaluate letter-spacing
+
     def sync(self) -> None:
         self.set_class(self.phase_state.completed, "completed")
         self.refresh()
 
     def render(self) -> Text:
-        ph = self.phase_state
-        label = _PHASE_LABELS.get(ph.phase, ph.phase.upper())
-        text = Text(no_wrap=False)
-        text.append(f"── {label} ", style="bold")
-        if ph.da_persona:
-            text.append(f"· devil's advocate: {ph.da_persona} ", style="italic red")
-        if ph.completed and ph.turn_count is not None:
-            text.append(f"· {ph.turn_count} turns ✓ ", style="dim green")
-        text.append("─" * 8, style="dim")
-        return text
+        return build_act_header(
+            self.phase_state, width=_content_width(self, 80), dark=is_dark(self)
+        )
 
 
 class TurnCard(Vertical):
@@ -372,6 +456,7 @@ class TurnCard(Vertical):
         self.set_class(self.turn.completed, "completed")
         self.set_class(self.selected, "selected")
         self.set_class(live, "thinking-live")
+        self._sync_border()
         self._head.update(self._head_text())
         # Live thinking block auto-expanded while streaming; the standard
         # collapsible row is hidden until talk begins, then they swap. Neither
@@ -384,7 +469,10 @@ class TurnCard(Vertical):
         self._think.display = not live
         self._think_body.update(
             Text(self.turn.thinking) if self.turn.thinking
-            else Text("(no private reasoning captured)", style="dim italic")
+            else Text(
+                "(no private reasoning captured)",
+                style=f"italic {muted(dark=is_dark(self))}",
+            )
         )
 
     def _speech_renderable(self) -> Markdown | Text:
@@ -398,7 +486,7 @@ class TurnCard(Vertical):
         """
         turn = self.turn
         if not turn.speech:
-            return Text("…", style="dim italic")
+            return Text("…", style=f"italic {muted(dark=is_dark(self))}")
         if not (turn.speech_final or turn.completed):
             return Text(turn.speech)
         cached = self._md_cache
@@ -407,6 +495,26 @@ class TurnCard(Vertical):
         rendered = speech_markdown(turn.speech)
         self._md_cache = (turn.speech, rendered)
         return rendered
+
+    def _sync_border(self) -> None:
+        """The card's left border takes the *persona's* color (Stage-3).
+
+        State keeps its claim on the border only where it must stay screaming:
+        an interrupted turn stays error-red and the selected turn stays
+        warning-amber (both also carry a head badge / background treatment).
+        Everything else — streaming, thinking, completed — wears the speaker's
+        color, so a long transcript reads as a conversation, not a status board.
+        Set inline (theme-resolved hex) and rebuilt on every ``sync``, so the
+        theme toggle's full re-sync re-colors mounted cards.
+        """
+        dark = is_dark(self)
+        if self.turn.interrupted:
+            color = semantic("error", dark=dark)
+        elif self.selected:
+            color = semantic("warning", dark=dark)
+        else:
+            color = persona_color(self.turn.persona, dark=dark)
+        self.styles.border_left = ("thick", color)
 
     def _paint_live_think(self) -> None:
         """Pulse tick: repaint only the live-think block (never whole-card work)."""
@@ -422,19 +530,29 @@ class TurnCard(Vertical):
 
     def _head_text(self) -> Text:
         turn = self.turn
-        color = persona_color(turn.persona, dark=is_dark(self))
+        dark = is_dark(self)
+        color = persona_color(turn.persona, dark=dark)
+        dim = muted(dark=dark)
         head = Text()
-        head.append("● ", style=color)
+        head.append_text(persona_medallion(turn.persona or "?", dark=dark))
+        head.append(" ")
         head.append(turn.persona or "?", style=f"bold {color}")
         badge = f"  ⟨{turn.phase or '?'} · {turn.role or '?'}⟩"
-        head.append(badge, style="dim")
+        head.append(badge, style=dim)
         if turn.stance:
             head.append("  ")
             head.append(
-                f"[{turn.stance}]", style=_stance_style(turn.stance, dark=is_dark(self))
+                f"[{turn.stance}]", style=_stance_style(turn.stance, dark=dark)
             )
         if turn.target_persona:
-            head.append(f" → {turn.target_persona}", style="italic")
+            # A challenge points at its target: arrow + the target's medallion
+            # + name, in the target's color (Stage-3).
+            target = str(turn.target_persona)
+            head.append("  → ", style=dim)
+            head.append_text(persona_medallion(target, dark=dark))
+            head.append(
+                f" {target}", style=f"italic {persona_color(target, dark=dark)}"
+            )
         if turn.interrupted:
             # by == "user" is the esc affordance's result; show it as such.
             if turn.interrupted_by == "user":
@@ -443,9 +561,10 @@ class TurnCard(Vertical):
                 suffix = f" ({turn.interrupted_by})"
             else:
                 suffix = ""
-            head.append(f"  ⚡ interrupted{suffix}", style="bold red")
+            error = semantic("error", dark=dark)
+            head.append(f"  ⚡ interrupted{suffix}", style=f"bold {error}")
             if turn.interrupt_disposition:
-                head.append(f" · {turn.interrupt_disposition}", style="dim red")
+                head.append(f" · {turn.interrupt_disposition}", style=error)
         return head
 
 
@@ -466,23 +585,26 @@ class SteeringNote(Static):
 
     def render(self) -> Text:
         s = self.steer
+        dark = is_dark(self)
         text = Text()
         mode = (s.mode or "steer").upper()
-        text.append(f" ✎ {mode} ", style=pill(s.mode or "steer", dark=is_dark(self)))
+        text.append(f" ✎ {mode} ", style=pill(s.mode or "steer", dark=dark))
         if s.target_persona:
             text.append(f" @{s.target_persona}", style="bold")
         if s.source:
-            text.append(f" ({s.source})", style="dim")
+            text.append(f" ({s.source})", style=muted(dark=dark))
         text.append(f"  {_clip(s.text, 200)}\n", style="italic")
         if s.status == "delivered":
             tail = "→ delivered"
             if s.delivered_before_turn_id:
                 tail += f" before {s.delivered_before_turn_id}"
-            text.append(f"   {tail}", style="green")
+            text.append(f"   {tail}", style=semantic("success", dark=dark))
         elif s.status == "dropped":
-            text.append(f"   ✗ dropped — {s.reason}", style="red")
+            text.append(
+                f"   ✗ dropped — {s.reason}", style=semantic("error", dark=dark)
+            )
         else:
-            text.append("   queued…", style="yellow")
+            text.append("   queued…", style=semantic("warning", dark=dark))
         return text
 
 
@@ -702,7 +824,19 @@ class UsageTable(_TableCard):
 # --------------------------------------------------------------------------- #
 
 class PersonaCard(Static):
-    """One committee member: static binding chips + live cognitive badges."""
+    """One committee-bench medallion card (Stage-3).
+
+    Identity leads: the persona's monogram medallion (contrast-computed
+    foreground on the persona's color) + name, then the model/thinking/
+    temperament badge line, then the live cognitive state with *attention* as
+    the prominent line (goal and mood stay muted). The current speaker is the
+    spotlight — the card's border takes the persona's color (set inline in
+    ``sync``; the CSS ``speaking`` class adds the background boost) with the
+    ``◗ speaking`` badge, and while their THINK streams the badge breathes via
+    a presentation-only :class:`GlyphPulse`. The app marks every other card
+    ``idle`` while someone holds the floor, so the bench visibly mutes around
+    the spotlight.
+    """
 
     def __init__(self, persona: PersonaState) -> None:
         super().__init__(classes="persona-card")
@@ -710,60 +844,81 @@ class PersonaCard(Static):
         # Mind view (the `m` key): when set, the card reveals the persona's
         # latest private-reasoning snippet inline (FR-5.2).
         self.expanded = False
+        # Bench muting: set by the app when *another* persona holds the floor.
+        self.idle = False
+        # The thinking spinner (Stage-3): pulses only while this persona's turn
+        # is streaming THINK — same lifecycle rules as the header's pulse.
+        self._pulse = GlyphPulse(self)
 
     def on_mount(self) -> None:
         self.sync()
 
     def sync(self) -> None:
-        self.set_class(self.persona.speaking, "speaking")
+        p = self.persona
+        self.set_class(p.speaking, "speaking")
         self.set_class(self.expanded, "mind-expanded")
+        self.set_class(self.idle, "idle")
+        # Spotlight: the speaking card's frame takes the persona's own color
+        # (inline, theme-resolved); idle cards fall back to the CSS border.
+        if p.speaking:
+            self.styles.border = ("round", persona_color(p.name, dark=is_dark(self)))
+        else:
+            self.styles.border = None
+        self._pulse.set_running(p.thinking_active)
         self.refresh()
 
     def render(self) -> Text:
         p = self.persona
-        color = persona_color(p.name, dark=is_dark(self))
+        dark = is_dark(self)
+        color = persona_color(p.name, dark=dark)
+        dim = muted(dark=dark)
         text = Text()
 
-        header = Text()
-        header.append("● ", style=color)
-        header.append(p.name, style=f"bold {color}")
-        if p.speaking:
-            header.append("  ◗ speaking", style="bold green")
-        text.append_text(header)
+        # Identity line: medallion + name + live status badge.
+        text.append_text(persona_medallion(p.name, dark=dark))
+        text.append(" ")
+        text.append(p.name, style=f"bold {color}")
+        if p.thinking_active:
+            text.append(
+                f" {self._pulse.glyph} thinking",
+                style=f"italic {semantic('warning', dark=dark)}",
+            )
+        elif p.speaking:
+            text.append(
+                " ◗ speaking", style=f"bold {semantic('success', dark=dark)}"
+            )
         text.append("\n")
 
-        # Model / auth / thinking chips.
-        chips = Text()
-        chips.append(p.model_ref or "—", style="cyan")
-        text.append_text(chips)
+        # Binding badge: model ref (accented), then thinking + temperament on
+        # one muted line and the auth profile on its own (a 38-col sidebar
+        # wraps long auth refs; separate lines keep the wrap clean).
+        text.append(p.model_ref or "—", style=accent(dark=dark))
         text.append("\n")
-        meta = Text(style="dim")
         bits = []
-        if p.auth_profile:
-            bits.append(f"auth {p.auth_profile}")
         if p.thinking_level:
             bits.append(f"think {p.thinking_level}")
         if p.temperament:
-            bits.append(p.temperament)
-        meta.append(" · ".join(bits) if bits else "unbound")
-        text.append_text(meta)
-
-        # Live cognitive-state badges.
-        if p.mood:
+            glyph = _TEMPERAMENT_GLYPHS.get(p.temperament, "·")
+            bits.append(f"{glyph} {p.temperament}")
+        text.append(" · ".join(bits) if bits else "unbound", style=dim)
+        if p.auth_profile:
             text.append("\n")
-            text.append("mood ", style="dim")
-            text.append(_clip(p.mood, 60))
+            text.append(f"auth {p.auth_profile}", style=dim)
+
+        # Live cognitive state: attention is the prominent line (default
+        # foreground, pointed); goal and mood stay fully muted beneath it.
         if p.attention:
             text.append("\n")
-            text.append("eye  ", style="dim")
+            text.append("▸ ", style=f"bold {color}")
             text.append(_clip(p.attention, 60))
         if p.goal:
             text.append("\n")
-            text.append("goal ", style="dim")
-            text.append(_clip(p.goal, 60))
+            text.append(f"goal {_clip(p.goal, 60)}", style=dim)
+        if p.mood:
+            text.append("\n")
+            text.append(f"mood {_clip(p.mood, 60)}", style=dim)
 
         # Stance / vote line.
-        dark = is_dark(self)
         if p.stance or p.vote or p.caved:
             text.append("\n")
             if p.stance:
@@ -773,18 +928,18 @@ class PersonaCard(Static):
                     text.append(" · ")
                 text.append(p.vote, style=_stance_style(p.vote, dark=dark))
                 if p.confidence:
-                    text.append(f" ({p.confidence})", style="dim")
+                    text.append(f" ({p.confidence})", style=dim)
             if p.caved:
                 text.append("  ⚑ caved", style=f"bold {semantic('error', dark=dark)}")
 
         # Mind view: the `m` key expands this card to reveal the latest private
-        # reasoning snippet (the goal/attention/mood badges above already surface
+        # reasoning snippet (the attention/goal/mood lines above already surface
         # the cognitive state).
         if self.expanded:
             text.append("\n")
-            text.append("mind ", style="dim")
+            text.append("mind ", style=dim)
             if p.think:
                 text.append(_clip(p.think, 240), style="italic")
             else:
-                text.append("(no private reasoning yet)", style="dim italic")
+                text.append("(no private reasoning yet)", style=f"italic {dim}")
         return text

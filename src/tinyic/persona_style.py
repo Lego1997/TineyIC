@@ -33,9 +33,20 @@ __all__ = [
     "PERSONA_MONOGRAMS",
     "FALLBACK_COLORS_DARK",
     "FALLBACK_COLORS_LIGHT",
+    "INK",
+    "PAPER",
     "persona_color",
     "persona_monogram",
+    "relative_luminance",
+    "contrast_ratio",
+    "contrast_foreground",
 ]
+
+# The two candidate monogram foregrounds — the registered themes' ground colors
+# (tinyic-dark's charcoal, tinyic-light's paper), duplicated here as plain
+# constants so this module stays framework-free (no Textual import).
+INK = "#14120f"
+PAPER = "#f7f3ea"
 
 # The six canonical committee members. The dark set is the historical Town Hall
 # palette (a stable product fact — the HTML export and replay colors depend on
@@ -92,6 +103,46 @@ def persona_color(name: str, *, dark: bool = True) -> str:
         return table[name]
     fallback = FALLBACK_COLORS_DARK if dark else FALLBACK_COLORS_LIGHT
     return fallback[_fallback_index(name)]
+
+
+def relative_luminance(color: str) -> float:
+    """WCAG relative luminance of a ``#rrggbb`` color (0.0 black … 1.0 white).
+
+    Malformed input degrades to mid-gray (0.5) rather than raising — a renderer
+    asking about a bad hex should still get a usable contrast decision.
+    """
+    try:
+        raw = color.lstrip("#")
+        if len(raw) != 6:
+            raise ValueError(color)
+        channels = [int(raw[i : i + 2], 16) / 255 for i in (0, 2, 4)]
+    except (ValueError, AttributeError):
+        return 0.5
+    linear = [
+        c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+        for c in channels
+    ]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def contrast_ratio(a: str, b: str) -> float:
+    """WCAG contrast ratio between two ``#rrggbb`` colors (1.0 … 21.0)."""
+    lighter, darker = sorted(
+        (relative_luminance(a), relative_luminance(b)), reverse=True
+    )
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def contrast_foreground(background: str) -> str:
+    """The higher-contrast monogram foreground (:data:`INK` or :data:`PAPER`)
+    for text sitting on ``background`` — e.g. the medallion monogram block.
+
+    Pure luminance math (WCAG contrast ratio), so both persona palettes and any
+    fallback hue get a legible foreground in both theme variants.
+    """
+    ink = contrast_ratio(background, INK)
+    paper = contrast_ratio(background, PAPER)
+    return INK if ink >= paper else PAPER
 
 
 def persona_monogram(name: str) -> str:

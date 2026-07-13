@@ -128,3 +128,39 @@ def test_report_delegates_to_persona_style():
     assert _persona_color("Warren Buffett") == "#4fc3f7"
     # Unknown personas flow through the same deterministic rotation.
     assert _persona_color("Cathie Wood") == ps.persona_color("Cathie Wood")
+
+
+# --------------------------------------------------------------------------- #
+# The medallion contrast helper (Stage-3)
+# --------------------------------------------------------------------------- #
+
+def test_contrast_foreground_picks_ink_on_light_and_paper_on_dark():
+    assert ps.contrast_foreground("#ffffff") == ps.INK
+    assert ps.contrast_foreground("#000000") == ps.PAPER
+    assert ps.contrast_foreground("#ffb74d") == ps.INK    # light amber -> ink
+    assert ps.contrast_foreground("#7b1fa2") == ps.PAPER  # deep purple -> paper
+
+
+def test_contrast_foreground_meets_wcag_on_every_palette_hue():
+    # Every persona color — dark set, light set — must carry its chosen
+    # monogram foreground at >= 4.3:1 (WCAG AA for the medallion's bold text).
+    for palette in (ps.PERSONA_COLORS_DARK, ps.PERSONA_COLORS_LIGHT):
+        for name, color in palette.items():
+            fg = ps.contrast_foreground(color)
+            assert fg in {ps.INK, ps.PAPER}
+            assert ps.contrast_ratio(color, fg) >= 4.3, (name, color, fg)
+
+
+def test_relative_luminance_is_wcag_anchored():
+    assert ps.relative_luminance("#000000") == 0.0
+    assert abs(ps.relative_luminance("#ffffff") - 1.0) < 1e-9
+    # sRGB linearization: mid-gray is darker than 0.5 (gamma), around 0.2158.
+    assert 0.20 < ps.relative_luminance("#808080") < 0.23
+
+
+def test_contrast_helpers_tolerate_malformed_input():
+    # Bad hexes degrade to mid-gray, never raise — a renderer must always get
+    # a usable decision.
+    for bad in ("", "#fff", "not-a-color", None):
+        assert ps.relative_luminance(bad) == 0.5
+        assert ps.contrast_foreground(bad) in {ps.INK, ps.PAPER}

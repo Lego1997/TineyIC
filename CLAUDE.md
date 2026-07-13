@@ -12,6 +12,7 @@ TinyIC — an AI investment committee: 6 investor personas (Buffett, Munger, Gra
 
 ```bash
 uv sync                                        # install both workspace packages (uv.lock is committed)
+uv sync --extra cn                             # optional: China A-share/HK data source (akshare; heavy, opt-in)
 tinyic debate AAPL                             # convene the committee in the Town Hall TUI
 tinyic debate AAPL --headless --json           # headless: stream the JSONL event log to STDOUT (agent mode)
 tinyic onboard                                 # interactive auth wizard (detect → pick lane → verify → persist)

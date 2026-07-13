@@ -117,6 +117,10 @@ class PersonaState:
     vote_source: str = ""
     caved: bool | None = None
     speaking: bool = False
+    # True while the persona's current turn is streaming THINK and has not yet
+    # begun to TALK — the bench card's spinner cue (Stage-3). Folded purely from
+    # think_delta / talk / turn-end events, so replay matches live exactly.
+    thinking_active: bool = False
 
 
 @dataclass
@@ -459,6 +463,7 @@ class TownHallState:
             turn.thinking_streaming = True
             turn.thinking += str(p.get("text", "") or "")
             self._sync_think_snippet(turn)
+            self._set_thinking_active(turn.persona, turn.thinking_live)
 
     def _on_think_completed(self, p: Mapping[str, Any]) -> None:
         turn = self._turns_by_id.get(str(p.get("turn_id", "")))
@@ -472,6 +477,7 @@ class TownHallState:
             # The first talk fragment collapses the live thinking block.
             turn.talk_started = True
             turn.speech += str(p.get("text", "") or "")
+            self._set_thinking_active(turn.persona, False)
 
     def _on_talk_completed(self, p: Mapping[str, Any]) -> None:
         turn = self._turns_by_id.get(str(p.get("turn_id", "")))
@@ -480,6 +486,7 @@ class TownHallState:
             turn.talk_started = True
             turn.speech = str(p.get("full_text", "") or "")
             turn.speech_final = True
+            self._set_thinking_active(turn.persona, False)
 
     def _on_cognitive_state(self, p: Mapping[str, Any]) -> None:
         member = self.personas.get(str(p.get("persona", "")))
@@ -502,6 +509,7 @@ class TownHallState:
         member = self.personas.get(str(p.get("persona", "")))
         if member is not None:
             member.speaking = False
+            member.thinking_active = False
 
     def _on_turn_interrupted(self, p: Mapping[str, Any]) -> None:
         turn = self._turns_by_id.get(str(p.get("turn_id", "")))
@@ -509,6 +517,7 @@ class TownHallState:
             turn.interrupted = True
             turn.interrupted_by = str(p.get("by", "") or "")
             turn.interrupt_disposition = str(p.get("disposition", "") or "")
+            self._set_thinking_active(turn.persona, False)
 
     # -- steering handlers ------------------------------------------------- #
 
@@ -713,6 +722,12 @@ class TownHallState:
         turn = self._last_turn_by_persona.get(persona)
         if turn is not None:
             turn.stance = stance
+
+    def _set_thinking_active(self, persona: str, active: bool) -> None:
+        """Flip a persona's bench-spinner cue (tolerant of unknown personas)."""
+        member = self.personas.get(persona)
+        if member is not None:
+            member.thinking_active = active
 
     def _sync_think_snippet(self, turn: TurnState) -> None:
         """Mirror a turn's private reasoning onto its persona for the mind view."""

@@ -289,23 +289,24 @@ class TownHallApp(App):
 
     #empty-note { padding: 1 2; color: $text-muted; }
 
+    /* Act headers (Stage-3): all styling lives in the Rich render (rule +
+       centered letter-spaced title via the theme seam); CSS keeps spacing. */
     .phase-banner {
         padding: 1 0 0 0;
-        color: $accent;
-        text-style: bold;
     }
-    .phase-banner.completed { color: $success; }
 
+    /* Turn cards: the left border wears the speaker's color, set inline by
+       TurnCard.sync (persona hues can't be CSS tokens). The rules below are
+       the pre-sync fallback and the state *backgrounds*; the selected /
+       interrupted border colors are also enforced inline. */
     .turn-card {
         height: auto;
         margin: 1 0 0 0;
         padding: 0 1;
         border-left: thick $panel-lighten-2;
     }
-    .turn-card.completed { border-left: thick $accent; }
     .turn-card.interrupted { border-left: thick $error; }
     .turn-card.selected { border-left: thick $warning; background: $boost; }
-    .turn-card.thinking-live { border-left: thick $warning; }
     .turn-head { text-style: bold; }
     .turn-speech { padding: 0 0 0 2; }
     .turn-think { padding: 0 0 0 2; }
@@ -337,7 +338,9 @@ class TownHallApp(App):
         padding: 0 1;
         border: round $panel-lighten-2;
     }
-    .artifact-card.kind-scorecard { border: round $success; }
+    /* The verdict reveal (Stage-3): when the scorecard lands it arrives inside
+       a double-rule accent frame — presentation-only, identical in replay. */
+    .artifact-card.kind-scorecard { border: double $accent; }
     .artifact-card.kind-debate-error { border: round $error; }
     .artifact-card.kind-usage-rollup { border: round $accent; }
     /* Disagreement: literally stance-colored sides — bull left, bear right. */
@@ -366,13 +369,17 @@ class TownHallApp(App):
         border-bottom: dashed $panel-lighten-2;
     }
 
+    /* The bench (Stage-3): the speaking card's border color is the persona's
+       own hue, set inline by PersonaCard.sync; CSS adds the spotlight boost
+       and mutes the idle bench around it. */
     .persona-card {
         height: auto;
         margin: 1 0 0 0;
         padding: 0 1;
         border: round $panel-lighten-1;
     }
-    .persona-card.speaking { border: round $success; background: $boost; }
+    .persona-card.speaking { background: $boost; }
+    .persona-card.idle { opacity: 65%; }
     .persona-card.mind-expanded { border: round $accent; background: $boost; }
 
     #composer {
@@ -700,17 +707,25 @@ class TownHallApp(App):
         self._sync_controls()
 
     def _sync_committee(self) -> None:
-        """Mount/refresh the persona cards and reflect the mind-view expansion."""
+        """Mount/refresh the persona cards and reflect the mind-view expansion.
+
+        Bench muting (Stage-3): while any persona holds the floor, every other
+        card is marked ``idle`` so the spotlight reads at a glance; the moment
+        no one is speaking the whole bench comes back to full weight.
+        """
         committee = self.query_one("#committee", VerticalScroll)
+        any_speaking = any(p.speaking for p in self.state.personas.values())
         new_cards: list[PersonaCard] = []
         for name, pstate in self.state.personas.items():
             card = self._persona_widgets.get(name)
-            if card is None:
+            created = card is None
+            if created:
                 card = PersonaCard(pstate)
                 self._persona_widgets[name] = card
                 new_cards.append(card)
-            else:
-                card.sync()
+            card.idle = any_speaking and not pstate.speaking
+            if not created:
+                card.sync()  # fresh cards sync themselves on mount
         if new_cards:
             committee.mount(*new_cards)
         self._apply_mind_state()
@@ -1082,15 +1097,17 @@ class TownHallApp(App):
         self._mode_chip.update(chip)
 
         dim = theme.muted(dark=dark)
+        hold_style = f"bold {theme.semantic('warning', dark=dark)}"
+        run_style = f"bold {theme.semantic('success', dark=dark)}"
         status = Text()
         if self._holding:
-            status.append("⏸ holding at phase boundary", style="bold yellow")
+            status.append("⏸ holding at phase boundary", style=hold_style)
             status.append("  ·  n next phase", style=dim)
         elif self.paused:
-            status.append("⏸ paused", style="bold yellow")
+            status.append("⏸ paused", style=hold_style)
             status.append("  ·  n next phase", style=dim)
         else:
-            status.append("▶ auto-advance", style="bold green")
+            status.append("▶ auto-advance", style=run_style)
         status.append(
             "     enter compose · tab mode · t/T think · m mind · space pause"
             " · n next · PgUp older · d theme · esc interrupt · q quit",
