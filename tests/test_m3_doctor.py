@@ -174,13 +174,18 @@ def test_reason_codes_are_stable_nonsecret_strings(reason):
     assert probe.to_dict()["reason_code"] == reason
 
 
-def test_doctor_cli_parser_is_headless_and_onboard_is_not_added():
+def test_doctor_cli_parser_is_headless_and_onboard_is_now_wired():
+    # ``doctor`` stays a headless, non-UI seam. Its interactive twin
+    # ``onboard`` (FR-2.4) is now a first-class subcommand of its own.
     parser = build_parser()
     args = parser.parse_args(["doctor", "--json", "--preset", "default"])
     assert args.command == "doctor"
     assert args.json is True
     assert args.preset == "default"
-    assert "onboard" not in parser.format_help()
+    assert not hasattr(args, "func") or args.func.__name__ == "_cmd_doctor"
+    onboard_args = parser.parse_args(["onboard"])
+    assert onboard_args.command == "onboard"
+    assert "onboard" in parser.format_help()
 
 
 def test_doctor_json_stdout_is_one_machine_document(monkeypatch, capsys):
