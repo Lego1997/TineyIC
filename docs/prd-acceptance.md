@@ -96,7 +96,7 @@ Supporting: the in-process headless path (`tests/test_m6_headless.py`), the cont
 
 > "All 33 defect classes have merged acceptance tests; cost display shows real, per-debate, per-persona numbers."
 
-**Verdict: MET-OFFLINE.** The canonical list of 33 is `code-review-2026-07-12.md` (A1–A4, B1–B12, C1–C9, D1–D3, plus the E-class polish items). The defect-class acceptance suite is merged and green offline; the cost half is proven with real, per-model/per-persona numbers over recorded fixtures.
+**Verdict: MET-OFFLINE** — 30 of 33 classes by merged acceptance tests; the remaining three (C1 "stop doesn't stop", C2 global-model races, C6 stale sidebar) are Streamlit-runtime defects **retired by architectural removal** rather than regression-tested, per the scope note below. The canonical list of 33 is `code-review-2026-07-12.md` (A1–A4, B1–B12, C1–C9, D1–D3, plus the E-class polish items). The defect-class acceptance suite is merged and green offline; the cost half is proven with real, per-model/per-persona numbers over recorded fixtures.
 
 Defect acceptance tests, by class:
 
