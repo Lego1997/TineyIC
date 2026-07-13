@@ -212,6 +212,41 @@ class DebateOrchestrator(TinyWorld):
         return da
 
     # ------------------------------------------------------------------
+    # Structured artifacts (FR-4.4)
+    # ------------------------------------------------------------------
+
+    def _capture_structured_record(self, agent, phase, actions) -> None:
+        """Record the opening thesis / final verdict from a turn's TALK prose.
+
+        Free-form NL is reserved for cross-exam and rebuttal, so only the opening
+        and verdict phases carry a mandated trailing block. The moderator owns
+        the structured records (FR-4.1); the orchestrator hands it this turn's
+        TALK prose and, for the opening, emits the resulting ``thesis_recorded``
+        event. An absent or malformed block records nothing -- the verdict then
+        defers to LLM vote extraction, and the opening simply emits no thesis.
+        """
+        if phase not in (DebatePhase.OPENING, DebatePhase.VERDICT):
+            return
+        talk = "\n\n".join(self._action_texts(actions, "TALK"))
+        if not talk:
+            return
+        if phase == DebatePhase.OPENING:
+            thesis = self.moderator.record_thesis(agent.name, talk)
+            if thesis is not None:
+                self._emit_event(
+                    "thesis_recorded",
+                    {
+                        "persona": agent.name,
+                        "phase": "opening",
+                        "stance": thesis.stance,
+                        "claims": list(thesis.claims),
+                        "confidence": thesis.confidence,
+                    },
+                )
+        else:
+            self.moderator.record_verdict(agent.name, talk)
+
+    # ------------------------------------------------------------------
     # Event-stream helpers
     # ------------------------------------------------------------------
 
@@ -595,6 +630,12 @@ class DebateOrchestrator(TinyWorld):
                         committed_actions=committed_actions,
                         usage_delta=usage_delta,
                     )
+
+                # Structured artifacts (FR-4.4): lift the opening thesis / final
+                # verdict from this turn's TALK prose. Emits thesis_recorded for
+                # a parsed opening thesis; the verdict is recorded on the
+                # moderator for extraction to consume first.
+                self._capture_structured_record(agent, phase, latest)
 
                 # Notify: agent finished
                 if self.on_agent_done:

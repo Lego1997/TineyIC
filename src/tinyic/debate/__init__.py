@@ -218,7 +218,9 @@ def _vote_payload(vote: Vote) -> dict:
         "reasoning": vote.reasoning,
         "key_risks": vote.key_risks,
         "changed_mind": vote.changed_mind,
-        "source": "extracted",
+        # FR-4.4: a verdict parsed from the persona's mandated block is
+        # ``structured``; an LLM-extraction fallback is ``extracted``.
+        "source": vote.source,
     }
 
 

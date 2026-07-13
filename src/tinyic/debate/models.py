@@ -3,7 +3,7 @@
 import re
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -61,6 +61,10 @@ class Vote(BaseModel):
     reasoning: list[str] = Field(default_factory=list)
     key_risks: list[str] = Field(default_factory=list)
     changed_mind: bool = False
+    #: Where the vote came from (FR-4.4): ``structured`` when parsed from the
+    #: persona's mandated verdict block, ``extracted`` when derived by the
+    #: LLM extraction fallback. Surfaced verbatim in ``vote_recorded.source``.
+    source: Literal["structured", "extracted"] = "extracted"
 
     @field_validator("vote", mode="before")
     @classmethod

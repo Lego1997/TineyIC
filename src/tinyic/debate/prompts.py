@@ -2,6 +2,50 @@
 
 from .models import DebatePhase
 
+# ---------------------------------------------------------------------------
+# Structured trailing blocks (FR-4.4)
+# ---------------------------------------------------------------------------
+#
+# The opening and verdict phases mandate a fenced trailing block so the engine
+# can lift a structured record (stance/claims/confidence; vote/confidence/etc.)
+# out of the persona's prose deterministically -- no second LLM call. Cross-exam
+# and rebuttal stay free-form NL (the anti-"telephone effect" split). These
+# blocks use angle-bracket placeholders, never ``{...}``, so they survive the
+# ``PHASE_PROMPTS[...].format(company=...)`` substitution untouched. The
+# ``===THESIS===`` / ``===VERDICT===`` / ``===END===`` markers are the contract
+# parsed by :mod:`tinyic.debate.structured`.
+
+THESIS_BLOCK: str = (
+    "\n\n"
+    "AFTER your prose, append a structured summary as the LAST thing you write, "
+    "in EXACTLY this format with the marker lines verbatim:\n"
+    "===THESIS===\n"
+    "STANCE: <bullish|bearish|neutral>\n"
+    "CONFIDENCE: <high|medium|low>\n"
+    "CLAIMS:\n"
+    "- <your first key claim>\n"
+    "- <your second key claim>\n"
+    "- <your third key claim>\n"
+    "===END==="
+)
+
+VERDICT_BLOCK: str = (
+    "\n\n"
+    "AFTER your prose, append a structured verdict as the LAST thing you write, "
+    "in EXACTLY this format with the marker lines verbatim:\n"
+    "===VERDICT===\n"
+    "VOTE: <BUY|HOLD|SELL>\n"
+    "CONFIDENCE: <HIGH|MEDIUM|LOW>\n"
+    "REASONS:\n"
+    "- <your first reason>\n"
+    "- <your second reason>\n"
+    "- <your third reason>\n"
+    "RISKS:\n"
+    "- <top risk>\n"
+    "CHANGED_MIND: <yes|no>\n"
+    "===END==="
+)
+
 PHASE_PROMPTS: dict[DebatePhase, str] = {
     DebatePhase.OPENING: (
         "Present your opening investment thesis on {company}. "
@@ -9,6 +53,7 @@ PHASE_PROMPTS: dict[DebatePhase, str] = {
         "and your top 3 reasons, drawing on the financial data provided. "
         "Speak from YOUR unique investment philosophy. "
         "Be specific about which data points support your view."
+        + THESIS_BLOCK
     ),
     DebatePhase.CROSS_EXAM: (
         "Challenge the other committee members' arguments. "
@@ -30,6 +75,7 @@ PHASE_PROMPTS: dict[DebatePhase, str] = {
         "State your confidence level: HIGH, MEDIUM, or LOW. "
         "Give your top 3 reasons for this verdict. "
         "If your view changed during the debate, explain what changed it."
+        + VERDICT_BLOCK
     ),
 }
 

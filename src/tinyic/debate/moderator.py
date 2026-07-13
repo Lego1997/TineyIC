@@ -18,11 +18,14 @@ acknowledgements), and those are carried by existing schema events
 (``phase_started``/``phase_completed``, ``phase_started.da_persona``, the
 ``[Moderator]`` steering relays) -- never as persona turns.
 
-An optional lightweight :class:`~tinyic.models.binding_client.BindingClient`
-(the preset's moderator slot) may back the moderator, but every Stage-1 duty
-above is rules-only and needs no LLM. The binding is reserved for the
-structured-verdict recording and memo-request duties that arrive with FR-4.4 /
-FR-4.5.
+The moderator also **records the structured artifacts** (FR-4.1 / FR-4.4): the
+opening thesis and the final verdict each arrive as a mandated fenced block in
+the persona's prose, which the moderator lifts into a structured record via the
+deterministic parser in :mod:`tinyic.debate.structured`. Because that parse is
+deterministic, this duty too is rules-only -- the moderator's optional
+:class:`~tinyic.models.binding_client.BindingClient` (the preset's moderator
+slot) stays reserved for the memo-request duty that arrives with FR-4.5, so
+``moderator_ref`` remains ``"rules"``.
 """
 
 from __future__ import annotations
@@ -31,6 +34,12 @@ import queue as _queue
 from collections.abc import Iterable, Mapping
 
 from tinyic import state
+from .structured import (
+    StructuredThesis,
+    StructuredVerdict,
+    parse_thesis,
+    parse_verdict,
+)
 
 #: Inclusive bounds on a configurable exchange cap. The sycophancy evidence caps
 #: productive debate at 2-3 exchanges (docs/research 5); one is the floor.
@@ -112,10 +121,15 @@ class Moderator:
             if isinstance(da_override, str) and da_override.strip()
             else None
         )
-        # Optional preset moderator binding; rules-only Stage-1 duties never call
-        # it, so it is simply held for the later structured-verdict/memo work.
+        # Optional preset moderator binding; rules-only duties never call it, so
+        # it is simply held for the later memo-request work (FR-4.5).
         self.binding_client = binding_client
         self.current_devils_advocate = None
+        # Structured records the moderator captures during the debate (FR-4.4),
+        # keyed by persona display name. The verdicts are the authoritative vote
+        # source consumed first by extraction (LLM extraction is the fallback).
+        self.recorded_theses: dict[str, StructuredThesis] = {}
+        self.recorded_verdicts: dict[str, StructuredVerdict] = {}
 
     @property
     def moderator_ref(self) -> str:
@@ -191,6 +205,34 @@ class Moderator:
             chosen = agents[slot % len(agents)]
         self.current_devils_advocate = chosen
         return chosen
+
+    # ------------------------------------------------------------------
+    # Structured artifacts (FR-4.4)
+    # ------------------------------------------------------------------
+
+    def record_thesis(self, persona: str, text: str) -> StructuredThesis | None:
+        """Parse and record ``persona``'s opening thesis block, if present.
+
+        Returns the :class:`StructuredThesis` when the mandated block parses (so
+        the orchestrator can emit the ``thesis_recorded`` event) or ``None`` when
+        it is absent/malformed, in which case nothing is recorded.
+        """
+        thesis = parse_thesis(text)
+        if thesis is not None:
+            self.recorded_theses[persona] = thesis
+        return thesis
+
+    def record_verdict(self, persona: str, text: str) -> StructuredVerdict | None:
+        """Parse and record ``persona``'s final verdict block, if present.
+
+        A recorded verdict is the authoritative vote source (FR-4.4): vote
+        extraction consumes it first and only falls back to an LLM extraction
+        pass for personas whose verdict block was absent or malformed.
+        """
+        verdict = parse_verdict(text)
+        if verdict is not None:
+            self.recorded_verdicts[persona] = verdict
+        return verdict
 
     # ------------------------------------------------------------------
     # Phase gating & steering delivery points
