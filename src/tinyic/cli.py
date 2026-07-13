@@ -5,8 +5,9 @@ to render a recorded event log in the Textual TUI. M3 adds the headless
 ``doctor`` seam and its interactive twin ``tinyic onboard`` (the FR-2.4 wizard).
 M6 adds the flagship ``tinyic debate`` (interactive Town Hall or headless/JSON
 agent mode, FR-6.1/6.2) plus ``tinyic runs list`` and ``tinyic result`` for
-consuming recorded debates. The parser keeps subcommands *optional* so a bare
-``tinyic`` and ``tinyic --help`` both work.
+consuming recorded debates, and ``tinyic export`` for rendering a recorded debate
+as a self-contained HTML page or a Markdown bundle (FR-3.2). The parser keeps
+subcommands *optional* so a bare ``tinyic`` and ``tinyic --help`` both work.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_debate_parser(subparsers)
     _add_runs_parser(subparsers)
     _add_result_parser(subparsers)
+    _add_export_parser(subparsers)
 
     replay = subparsers.add_parser(
         "replay",
@@ -192,6 +194,48 @@ def _add_result_parser(subparsers) -> None:
     result.set_defaults(func=_cmd_result)
 
 
+def _add_export_parser(subparsers) -> None:
+    """Register ``tinyic export <id|path> --html|--md`` (FR-3.2 / FR-6.1)."""
+    export = subparsers.add_parser(
+        "export",
+        help="Render a recorded debate as self-contained HTML or a Markdown bundle.",
+        description=(
+            "Render any recorded debate from its event log into a shareable "
+            "artifact: a single self-contained HTML page (--html) with the "
+            "transcript, expandable thinking, committee, scorecard, memo, "
+            "disagreements and usage rollup, or a Markdown bundle (--md) of the "
+            "scorecard, memo, transcript and disagreements. Writes to STDOUT "
+            "unless -o is given. No LLM calls."
+        ),
+    )
+    export.add_argument(
+        "id", metavar="<id|path>", help="Debate id or path to a run's .jsonl log."
+    )
+    fmt = export.add_mutually_exclusive_group(required=True)
+    fmt.add_argument(
+        "--html",
+        action="store_const",
+        const="html",
+        dest="fmt",
+        help="Render a self-contained static HTML page.",
+    )
+    fmt.add_argument(
+        "--md",
+        "--markdown",
+        action="store_const",
+        const="md",
+        dest="fmt",
+        help="Render a Markdown bundle (scorecard/memo/transcript/disagreements).",
+    )
+    export.add_argument(
+        "-o",
+        "--out",
+        metavar="FILE",
+        help="Write the report to FILE (default: STDOUT).",
+    )
+    export.set_defaults(func=_cmd_export)
+
+
 def _cmd_debate(args: argparse.Namespace) -> int:
     """Dispatch to the headless/interactive debate runner (FR-6.1/6.2)."""
     # Imported lazily so the (heavy) engine + TinyTroupe import stays out of
@@ -286,6 +330,41 @@ def _render_result_human(document: dict) -> str:
             f"out {usage.get('output_tokens', 0)} tokens · cost {cost_text}"
         )
     return "\n".join(lines)
+
+
+def _cmd_export(args: argparse.Namespace) -> int:
+    """Render a recorded debate as an HTML page or Markdown bundle."""
+    # Imported lazily so ``--help`` and the light commands never pull the report
+    # renderer (which imports the debate models / view-state reducer).
+    from .report import load_and_render
+
+    # The Markdown path reuses the debate models' ``to_markdown``; importing that
+    # package pulls TinyTroupe, whose one-time import prints an AI disclaimer +
+    # config dump to STDOUT. The report *is* the STDOUT artifact, so render under
+    # a redirect (as ``doctor``/headless do) — import chatter must never prefix
+    # the exported document.
+    try:
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            text = load_and_render(args.id, args.fmt)
+    except FileNotFoundError as exc:
+        print(f"tinyic: {exc}", file=sys.stderr)
+        return 3
+    if args.out:
+        from pathlib import Path
+
+        out_path = Path(args.out).expanduser()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(text, encoding="utf-8")
+        # The written path is human progress, not the artifact: keep it off STDOUT.
+        print(f"tinyic: wrote {args.fmt} report to {out_path}", file=sys.stderr)
+    else:
+        # The report is the artifact; write it verbatim (no extra newline) so a
+        # redirected file is exactly what the renderer produced.
+        sys.stdout.write(text)
+    return 0
 
 
 def _cmd_replay(args: argparse.Namespace) -> int:
