@@ -23,6 +23,8 @@ fold, so every treatment here renders identically on both paths.
 
 from __future__ import annotations
 
+import queue
+
 from tinyic.persona_style import contrast_foreground, persona_color
 from tinyic.tui import theme
 from tinyic.tui.app import TownHallApp
@@ -103,8 +105,8 @@ def test_medallion_is_the_monogram_on_the_persona_color():
 def test_medallion_tracks_the_light_palette():
     med = persona_medallion("Warren Buffett", dark=False)
     style = str(med.spans[0].style)
-    assert "on #0277bd" in style
-    assert contrast_foreground("#0277bd") in style
+    assert "on #01579b" in style
+    assert contrast_foreground("#01579b") in style
 
 
 def test_medallion_handles_unknown_personas():
@@ -184,7 +186,13 @@ def test_thinking_active_clears_on_interrupt_and_completion():
 
 
 async def test_bench_spotlights_the_speaker_and_mutes_the_idle():
-    app = TownHallApp(events=_events_until_first_turn(), auto_replay=False)
+    # Mid-debate is a *live* fact: feed the prefix through an open queue (no
+    # sentinel, no terminal event) so the stream is still in flight. A replayed
+    # truncated log settles these cues instead (see test_tui_motion).
+    live_queue: queue.Queue = queue.Queue()
+    for event in _events_until_first_turn():
+        live_queue.put(event)
+    app = TownHallApp.live(live_queue, auto_replay=False)
     async with app.run_test() as pilot:
         app.replay_all_now()
         await pilot.pause()

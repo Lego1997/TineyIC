@@ -14,8 +14,9 @@ import queue
 
 from tinyic.tui.app import TownHallApp
 from tinyic.tui.events import parse_event
+from tinyic.tui.live import QUEUE_SENTINEL
 from tinyic.tui.motion import PULSE_FRAMES, GlyphPulse
-from tinyic.tui.widgets import StatusHeader, TurnCard
+from tinyic.tui.widgets import PersonaCard, StatusHeader, TurnCard
 
 
 # --------------------------------------------------------------------------- #
@@ -146,8 +147,9 @@ async def test_header_pulse_runs_while_live_and_stops_on_terminal_event():
         assert "complete" in str(header.render())
 
 
-async def test_turn_live_think_pulse_stops_the_moment_talk_begins():
-    events = [
+def _mid_think_events() -> list:
+    """A debate prefix cut mid-THINK: speaker spotlit, live block streaming."""
+    return [
         _ev(1, "debate_started", ticker="AAPL", company_name="Apple Inc.",
             preset="default", personas=[{"name": "Warren Buffett"}]),
         _ev(2, "phase_started", phase="opening", index=0),
@@ -155,7 +157,16 @@ async def test_turn_live_think_pulse_stops_the_moment_talk_begins():
             phase="opening", role="statement"),
         _ev(4, "think_delta", turn_id="t1", text="weighing the moat"),
     ]
-    app = TownHallApp(events=events, auto_replay=False)
+
+
+async def test_turn_live_think_pulse_stops_the_moment_talk_begins():
+    # Mid-debate is a *live* fact: feed the prefix through an open queue (no
+    # sentinel, no terminal event) so the stream is genuinely in flight. A
+    # replayed truncated log settles these cues instead (tests below).
+    live_queue: queue.Queue = queue.Queue()
+    for event in _mid_think_events():
+        live_queue.put(event)
+    app = TownHallApp.live(live_queue, auto_replay=False)
     async with app.run_test() as pilot:
         await pilot.pause()
         app.replay_all_now()
@@ -164,10 +175,90 @@ async def test_turn_live_think_pulse_stops_the_moment_talk_begins():
         assert card.turn.thinking_live is True
         assert card._pulse.running is True
 
-        app.feed(_ev(5, "talk_delta", turn_id="t1", text="Here is my view."))
+        live_queue.put(_ev(5, "talk_delta", turn_id="t1", text="Here is my view."))
         app.replay_all_now()
         await pilot.pause()
         assert card.turn.thinking_live is False
         assert card._pulse.running is False
         # Resting glyph restored for any later static rendering.
         assert card._pulse.glyph == PULSE_FRAMES[0]
+
+
+# --------------------------------------------------------------------------- #
+# Nothing pulses past the end of a debate: terminal events, truncated logs,
+# and a live stream that closes without a terminal event all settle the
+# in-flight cues (speaking spotlight, bench spinner, live-think block).
+# --------------------------------------------------------------------------- #
+
+async def test_terminal_event_mid_think_stops_every_pulse():
+    # A debate_error landing while a THINK streams must close the live block,
+    # stop the turn + bench pulses, and clear the speaking spotlight.
+    events = _mid_think_events() + [
+        _ev(5, "debate_error", stage="opening", message="provider 500"),
+    ]
+    app = TownHallApp(events=events, auto_replay=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.replay_all_now()
+        await pilot.pause()
+        assert app.state.errored is True
+
+        card = app.query_one(TurnCard)
+        assert card.turn.thinking_live is False
+        assert card._pulse.running is False
+        assert card._think_live.display is False
+        # Content is preserved for the standard collapsed row.
+        assert card.turn.thinking == "weighing the moat"
+
+        persona = app.query_one(PersonaCard)
+        assert persona.persona.speaking is False
+        assert persona.persona.thinking_active is False
+        assert persona._pulse.running is False
+        assert not persona.has_class("speaking")
+
+
+async def test_truncated_log_replay_settles_all_in_flight_cues():
+    # Replaying a log that ends mid-THINK (no terminal event): once the fold
+    # drains, nothing may stay speaking, streaming, or pulsing — an idle or
+    # finished debate costs zero CPU (the motion contract).
+    app = TownHallApp(events=_mid_think_events(), auto_replay=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.replay_all_now()
+        await pilot.pause()
+
+        assert app.state.truncated is True
+        assert app.state.finished is False
+        card = app.query_one(TurnCard)
+        assert card.turn.thinking_live is False
+        assert card._pulse.running is False
+        persona = app.query_one(PersonaCard)
+        assert persona.persona.speaking is False
+        assert persona._pulse.running is False
+        assert "incomplete" in str(app.query_one(StatusHeader).render()).lower()
+
+
+async def test_live_sentinel_close_without_terminal_event_settles_and_stops_header_pulse():
+    # A live stream that closes via sentinel mid-debate is a dead stream: the
+    # header's "debating…" pulse must stop, the incomplete indicator shows, and
+    # the in-flight speaker settles — instead of breathing forever.
+    live_queue: queue.Queue = queue.Queue()
+    for event in _mid_think_events():
+        live_queue.put(event)
+    live_queue.put(QUEUE_SENTINEL)
+    app = TownHallApp.live(live_queue, auto_replay=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.replay_all_now()
+        await pilot.pause()
+
+        assert app.state.live is False
+        assert app.state.truncated is True
+        header = app.query_one(StatusHeader)
+        assert header._pulse.running is False
+        text = str(header.render())
+        assert "debating" not in text
+        assert "incomplete" in text.lower()
+        card = app.query_one(TurnCard)
+        assert card._pulse.running is False
+        assert app.query_one(PersonaCard).persona.speaking is False

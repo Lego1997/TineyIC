@@ -411,6 +411,7 @@ class TownHallState:
 
     def _on_debate_completed(self, p: Mapping[str, Any]) -> None:
         self.finished = True
+        self.settle()
         completed = p.get("phases_completed")
         if isinstance(completed, list):
             self.phases_completed = [str(x) for x in completed]
@@ -422,6 +423,7 @@ class TownHallState:
     def _on_debate_error(self, p: Mapping[str, Any]) -> None:
         self.finished = True
         self.errored = True
+        self.settle()
         self._append_artifact(
             key=f"error-{self.applied_count}",
             kind="debate_error",
@@ -704,6 +706,28 @@ class TownHallState:
 
     def _on_usage_window(self, p: Mapping[str, Any]) -> None:
         self.usage_window = p
+
+    def settle(self) -> None:
+        """Close every in-flight presentation cue (speaking / streaming state).
+
+        A debate that has ended must never keep a speaker spotlit, a bench
+        spinner ticking, or a live-think block auto-expanded — those cues all
+        derive from this state, so clearing them here stops every widget pulse
+        with no renderer-side special case (replay == live). Called by the fold
+        itself when a terminal event lands (``debate_completed`` /
+        ``debate_error``), and by renderers when the *stream* dies without one
+        (a truncated replay log, a live source closed by its sentinel).
+        Idempotent; accumulated speech/thinking text is untouched, so an
+        unfinished turn keeps rendering its content via the standard collapsed
+        ``▸ thinking`` row.
+        """
+        for member in self.personas.values():
+            member.speaking = False
+            member.thinking_active = False
+        for turn in self._turns_by_id.values():
+            if not turn.completed:
+                # Stop the live-stream cue only; ``thinking`` text remains.
+                turn.thinking_streaming = False
 
     # -- internals --------------------------------------------------------- #
 

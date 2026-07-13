@@ -690,6 +690,18 @@ class TownHallApp(App):
         if self._timer is not None:
             self._timer.stop()
             self._timer = None
+        # The stream is over. If it died *without* a terminal event — a
+        # truncated replay log, or a live source closed by its sentinel
+        # mid-debate — the fold-side settle never ran: mark the state
+        # incomplete and close its in-flight cues so no speaking spotlight,
+        # bench spinner, live-think block, or header "debating…" pulse
+        # outlives the dead debate. A log with a terminal event never reaches
+        # this branch un-finished, so replay == live is preserved.
+        if self.state.applied_count and not self.state.finished:
+            self.state.live = False
+            self.state.truncated = True
+            self.state.settle()
+            self._sync()
         if self._replay_complete is not None:
             self._replay_complete.set()
 

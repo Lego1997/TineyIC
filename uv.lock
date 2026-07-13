@@ -5263,7 +5263,7 @@ requires-dist = [
     { name = "edgartools", specifier = ">=5.25.1" },
     { name = "keyring", specifier = ">=25.6" },
     { name = "python-dotenv" },
-    { name = "textual", specifier = ">=0.60" },
+    { name = "textual", specifier = ">=1.0" },
     { name = "tinytroupe", editable = "src/tinytroupe" },
     { name = "yfinance", specifier = ">=1.2.0" },
 ]

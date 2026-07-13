@@ -76,7 +76,7 @@ def test_monograms_are_the_locked_two_letter_set():
 def test_persona_color_selects_the_variant():
     assert ps.persona_color("Warren Buffett") == "#4fc3f7"          # dark default
     assert ps.persona_color("Warren Buffett", dark=True) == "#4fc3f7"
-    assert ps.persona_color("Warren Buffett", dark=False) == "#0277bd"
+    assert ps.persona_color("Warren Buffett", dark=False) == "#01579b"
 
 
 def test_unknown_persona_fallback_is_sha1_deterministic():
@@ -149,6 +149,32 @@ def test_contrast_foreground_meets_wcag_on_every_palette_hue():
             fg = ps.contrast_foreground(color)
             assert fg in {ps.INK, ps.PAPER}
             assert ps.contrast_ratio(color, fg) >= 4.3, (name, color, fg)
+
+
+def test_palette_text_contrast_meets_wcag_on_its_theme_ground():
+    # Persona names, turn-card borders, and head text render in these hues
+    # directly on the registered theme grounds — not just inside medallions.
+    # Enforce a 4.5:1 WCAG AA floor for each palette on its own ground so no
+    # hand-picked hue slides under the bar again (Peter Lynch's original
+    # #e65100 measured 3.42:1 on paper and shipped unnoticed).
+    from tinyic.tui.theme import TINYIC_DARK, TINYIC_LIGHT
+
+    for palette, ground in (
+        (ps.PERSONA_COLORS_DARK, TINYIC_DARK.background),
+        (ps.PERSONA_COLORS_LIGHT, TINYIC_LIGHT.background),
+    ):
+        for name, color in palette.items():
+            ratio = ps.contrast_ratio(color, ground)
+            assert ratio >= 4.5, (name, color, ground, round(ratio, 2))
+
+
+def test_ink_and_paper_mirror_the_registered_theme_grounds():
+    # persona_style duplicates the theme grounds to stay framework-free; this
+    # pins the duplication so the two can never drift apart silently.
+    from tinyic.tui.theme import TINYIC_DARK, TINYIC_LIGHT
+
+    assert ps.INK == TINYIC_DARK.background
+    assert ps.PAPER == TINYIC_LIGHT.background
 
 
 def test_relative_luminance_is_wcag_anchored():

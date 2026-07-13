@@ -67,7 +67,7 @@ from enum import Enum
 
 from rich.text import Text
 from textual import events
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Input, Static
 
@@ -1394,9 +1394,20 @@ class OnboardApp(App):
     # -- render ----------------------------------------------------------- #
 
     def _clear_key_input(self) -> None:
-        """Wipe the masked key field so a pasted secret can't linger in memory."""
+        """Wipe the masked key field so a pasted secret can't linger in memory.
+
+        Best-effort on the unmount path: when the app is torn down with text
+        still in the field (force-quit mid-paste), the screen stack is already
+        gone and Input's value *watcher* (cursor/selection upkeep) raises
+        ``ScreenStackError``. The reactive value itself is overwritten before
+        watchers run, so the secret is gone either way — swallow only that
+        teardown error, never a live-screen failure.
+        """
         if self._key_input.value:
-            self._key_input.value = ""
+            try:
+                self._key_input.value = ""
+            except ScreenStackError:
+                pass
 
     def _sync(self) -> None:
         self._header.update(self._render_title())

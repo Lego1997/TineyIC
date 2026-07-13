@@ -402,3 +402,68 @@ def test_turn_interrupted_captures_provenance_and_clears_live():
     ev("turn_completed", turn_id="t1", persona="X", phase="cross_exam", interrupted=False)
     assert turn.interrupted is True
     assert turn.interrupted_by == "user"
+
+
+# --------------------------------------------------------------------------- #
+# Terminal events settle every in-flight cue (nothing pulses past the end)
+# --------------------------------------------------------------------------- #
+
+def _mid_think_state() -> TownHallState:
+    """A fold parked mid-THINK: speaker spotlit, bench spinner on, block live."""
+    state = TownHallState()
+    ev = _feed(state)
+    ev("debate_started", ticker="AAPL",
+       personas=[{"name": "Warren Buffett"}, {"name": "Howard Marks"}])
+    ev("phase_started", phase="opening", index=0)
+    ev("turn_started", turn_id="t1", persona="Warren Buffett",
+       phase="opening", role="statement")
+    ev("think_delta", turn_id="t1", text="weighing the moat")
+    buffett = state.personas["Warren Buffett"]
+    assert buffett.speaking is True and buffett.thinking_active is True
+    assert _only_turn(state).thinking_live is True
+    return state
+
+
+def test_debate_error_mid_think_settles_speaker_and_live_block():
+    state = _mid_think_state()
+    state.dispatch(parse_event({
+        "type": "debate_error",
+        "payload": {"stage": "opening", "message": "provider 500"},
+    }))
+    assert state.finished is True and state.errored is True
+    buffett = state.personas["Warren Buffett"]
+    assert buffett.speaking is False
+    assert buffett.thinking_active is False
+    turn = _only_turn(state)
+    assert turn.thinking_live is False
+    assert turn.thinking_streaming is False
+    # The streamed reasoning survives for the standard collapsed ▸ row.
+    assert turn.thinking == "weighing the moat"
+
+
+def test_debate_completed_mid_think_settles_speaker_and_live_block():
+    state = _mid_think_state()
+    state.dispatch(parse_event({
+        "type": "debate_completed",
+        "payload": {"phases_completed": ["opening"], "duration_s": 1.0},
+    }))
+    assert state.finished is True and state.errored is False
+    for member in state.personas.values():
+        assert member.speaking is False
+        assert member.thinking_active is False
+    assert _only_turn(state).thinking_live is False
+
+
+def test_settle_is_idempotent_and_public_for_stream_death():
+    # Renderers call settle() directly when the stream dies without a terminal
+    # event (truncated replay log, live sentinel close) — same result, twice.
+    state = _mid_think_state()
+    state.settle()
+    state.settle()
+    assert state.personas["Warren Buffett"].speaking is False
+    assert state.personas["Warren Buffett"].thinking_active is False
+    turn = _only_turn(state)
+    assert turn.thinking_live is False
+    assert turn.thinking == "weighing the moat"
+    # A completed turn is left untouched (nothing to settle).
+    assert turn.completed is False

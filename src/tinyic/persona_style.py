@@ -51,6 +51,10 @@ PAPER = "#f7f3ea"
 # The six canonical committee members. The dark set is the historical Town Hall
 # palette (a stable product fact — the HTML export and replay colors depend on
 # it); the light set darkens each hue in place for legibility on light ground.
+# Both sets clear a 4.5:1 WCAG contrast ratio for text on their own theme
+# ground (:data:`INK` for dark, :data:`PAPER` for light) — enforced by
+# ``tests/test_persona_style.py``, which is how Lynch's original #e65100
+# (3.42:1 on paper) got caught and darkened.
 PERSONA_COLORS_DARK: dict[str, str] = {
     "Warren Buffett": "#4fc3f7",
     "Charlie Munger": "#ba68c8",
@@ -61,12 +65,12 @@ PERSONA_COLORS_DARK: dict[str, str] = {
 }
 
 PERSONA_COLORS_LIGHT: dict[str, str] = {
-    "Warren Buffett": "#0277bd",
+    "Warren Buffett": "#01579b",
     "Charlie Munger": "#7b1fa2",
     "Benjamin Graham": "#00695c",
-    "Peter Lynch": "#e65100",
+    "Peter Lynch": "#bf360c",
     "Howard Marks": "#c62828",
-    "Li Lu": "#558b2f",
+    "Li Lu": "#33691e",
 }
 
 PERSONA_MONOGRAMS: dict[str, str] = {
