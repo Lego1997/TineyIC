@@ -187,6 +187,12 @@ class TurnCard(Vertical):
         self.turn = turn
         self.selected = False
         self._head = Static(classes="turn-head")
+        # The live thinking block (FR-5.1): shown, auto-expanded and visually
+        # distinct, only while ``turn.thinking_live`` — i.e. the current speaker
+        # is streaming THINK and has not begun to TALK. It hides the moment talk
+        # starts, and the standard collapsible ``▸ thinking`` row below takes
+        # over (content preserved, toggled by t/T).
+        self._think_live = Static(classes="turn-think-live")
         self._speech = Static(classes="turn-speech")
         self._think_body = Static(classes="think-body")
         self._think = Collapsible(
@@ -200,6 +206,7 @@ class TurnCard(Vertical):
 
     def compose(self):
         yield self._head
+        yield self._think_live
         yield self._speech
         yield self._think
 
@@ -214,18 +221,34 @@ class TurnCard(Vertical):
         self._think.collapsed = not self._think.collapsed
 
     def sync(self) -> None:
+        live = self.turn.thinking_live
         self.set_class(self.turn.interrupted, "interrupted")
         self.set_class(self.turn.completed, "completed")
         self.set_class(self.selected, "selected")
+        self.set_class(live, "thinking-live")
         self._head.update(self._head_text())
+        # Live thinking block auto-expanded while streaming; the standard
+        # collapsible row is hidden until talk begins, then they swap. Neither
+        # touches the collapsible's ``collapsed`` state, so t/T stay user-owned.
+        self._think_live.display = live
+        if live:
+            self._think_live.update(self._live_think_text())
         self._speech.update(
             Text(self.turn.speech) if self.turn.speech
             else Text("…", style="dim italic")
         )
+        self._think.display = not live
         self._think_body.update(
             Text(self.turn.thinking) if self.turn.thinking
             else Text("(no private reasoning captured)", style="dim italic")
         )
+
+    def _live_think_text(self) -> Text:
+        """The streaming-THINK highlight body (auto-expanded live block)."""
+        text = Text()
+        text.append("◉ thinking… ", style="bold")
+        text.append(self.turn.thinking or "…", style="italic")
+        return text
 
     def _head_text(self) -> Text:
         turn = self.turn
@@ -245,7 +268,16 @@ class TurnCard(Vertical):
         if turn.target_persona:
             head.append(f" → {turn.target_persona}", style="italic")
         if turn.interrupted:
-            head.append("  ⚡interrupted", style="bold red")
+            # by == "user" is the esc affordance's result; show it as such.
+            if turn.interrupted_by == "user":
+                suffix = " (esc)"
+            elif turn.interrupted_by:
+                suffix = f" ({turn.interrupted_by})"
+            else:
+                suffix = ""
+            head.append(f"  ⚡ interrupted{suffix}", style="bold red")
+            if turn.interrupt_disposition:
+                head.append(f" · {turn.interrupt_disposition}", style="dim red")
         return head
 
 

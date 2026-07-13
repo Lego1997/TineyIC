@@ -9,7 +9,11 @@ and draws the result across four panes (FR-5.1):
   cost/usage rollup;
 * a **transcript** of chronological turn cards (persona, role/phase badge, speech)
   each with a collapsed ``▸ thinking`` row, interleaved with phase banners,
-  inline steering notes (queued → delivered), and structured-artifact cards;
+  inline steering notes (queued → delivered), and structured-artifact cards. The
+  *current* speaker's THINK streams live in an inline, auto-expanded highlight
+  block that auto-collapses to the standard ``▸ thinking`` row the moment their
+  TALK begins (FR-5.1's locked decision), driven purely by folded
+  ``think_delta`` / ``talk_delta`` events so replay and live behave identically;
 * a **committee sidebar** of six persona cards showing each member's model/auth
   chips and live cognitive-state badges (mood / attention / goal).
 
@@ -31,8 +35,10 @@ mode chip (``Steer`` / ``Queue``, toggled by ``tab``); submitting a line pushes 
 steering message through a :class:`~tinyic.tui.steering.SteeringSink` (in replay,
 a :class:`~tinyic.tui.steering.ReplaySink` echoes it into the transcript as a
 ``queued`` note — the real engine hookup lands in M1/M6). Keys: ``enter`` compose
-/ send · ``tab`` mode toggle · ``esc`` hard interrupt (in replay: skip to the
-next turn boundary) · ``t`` toggle thinking on the selected turn · ``T`` toggle
+/ send · ``tab`` mode toggle · ``esc`` hard interrupt — routed through a
+:class:`~tinyic.tui.steering.ControlSink` mirror of the steering seam (replay
+skips to the next turn boundary; live records an interrupt request M6 wires to
+the engine) · ``t`` toggle thinking on the selected turn · ``T`` toggle
 all · ``m`` cycle the persona mind view · ``space`` pause/resume auto-advance ·
 ``n`` next phase when paused · ``PageUp`` load older transcript cards · ``q``
 quit (confirmed while a debate is still running). Auto-advance is the default;
@@ -62,7 +68,15 @@ from textual.widgets import Footer, Input, Static
 from .events import Event, is_replayable, read_events
 from .live import EventQueueSource
 from .state import TownHallState, TurnState
-from .steering import ReplaySink, SteeringSink, parse_steering_input
+from .steering import (
+    ControlSink,
+    InterruptRequest,
+    RecordingControlSink,
+    ReplayControlSink,
+    ReplaySink,
+    SteeringSink,
+    parse_steering_input,
+)
 from .widgets import (
     ArtifactCard,
     PersonaCard,
@@ -287,10 +301,22 @@ class TownHallApp(App):
     .turn-card.completed { border-left: thick $accent; }
     .turn-card.interrupted { border-left: thick $error; }
     .turn-card.selected { border-left: thick $warning; background: $boost; }
+    .turn-card.thinking-live { border-left: thick $warning; }
     .turn-head { text-style: bold; }
     .turn-speech { padding: 0 0 0 2; }
     .turn-think { padding: 0 0 0 2; }
     .think-body { color: $text-muted; text-style: italic; }
+    /* The current speaker's live THINK: an auto-expanded, highlighted block
+       (FR-5.1). Distinct from the muted, collapsed ``▸ thinking`` row it
+       becomes once talk begins. */
+    .turn-think-live {
+        margin: 0 0 0 2;
+        padding: 0 1;
+        color: $warning;
+        text-style: italic;
+        background: $boost;
+        border-left: thick $warning;
+    }
 
     .steering-note {
         height: auto;
@@ -366,6 +392,7 @@ class TownHallApp(App):
         tick: float = 0.03,
         auto_replay: bool = True,
         sink: SteeringSink | None = None,
+        control: ControlSink | None = None,
     ) -> None:
         super().__init__()
         self.log_path = Path(log_path) if log_path is not None else None
@@ -409,6 +436,16 @@ class TownHallApp(App):
         self._sink: SteeringSink = sink if sink is not None else ReplaySink(
             self._apply_local_event
         )
+        # Control seam (``esc`` hard-interrupt), a mirror of the steering seam.
+        # Replay skips to the next turn boundary; a live feed records the request
+        # for a producer to honor later (M6 wires an engine-backed sink). An
+        # injected ``control`` overrides both.
+        if control is not None:
+            self._control: ControlSink = control
+        elif self.live_mode:
+            self._control = RecordingControlSink()
+        else:
+            self._control = ReplayControlSink(self._skip_to_turn_boundary)
 
         self._header = StatusHeader(self.state)
         self._status_line = Static("", id="status-line")
@@ -924,8 +961,17 @@ class TownHallApp(App):
     # -- interrupt (FR-5.2/5.3: esc) -------------------------------------- #
 
     def action_interrupt(self) -> None:
-        """Hard interrupt: in replay, skip to the next turn boundary."""
-        self._skip_to_turn_boundary()
+        """Hard interrupt (``esc``): routed through the :class:`ControlSink`.
+
+        In replay the sink skips to the next turn boundary (no in-flight call to
+        cancel); in live mode it records an interrupt request a producer may
+        honor later (M6 cancels the current turn engine-side and emits the
+        authoritative ``turn_interrupted``). Either way we re-sync so any change
+        (a skipped turn, a later interrupt badge) is reflected.
+        """
+        self._control.interrupt(
+            InterruptRequest(turn_id=self.state.current_turn_id, source="tui")
+        )
         if self.is_running:
             self._sync()
 
