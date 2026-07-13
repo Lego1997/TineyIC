@@ -158,6 +158,7 @@ def _data_ready_payload(data_package) -> dict:
         "filing_10q": ("10-q",),
         "news": ("news",),
         "social": ("twitter", "social", "x/"),
+        "cn_market": ("china market",),
         "research": ("research",),
     }
     source_attributes = (
@@ -166,8 +167,12 @@ def _data_ready_payload(data_package) -> dict:
         ("filing_10q", "filing_10q"),
         ("news", "news"),
         ("social", "social"),
+        ("cn_market", "cn_market"),
         ("research", "research_brief"),
     )
+    # Ticker-conditional sources: omitted entirely when the package has
+    # neither data nor a warning for them (e.g. cn_market for non-CN tickers).
+    conditional_sources = frozenset({"cn_market"})
     warnings = [
         str(warning)
         for warning in (getattr(data_package, "warnings", None) or [])
@@ -186,6 +191,12 @@ def _data_ready_payload(data_package) -> dict:
             ),
             None,
         )
+        if (
+            source_name in conditional_sources
+            and value is None
+            and warning is None
+        ):
+            continue
         status = "ok" if value is not None else "unavailable"
         if value is not None and warning is not None:
             status = "degraded"

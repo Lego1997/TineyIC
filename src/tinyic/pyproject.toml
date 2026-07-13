@@ -15,6 +15,11 @@ dependencies = [
     "textual>=0.60",
 ]
 
+[project.optional-dependencies]
+# China-market data source (A-share / HK via akshare). Heavy (~16 transitive
+# deps incl. a mini JS engine), so it is opt-in: uv sync --extra cn
+cn = ["akshare>=1.18"]
+
 [project.scripts]
 tinyic = "tinyic.cli:main"
 
