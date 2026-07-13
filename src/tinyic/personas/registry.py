@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from tinytroupe.session import Session
+
 
 CONFIGS_DIR = Path(__file__).parent / "configs"
 
@@ -15,11 +17,13 @@ PERSONA_REGISTRY: dict[str, Path] = {
 }
 
 
-def load_persona(name: str):
+def load_persona(name: str, session: Session | None = None):
     """Load an investor persona by registry name.
 
     Args:
         name: Snake_case registry key (e.g. "warren_buffett").
+        session: Registry scope for the persona. When omitted, the returned
+            persona owns an isolated session that an orchestrator can adopt.
 
     Returns:
         InvestorPersona instance with philosophy config loaded.
@@ -40,7 +44,12 @@ def load_persona(name: str):
     from tinyic.personas.base import InvestorPersona
 
     display_name = name.replace("_", " ").title()
-    return InvestorPersona(name=display_name, philosophy_config_path=str(config_path))
+    persona_session = session if session is not None else Session()
+    return InvestorPersona(
+        name=display_name,
+        philosophy_config_path=str(config_path),
+        session=persona_session,
+    )
 
 
 def list_personas() -> list[str]:

@@ -1,16 +1,16 @@
 import logging
 import os
-import pickle
 import time
 
 import requests
 
 from tinytroupe import config_manager, utils
+from tinytroupe.clients.openai_client import LLMCacheBase
 
 logger = logging.getLogger("tinytroupe")
 
 
-class OllamaClient:
+class OllamaClient(LLMCacheBase):
     """
     A client for interacting with the Ollama API using direct HTTP requests.
     """
@@ -23,24 +23,8 @@ class OllamaClient:
         self.base_url = config_manager.get("base_url", "http://localhost:11434/v1")
         logger.debug(f"base_url set to {self.base_url}")
 
-        # Set up caching
-        self.cache_api_calls = cache_api_calls
-        self.cache_file_name = cache_file_name
-        if self.cache_api_calls:
-            self.api_cache = self._load_cache()
-
-    def set_api_cache(self, cache_api_calls, cache_file_name=None):
-        """
-        Enables or disables the caching of API calls.
-
-        Args:
-        cache_file_name (str): The name of the file to use for caching API calls.
-        """
-        self.cache_api_calls = cache_api_calls
-        self.cache_file_name = cache_file_name
-        if self.cache_api_calls:
-            # load the cache, if any
-            self.api_cache = self._load_cache()
+        # Set up caching via the base class method
+        self.set_api_cache(cache_api_calls, cache_file_name)
 
     @config_manager.config_defaults(
         model="model",
@@ -196,26 +180,6 @@ class OllamaClient:
             logger.error(f"Error extracting response: {e}")
             logger.error(f"Response structure: {response}")
             raise ValueError("Invalid response format from Ollama")
-
-    def _save_cache(self):
-        """
-        Saves the API cache to disk using pickle.
-        """
-        with open(self.cache_file_name, "wb") as f:
-            pickle.dump(self.api_cache, f)
-
-    def _load_cache(self):
-        """
-        Loads the API cache from disk.
-        """
-        if os.path.exists(self.cache_file_name):
-            try:
-                with open(self.cache_file_name, "rb") as f:
-                    return pickle.load(f)
-            except (EOFError, pickle.UnpicklingError) as e:
-                logger.warning(f"Cache file exists but could not be loaded: {e}. Starting with empty cache.")
-                return {}
-        return {}
 
     def get_models(self):
         """

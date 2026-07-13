@@ -2,6 +2,9 @@
 name = "tinyic"
 version = "0.1.0"
 requires-python = ">=3.12"
+classifiers = [
+    "Private :: Do Not Upload",
+]
 dependencies = [
     "tinytroupe",
     "python-dotenv",
@@ -9,6 +12,9 @@ dependencies = [
     "edgartools>=5.25.1",
     "streamlit>=1.40.0",
 ]
+
+[project.scripts]
+tinyic = "tinyic.cli:main"
 
 [tool.uv.sources]
 tinytroupe = { workspace = true }
@@ -18,7 +24,10 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["tinyic", "tinyic.personas", "tinyic.personas.configs", "tinyic.data", "tinyic.debate", "tinyic.ui"]
+packages = ["tinyic", "tinyic.personas", "tinyic.data", "tinyic.debate", "tinyic.ui"]
 
 [tool.setuptools.package-dir]
 tinyic = "."
+
+[tool.setuptools.package-data]
+"tinyic.personas" = ["configs/*.agent.json"]

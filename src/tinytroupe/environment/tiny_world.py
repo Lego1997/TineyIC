@@ -12,6 +12,7 @@ from tinytroupe import config_manager, utils
 from tinytroupe.agent import *
 from tinytroupe.control import transactional
 from tinytroupe.environment import logger
+from tinytroupe.session import Session, default_session
 from tinytroupe.utils import name_or_empty, pretty_datetime
 
 AgentOrWorld = Union["TinyPerson", "TinyWorld"]
@@ -22,20 +23,28 @@ class TinyWorld:
     Base class for environments.
     """
 
-    # A dict of all environments created so far.
-    all_environments = {}  # name -> environment
+    # Compatibility alias for unscoped upstream callers. Scoped callers use
+    # ``self.session.environments`` instead.
+    all_environments = default_session().environments  # name -> environment
 
     # Whether to display environments communications or not, for all environments.
     communication_display = True
+
+    # Class-level default for initial_datetime. When set (e.g. during testing),
+    # new TinyWorld instances that don't receive an explicit initial_datetime
+    # will use this value instead of datetime.now(). This keeps cache keys
+    # stable across test runs.
+    default_initial_datetime = None
 
     def __init__(
         self,
         name: str = None,
         agents=[],
-        initial_datetime=datetime.now(),
+        initial_datetime=None,
         interventions=[],
         broadcast_if_no_target=True,
         max_additional_targets_to_display=3,
+        session: Session | None = None,
     ):
         """
         Initializes an environment.
@@ -43,20 +52,29 @@ class TinyWorld:
         Args:
             name (str): The name of the environment.
             agents (list): A list of agents to add to the environment.
-            initial_datetifme (datetime): The initial datetime of the environment, or None (i.e., explicit time is optional).
-                Defaults to the current datetime in the real world.
+            initial_datetime (datetime): The initial datetime of the environment, or None (i.e., explicit time is optional).
+                Defaults to ``default_initial_datetime`` if set, otherwise the current real-world datetime.
             interventions (list): A list of interventions to apply in the environment at each simulation step.
             broadcast_if_no_target (bool): If True, broadcast actions if the target of an action is not found.
             max_additional_targets_to_display (int): The maximum number of additional targets to display in a communication. If None,
                 all additional targets are displayed.
+            session (Session, optional): Registry scope. Unscoped callers use
+                the module-level default session for upstream compatibility.
         """
+
+        self._session = session if session is not None else default_session()
 
         if name is not None:
             self.name = name
         else:
             self.name = f"TinyWorld {utils.fresh_id(self.__class__.__name__)}"
 
-        self.current_datetime = initial_datetime
+        if initial_datetime is not None:
+            self.current_datetime = initial_datetime
+        elif self.__class__.default_initial_datetime is not None:
+            self.current_datetime = self.__class__.default_initial_datetime
+        else:
+            self.current_datetime = datetime.now()
         self.broadcast_if_no_target = broadcast_if_no_target
         self.simulation_id = None  # will be reset later if the agent is used within a specific simulation scope
 
@@ -78,10 +96,38 @@ class TinyWorld:
         # Track simulation steps for cost statistics
         self._simulation_steps = 0
 
-        # add the environment to the list of all environments
-        TinyWorld.add_environment(self)
+        previous_agent_environments = {
+            id(agent): getattr(agent, "environment", None) for agent in agents
+        }
 
-        self.add_agents(agents)
+        try:
+            TinyWorld.add_environment(self)
+            self.add_agents(agents)
+        except Exception:
+            # Construction is atomic: a partially populated world must neither
+            # retain its name nor leave agents pointing at a failed object.
+            for agent in self.agents:
+                if agent.environment is self:
+                    agent.environment = previous_agent_environments[id(agent)]
+            self.agents.clear()
+            self.name_to_agent.clear()
+            self.session.unregister_environment(self)
+            raise
+
+    @property
+    def session(self) -> Session:
+        """The runtime registry scope that owns this environment."""
+        return self._session
+
+    def dispose(self):
+        """Detach agents and unregister this environment; safe to call again."""
+        for agent in tuple(self.agents):
+            if getattr(agent, "environment", None) is self:
+                agent.environment = None
+        self.agents.clear()
+        self.name_to_agent.clear()
+        self.session.unregister_environment(self)
+        return self
 
     #######################################################################
     # Simulation control methods
@@ -431,6 +477,21 @@ class TinyWorld:
             ValueError: If the agent name is not unique within the environment.
         """
 
+        if isinstance(agent, TinyPerson) and agent.session is not self.session:
+            raise ValueError(
+                f"Agent '{agent.name}' belongs to a different Session than "
+                f"environment '{self.name}'."
+            )
+        if (
+            isinstance(agent, TinyPerson)
+            and agent.environment is not None
+            and agent.environment is not self
+        ):
+            raise ValueError(
+                f"Agent '{agent.name}' is already attached to environment "
+                f"'{agent.environment.name}'."
+            )
+
         # check if the agent is not already in the environment
         if agent not in self.agents:
             logger.debug(f"Adding agent {agent.name} to the environment.")
@@ -533,6 +594,8 @@ class TinyWorld:
                 self._handle_reach_out(source, content, target)
             elif action_type == "TALK":
                 self._handle_talk(source, content, target)
+            elif action_type == "SHOW":
+                self._handle_show(source, action, target)
 
     @transactional()
     def _handle_reach_out(self, source_agent: TinyPerson, content: str, target: str):
@@ -587,6 +650,46 @@ class TinyWorld:
             target_agent.listen(content, source=source_agent)
         elif self.broadcast_if_no_target:
             self.broadcast(content, source=source_agent)
+
+    @transactional()
+    def _handle_show(self, source_agent: TinyPerson, action: dict, target: str):
+        """
+        Handles the SHOW action by forwarding images from the source agent to the target.
+
+        The source agent's image registry is consulted to resolve image IDs to actual
+        file paths / URLs, which are then delivered to the target agent via ``see()``.
+
+        Args:
+            source_agent (TinyPerson): The agent that issued the SHOW action.
+            action (dict): The full action dict, including the optional ``images`` list of image IDs.
+            target (str): The target agent's name.
+        """
+        target_agent = self.get_agent_by_name(target)
+        image_ids = action.get("images") or []
+        content = action.get("content", "")
+
+        # Resolve image IDs to actual paths via the source agent's registry
+        resolved_images = []
+        for img_id in image_ids:
+            path = source_agent._image_registry.get(img_id)
+            if path is not None:
+                resolved_images.append(path)
+            else:
+                logger.warning(
+                    f"[{self.name}] SHOW action: image ID '{img_id}' not found in {source_agent.name}'s registry."
+                )
+
+        logger.debug(
+            f"[{self.name}] Delivering SHOW from {name_or_empty(source_agent)} to {name_or_empty(target_agent)}: "
+            f"{len(resolved_images)} image(s)."
+        )
+
+        if target_agent is not None:
+            target_agent.see(images=resolved_images, description=content, source=source_agent)
+        elif self.broadcast_if_no_target:
+            for agent in self.agents:
+                if agent != source_agent:
+                    agent.see(images=resolved_images, description=content, source=source_agent)
 
     #######################################################################
     # Interaction methods
@@ -912,6 +1015,7 @@ class TinyWorld:
         del to_copy["name_to_agent"]
         del to_copy["current_datetime"]
         del to_copy["_interventions"]  # TODO: encode interventions
+        to_copy.pop("_session", None)
 
         state = copy.deepcopy(to_copy)
 
@@ -934,6 +1038,7 @@ class TinyWorld:
             Self: The environment decoded from the dictionary.
         """
         state = copy.deepcopy(state)
+        state.pop("_session", None)
 
         #################################
         # restore agents in-place
@@ -942,7 +1047,9 @@ class TinyWorld:
         for agent_state in state["agents"]:
             try:
                 try:
-                    agent = TinyPerson.get_agent_by_name(agent_state["name"])
+                    agent = TinyPerson.get_agent_by_name(
+                        agent_state["name"], session=self.session
+                    )
                 except Exception as e:
                     raise ValueError(
                         f"Could not find agent {agent_state['name']} for environment {self.name}."
@@ -973,25 +1080,23 @@ class TinyWorld:
         Adds an environment to the list of all environments. Environment names must be unique,
         so if an environment with the same name already exists, an error is raised.
         """
-        if environment.name in TinyWorld.all_environments:
-            raise ValueError(
-                f"Environment names must be unique, but '{environment.name}' is already defined."
-            )
-        else:
-            TinyWorld.all_environments[environment.name] = environment
+        environment.session.register_environment(environment)
 
     @staticmethod
-    def set_simulation_for_free_environments(simulation):
+    def set_simulation_for_free_environments(
+        simulation, session: Session | None = None
+    ):
         """
         Sets the simulation if it is None. This allows free environments to be captured by specific simulation scopes
         if desired.
         """
-        for environment in TinyWorld.all_environments.values():
+        registry = session if session is not None else default_session()
+        for environment in registry.environment_values():
             if environment.simulation_id is None:
                 simulation.add_environment(environment)
 
     @staticmethod
-    def get_environment_by_name(name: str):
+    def get_environment_by_name(name: str, session: Session | None = None):
         """
         Returns the environment with the specified name. If no environment with that name exists,
         returns None.
@@ -1002,17 +1107,16 @@ class TinyWorld:
         Returns:
             TinyWorld: The environment with the specified name.
         """
-        if name in TinyWorld.all_environments:
-            return TinyWorld.all_environments[name]
-        else:
-            return None
+        registry = session if session is not None else default_session()
+        return registry.get_environment(name)
 
     @staticmethod
-    def clear_environments():
+    def clear_environments(session: Session | None = None):
         """
         Clears the list of all environments.
         """
-        TinyWorld.all_environments = {}
+        registry = session if session is not None else default_session()
+        registry.clear_environments()
 
     #######################################################################
     # Cost statistics methods
@@ -1132,7 +1236,7 @@ class TinyWorld:
         print("=" * 70 + "\n")
 
     @staticmethod
-    def get_global_cost_stats():
+    def get_global_cost_stats(session: Session | None = None):
         """
         Gets global cost statistics across all environments.
 
@@ -1147,13 +1251,11 @@ class TinyWorld:
         from tinytroupe.clients import client
 
         base_stats = client().get_cost_stats()
-        total_agents = sum(
-            len(env.agents) for env in TinyWorld.all_environments.values()
-        )
-        total_steps = sum(
-            env._simulation_steps for env in TinyWorld.all_environments.values()
-        )
-        num_environments = len(TinyWorld.all_environments)
+        registry = session if session is not None else default_session()
+        environments = registry.environment_values()
+        total_agents = sum(len(env.agents) for env in environments)
+        total_steps = sum(env._simulation_steps for env in environments)
+        num_environments = len(environments)
 
         result = {
             "base_stats": base_stats,
@@ -1177,11 +1279,11 @@ class TinyWorld:
         return result
 
     @staticmethod
-    def pretty_print_global_cost_stats():
+    def pretty_print_global_cost_stats(session: Session | None = None):
         """
         Pretty prints global cost statistics across all environments.
         """
-        stats = TinyWorld.get_global_cost_stats()
+        stats = TinyWorld.get_global_cost_stats(session=session)
 
         print("\n" + "=" * 70)
         print("GLOBAL COST STATISTICS (ALL ENVIRONMENTS)")

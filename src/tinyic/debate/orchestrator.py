@@ -3,7 +3,9 @@
 import queue
 import threading
 
+from tinytroupe.agent import TinyPerson
 from tinytroupe.environment.tiny_world import TinyWorld
+from tinytroupe.session import Session
 
 from tinyic.constants import MAX_PERSONAS, MIN_PERSONAS
 from tinyic.data.models import DataPackage
@@ -34,7 +36,14 @@ class DebateOrchestrator(TinyWorld):
         DebatePhase.VERDICT,
     ]
 
-    def __init__(self, name: str, personas: list, data_package: DataPackage, **kwargs):
+    def __init__(
+        self,
+        name: str,
+        personas: list,
+        data_package: DataPackage,
+        session: Session | None = None,
+        **kwargs,
+    ):
         if len(personas) < MIN_PERSONAS:
             raise ValueError(
                 f"At least {MIN_PERSONAS} personas required, got {len(personas)}"
@@ -44,33 +53,80 @@ class DebateOrchestrator(TinyWorld):
                 f"At most {MAX_PERSONAS} personas allowed, got {len(personas)}"
             )
 
-        super().__init__(
-            name=name,
-            agents=personas,
-            broadcast_if_no_target=True,
-            **kwargs,
-        )
+        moved_personas = []
+        world_initialized = False
+        try:
+            # The pre-M6 Streamlit worker loads personas before constructing
+            # the orchestrator and cannot pass a Session without changing that
+            # UI file. Isolated default-loaded personas are adopted into the
+            # first persona's scope here. The batch is preflighted and every
+            # move is rolled back if any later constructor step fails.
+            if session is None:
+                real_personas = [
+                    persona
+                    for persona in personas
+                    if isinstance(persona, TinyPerson)
+                ]
+                if real_personas:
+                    session = real_personas[0].session
+                    planned_agents = dict(session.agents)
+                    for persona in real_personas[1:]:
+                        if (
+                            persona.session is not session
+                            and persona.environment is not None
+                        ):
+                            raise ValueError(
+                                f"Cannot move agent '{persona.name}' while it is "
+                                f"attached to environment "
+                                f"'{persona.environment.name}'."
+                            )
+                        existing = planned_agents.get(persona.name)
+                        if existing is not None and existing is not persona:
+                            raise ValueError(
+                                f"Agent name {persona.name} is already in use."
+                            )
+                        planned_agents[persona.name] = persona
+                    for persona in real_personas[1:]:
+                        if persona.session is not session:
+                            original_session = persona.session
+                            persona.move_to_session(session)
+                            moved_personas.append((persona, original_session))
 
-        self.data_package = data_package
-        self.current_phase = DebatePhase.SETUP
-        self._phase_index = 0
-        self._phase_history: list[str] = []
+            super().__init__(
+                name=name,
+                agents=personas,
+                broadcast_if_no_target=True,
+                session=session,
+                **kwargs,
+            )
+            world_initialized = True
 
-        self.make_everyone_accessible()
+            self.data_package = data_package
+            self.current_phase = DebatePhase.SETUP
+            self._phase_index = 0
+            self._phase_history: list[str] = []
 
-        # Optional streaming callbacks (set by UI before run_debate)
-        self.on_phase_start = None   # Optional[Callable[[str], None]] -- called with phase.value
-        self.on_agent_start = None   # Optional[Callable[[str, str], None]] -- called with (agent.name, phase.value)
-        self.on_agent_done = None    # Optional[Callable[[str, str, list], None]] -- called with (agent.name, phase.value, actions)
+            self.make_everyone_accessible()
 
-        # Optional message queue for user steering (set by UI)
-        self.message_queue = None  # Optional[queue.Queue] -- items are (message_str, target_agent_name_or_None)
-        # Optional phase gate for inter-phase pausing (set by UI)
-        self.phase_gate = None     # Optional[threading.Event] -- if set, _step waits for it before proceeding
+            # Optional streaming callbacks (set by UI before run_debate)
+            self.on_phase_start = None   # Optional[Callable[[str], None]] -- called with phase.value
+            self.on_agent_start = None   # Optional[Callable[[str, str], None]] -- called with (agent.name, phase.value)
+            self.on_agent_done = None    # Optional[Callable[[str, str, list], None]] -- called with (agent.name, phase.value, actions)
 
-        # Anti-convergence: devil's advocate rotation state
-        self._da_index = 0
-        self._current_devils_advocate = None
+            # Optional message queue for user steering (set by UI)
+            self.message_queue = None  # Optional[queue.Queue] -- items are (message_str, target_agent_name_or_None)
+            # Optional phase gate for inter-phase pausing (set by UI)
+            self.phase_gate = None     # Optional[threading.Event] -- if set, _step waits for it before proceeding
+
+            # Anti-convergence: devil's advocate rotation state
+            self._da_index = 0
+            self._current_devils_advocate = None
+        except Exception:
+            if world_initialized:
+                self.dispose()
+            for persona, original_session in reversed(moved_personas):
+                persona.move_to_session(original_session)
+            raise
 
     # ------------------------------------------------------------------
     # Context injection

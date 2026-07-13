@@ -2,23 +2,11 @@ from tinytroupe.utils import JsonSerializableRegistry
 import tinytroupe.utils as utils
 
 from tinytroupe.agent import logger
-# PATCH(tinyIC): Guard llama-index imports for version compatibility
-try:
-    from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, Document, StorageContext, load_index_from_storage
-    from llama_index.core.vector_stores import SimpleVectorStore
-    from llama_index.readers.web import SimpleWebPageReader
-except (ImportError, Exception):
-    VectorStoreIndex = None
-    SimpleDirectoryReader = None
-    Document = None
-    StorageContext = None
-    load_index_from_storage = None
-    SimpleVectorStore = None
-    SimpleWebPageReader = None
-import json
+from llama_index.core import  VectorStoreIndex, SimpleDirectoryReader, Document, StorageContext, load_index_from_storage
+from llama_index.core.vector_stores import SimpleVectorStore
+from llama_index.readers.web import SimpleWebPageReader
 import tempfile
 import os
-import shutil
 
 
 #######################################################################################################################
@@ -227,13 +215,17 @@ class BaseSemanticGroundingConnector(GroundingConnector):
         """
         # index documents by name
         if len(new_documents) > 0:
-            
-            # process documents individually too
+            # process documents individually
             for document in new_documents:
                 logger.debug(f"Adding document {document} to index, text is: {document.text}")
 
-                # out of an abundance of caution, we sanitize the text
-                document.text = utils.sanitize_raw_string(document.text)
+                # Out of an abundance of caution, we sanitize the text.
+                # We create a new Document instead of mutating document.text directly,
+                # because Document is a Pydantic model and direct assignment may raise
+                # a ValidationError depending on the Pydantic/llama-index version.
+                sanitized_text = utils.sanitize_raw_string(document.text)
+                if sanitized_text != document.text:
+                    document = self.clone_document_with_new_text(document, sanitized_text)
 
                 logger.debug(f"Document text after sanitization: {document.text}")
 
@@ -268,6 +260,28 @@ class BaseSemanticGroundingConnector(GroundingConnector):
                 )
             else:
                 self.index.refresh_ref_docs(self.documents)
+
+
+    def clone_document_with_new_text(self, original_doc: Document, new_text: str) -> Document:
+        """
+        Clones the specified document, replacing the text with the new text.
+        Here, "document" refer to the llama-index's data structure that stores a unit of content.
+        """
+        new_doc = Document(
+            text=new_text,
+            id_=original_doc.id_,
+            metadata=original_doc.metadata,
+            embedding=original_doc.embedding,
+            excluded_llm_metadata_keys=original_doc.excluded_llm_metadata_keys,
+            excluded_embed_metadata_keys=original_doc.excluded_embed_metadata_keys,
+            metadata_seperator=original_doc.metadata_seperator,
+            metadata_template=original_doc.metadata_template,
+            text_template=original_doc.text_template,
+            relationships=original_doc.relationships,
+            start_char_idx=original_doc.start_char_idx,
+            end_char_idx=original_doc.end_char_idx,
+        )
+        return new_doc    
     
     @staticmethod
     def _set_internal_id_to_documents(documents:list, external_attribute_name:str ="file_name") -> None:

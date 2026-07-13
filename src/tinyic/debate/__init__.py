@@ -9,6 +9,7 @@ from .extraction import extract_votes, build_scorecard
 from .memo import generate_memo, extract_disagreements
 
 from tinyic.constants import MIN_PERSONAS
+from tinytroupe.session import Session
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,7 @@ def run_debate(
     ticker: str,
     persona_names: list[str],
     data_package=None,
+    session: Session | None = None,
 ) -> DebateResult:
     """Run a complete investment committee debate.
 
@@ -24,6 +26,8 @@ def run_debate(
         ticker: Stock ticker symbol (e.g., "AAPL").
         persona_names: List of persona registry names (min 2).
         data_package: Pre-built DataPackage, or None to fetch live data.
+        session: Optional caller-owned registry scope. When omitted, this
+            function creates and closes an isolated session for the debate.
 
     Returns:
         DebateResult with scorecard, transcript, and phase history.
@@ -39,32 +43,47 @@ def run_debate(
     from tinyic.personas.registry import load_persona
     from tinyic.data.pipeline import build_data_package as _build_data_package
 
-    personas = [load_persona(name) for name in persona_names]
+    owns_session = session is None
+    debate_session = session if session is not None else Session()
+    personas = []
+    orchestrator = None
 
-    if data_package is None:
-        data_package = _build_data_package(ticker)
+    try:
+        for name in persona_names:
+            personas.append(load_persona(name, session=debate_session))
 
-    orchestrator = DebateOrchestrator(
-        name=f"IC-{ticker}",
-        personas=personas,
-        data_package=data_package,
-    )
-    orchestrator.run_debate()
+        if data_package is None:
+            data_package = _build_data_package(ticker)
 
-    cost_stats = orchestrator.get_cost_stats()
+        orchestrator = DebateOrchestrator(
+            name=f"IC-{ticker}",
+            personas=personas,
+            data_package=data_package,
+            session=debate_session,
+        )
+        orchestrator.run_debate()
 
-    votes = extract_votes(orchestrator)
-    scorecard = build_scorecard(votes, ticker, data_package.company_name)
-    transcript = orchestrator.pretty_current_interactions()
+        cost_stats = orchestrator.get_cost_stats()
 
-    return DebateResult(
-        ticker=ticker,
-        company_name=data_package.company_name,
-        scorecard=scorecard,
-        phases_completed=orchestrator._phase_history,
-        transcript=transcript,
-        cost_stats=cost_stats,
-    )
+        votes = extract_votes(orchestrator)
+        scorecard = build_scorecard(votes, ticker, data_package.company_name)
+        transcript = orchestrator.pretty_current_interactions()
+
+        return DebateResult(
+            ticker=ticker,
+            company_name=data_package.company_name,
+            scorecard=scorecard,
+            phases_completed=orchestrator._phase_history,
+            transcript=transcript,
+            cost_stats=cost_stats,
+        )
+    finally:
+        if orchestrator is not None:
+            orchestrator.dispose()
+        for persona in personas:
+            debate_session.unregister_agent(persona)
+        if owns_session:
+            debate_session.close()
 
 
 def get_debate_cost_stats(result: DebateResult) -> dict:

@@ -2,7 +2,10 @@
 name = "tinyic-workspace"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "tinyic",
+    "tinytroupe",
+]
 
 [tool.uv.workspace]
 members = ["src/tinytroupe", "src/tinyic"]

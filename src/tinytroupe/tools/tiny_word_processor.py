@@ -1,6 +1,4 @@
 
-import json
-
 from tinytroupe.tools import logger, TinyTool
 
 
@@ -39,30 +37,23 @@ class TinyWordProcessor(TinyTool):
             self.exporter.export(artifact_name=artifact_name, artifact_data= json_doc, content_type="Document", content_format="md", target_format="json")
 
     def _process_action(self, agent, action) -> bool:
-        try:
-            if action['type'] == "WRITE_DOCUMENT" and action['content'] is not None:
-                # parse content json
-                if isinstance(action['content'], str):
-                    doc_spec = utils.extract_json(action['content'])
-                else:
-                    doc_spec = action['content']
-                
-                # checks whether there are any kwargs that are not valid
-                valid_keys = ["title", "content", "author"]
-                utils.check_valid_fields(doc_spec, valid_keys)
-
-                # uses the kwargs to create a new document
-                self.write_document(**doc_spec)
-
-                return True
-
+        if action['type'] == "WRITE_DOCUMENT" and action['content'] is not None:
+            # parse content json
+            if isinstance(action['content'], str):
+                doc_spec = utils.extract_json(action['content'])
             else:
-                return False
-        except json.JSONDecodeError as e:
-            logger.error(f"Error parsing JSON content: {e}. Original content: {action['content']}")
-            return False
-        except Exception as e:
-            logger.error(f"Error processing action: {e}")
+                doc_spec = action['content']
+            
+            # checks whether there are any kwargs that are not valid
+            valid_keys = ["title", "content", "author"]
+            utils.check_valid_fields(doc_spec, valid_keys)
+
+            # uses the kwargs to create a new document
+            self.write_document(**doc_spec)
+
+            return True
+
+        else:
             return False
 
     def actions_definitions_prompt(self) -> str:
