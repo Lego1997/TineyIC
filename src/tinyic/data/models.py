@@ -111,6 +111,61 @@ class SocialSentiment(BaseModel):
     bearish_points: list[str] = Field(default_factory=list)
 
 
+class CNStatements(BaseModel):
+    """Key line items from the latest reported period (A-share or HK).
+
+    Keys are English (language-neutral for downstream prompts); when the
+    source label was Chinese/ambiguous, the original label is preserved in
+    ``source_labels`` keyed by the same English name.  Amounts are raw
+    currency units (not 万元 / thousands).
+    """
+    period: Optional[str] = None       # report-period label, e.g. "2026-03-31"
+    currency: Optional[str] = None     # "CNY" for A-share; from source for HK
+    income: dict = Field(default_factory=dict)
+    balance: dict = Field(default_factory=dict)
+    cash_flow: dict = Field(default_factory=dict)
+    source_labels: dict = Field(default_factory=dict)
+
+
+class CNRatios(BaseModel):
+    """Financial-analysis indicators (EPS, ROE, margins; ``*_pct`` = percent)."""
+    period: Optional[str] = None
+    ratios: dict = Field(default_factory=dict)
+    source_labels: dict = Field(default_factory=dict)
+
+
+class CNValuation(BaseModel):
+    """Valuation snapshot (A-share; EastMoney ``stock_value_em``)."""
+    as_of: Optional[str] = None
+    pe_ttm: Optional[float] = None
+    pb: Optional[float] = None
+    market_cap: Optional[float] = None  # total market cap, CNY
+
+
+class CNAnalystConsensus(BaseModel):
+    """Sell-side consensus (A-share; EastMoney profit forecast)."""
+    report_count: Optional[int] = None
+    ratings: dict = Field(default_factory=dict)        # buy/overweight/neutral/underweight/sell -> count
+    consensus_eps: dict = Field(default_factory=dict)  # year ("2026") -> forecast EPS
+
+
+class CNMarketData(BaseModel):
+    """China-market fundamentals (A-share / HK) from akshare (optional extra).
+
+    Every section is Optional: each sub-fetch degrades independently, and
+    ``failed_sections`` records which ones failed so the pipeline can surface
+    a "partial" warning.
+    """
+    market: str  # "a_share" | "hk"
+    source: str = "akshare (EastMoney/Sina)"
+    statements: Optional[CNStatements] = None
+    ratios: Optional[CNRatios] = None
+    valuation: Optional[CNValuation] = None
+    consensus: Optional[CNAnalystConsensus] = None
+    profile: Optional[str] = None  # HK company profile text, truncated
+    failed_sections: list[str] = Field(default_factory=list)
+
+
 class ResearchBrief(BaseModel):
     """LLM-synthesized research brief from web search results.
 
@@ -139,6 +194,7 @@ class DataPackage(BaseModel):
     filing_10q: Optional[FilingSummary] = None
     news: Optional[NewsSummary] = None
     social: Optional[SocialSentiment] = None
+    cn_market: Optional[CNMarketData] = None
     research_brief: Optional[ResearchBrief] = None
     warnings: list[str] = Field(default_factory=list)
 
@@ -157,12 +213,19 @@ class DataPackage(BaseModel):
         json_str = serialize()
         if len(json_str) > 20000:
             # Truncate to fit budget
-            for key in ["research_brief", "social", "filing_10q", "filing_10k"]:
+            for key in ["research_brief", "cn_market", "social", "filing_10q", "filing_10k"]:
                 if key in data and len(json_str) > 20000:
                     if key == "research_brief" and isinstance(data[key], dict):
                         for field in data[key]:
                             if isinstance(data[key][field], str) and len(data[key][field]) > 800:
                                 data[key][field] = data[key][field][:800] + "..."
+                    elif key == "cn_market" and isinstance(data[key], dict):
+                        profile = data[key].get("profile")
+                        if isinstance(profile, str) and len(profile) > 400:
+                            data[key]["profile"] = profile[:400] + "..."
+                        for section in ("statements", "ratios"):
+                            if isinstance(data[key].get(section), dict):
+                                data[key][section].pop("source_labels", None)
                     elif isinstance(data[key], dict) and "text_summary" in data[key]:
                         data[key]["text_summary"] = data[key]["text_summary"][:1500] + "..."
                     elif isinstance(data[key], dict) and "summary" in data[key]:

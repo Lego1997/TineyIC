@@ -11,6 +11,11 @@ from .financials import fetch_financials
 from .news import fetch_news
 from .filings import fetch_filings
 from .social import fetch_social_sentiment
+from .cnmarket import (
+    cn_market_dependency_missing,
+    detect_cn_market,
+    fetch_cn_market_data,
+)
 from .research import build_research_brief
 
 logger = logging.getLogger(__name__)
@@ -86,7 +91,26 @@ def build_data_package(ticker: str, deep_research: bool = True) -> DataPackage:
         else:
             warnings.append("X/Twitter sentiment unavailable")
 
-    # Step 7: Deep research (DATA-06) -- optional, default enabled
+    # Step 7: China market data (A-share / HK tickers only; optional extra)
+    cn_market = None
+    if detect_cn_market(resolved_ticker) is not None:
+        cn_market = fetch_cn_market_data(resolved_ticker, company_name)
+        if cn_market is None:
+            if cn_market_dependency_missing():
+                warnings.append(
+                    "China market data disabled: install the cn extra "
+                    "(uv sync --extra cn)"
+                )
+            else:
+                warnings.append("China market data unavailable")
+        elif cn_market.failed_sections:
+            warnings.append(
+                "China market data partial: "
+                + ", ".join(cn_market.failed_sections)
+                + " unavailable"
+            )
+
+    # Step 8: Deep research (DATA-06) -- optional, default enabled
     research_brief = None
     if deep_research:
         research_brief = build_research_brief(resolved_ticker, company_name, description)
@@ -98,7 +122,7 @@ def build_data_package(ticker: str, deep_research: bool = True) -> DataPackage:
             else:
                 warnings.append("Deep research unavailable")
 
-    # Step 8: Assemble DataPackage
+    # Step 9: Assemble DataPackage
     package = DataPackage(
         ticker=resolved_ticker,
         company_name=company_name,
@@ -109,6 +133,7 @@ def build_data_package(ticker: str, deep_research: bool = True) -> DataPackage:
         filing_10q=filing_10q,
         news=news,
         social=social,
+        cn_market=cn_market,
         research_brief=research_brief,
         warnings=warnings,
     )
