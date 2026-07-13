@@ -34,7 +34,14 @@ set up non-interactively / interactively:
 ```bash
 tinyic doctor --json      # machine-readable auth/provider probe; exit 0 = ready, 3 = not
 tinyic onboard            # interactive TUI wizard to add & verify a credential
+tinyic models --json      # one JSON document: every provider's model catalog
 ```
+
+Providers: `openai`, `anthropic`, `grok`, `google`, `kimi`, `ollama` (local).
+`tinyic models [provider] [--refresh] [--json]` lists what each can run —
+static catalogs by default; `--refresh` merges each provider's live model
+listing (a provider whose refresh fails degrades to its static catalog with a
+warning; the command still exits 0).
 
 Missing auth never blocks on a prompt in headless mode — it exits `3` with a
 `doctor`-style reason on STDERR.
@@ -56,7 +63,7 @@ STDERR. Useful flags:
 |---|---|
 | `--personas a,b,c` | committee by registry name (default: the six members; min 2) |
 | `--preset NAME` | a named committee preset from `tinyic.toml` |
-| `--model provider/model` | per-debate override for every role (e.g. `anthropic/claude-opus-4-8`, `openai/gpt-5.6`, `ollama/qwen3:32b`) |
+| `--model provider/model` | per-debate override for every role (e.g. `openai/gpt-5.6-sol`, `anthropic/claude-opus-4-8`, `grok/grok-4.5`, `kimi/kimi-k2.6`, `ollama/qwen3:32b`) |
 | `--thinking L` | reasoning level: `off·minimal·low·medium·high·xhigh·max` |
 | `--da persona` | pin the cross-exam devil's advocate |
 | `--no-research` | skip the web-research data source (faster, cheaper) |

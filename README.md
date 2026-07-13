@@ -72,13 +72,19 @@ tinyic debate AAPL # convene the committee — opens the live Town Hall TUI
 ```
 
 `tinyic onboard` walks auth setup in a full-screen wizard and persists only
-verified routes to your OS keyring. Prefer a `.env`? `OPENAI_API_KEY=sk-…` in a
-`.env` file (copy `.env.example`) is picked up automatically; `XAI_API_KEY` is
-optional and only enables the X/Twitter sentiment source.
+verified routes to your OS keyring — then, once a provider verifies, lets you
+pick that provider's model as the committee default (saved to
+`~/.tinyic/tinyic.toml`). Prefer a `.env`? `OPENAI_API_KEY=sk-…` in a `.env`
+file (copy `.env.example`) is picked up automatically. Other keys:
+`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY` (Grok — also enables the
+X/Twitter sentiment source), and `MOONSHOT_API_KEY` (or `KIMI_API_KEY`) for
+Kimi.
 
 Not sure you're ready? `tinyic doctor` prints a machine- or human-readable
 provider/auth probe (exit `0` = ready, `3` = setup needed); add `--live` for an
-explicit one-token check against the resolved model binding.
+explicit one-token check against the resolved model binding. `tinyic models`
+lists what every provider can run (`--refresh` merges each provider's live
+model listing over the shipped catalog).
 
 ---
 
@@ -172,23 +178,34 @@ TinyIC needs exactly one working LLM credential. Providers are **in-house
 adapters** (no LiteLLM/aisuite) across four wire formats, with two kinds of
 credential:
 
-- **API keys** — OpenAI, Anthropic, Google, xAI, DeepSeek (and any
-  OpenAI-compatible endpoint), plus **Ollama** for fully local models.
+- **API keys** — OpenAI, Anthropic, Google, Grok (`XAI_API_KEY`), Kimi /
+  Moonshot AI (`MOONSHOT_API_KEY` or `KIMI_API_KEY`; `MOONSHOT_BASE_URL`
+  selects the China endpoint), and any OpenAI-compatible endpoint, plus
+  **Ollama** for fully local models.
 - **Subscription lanes** — an existing **OpenAI Codex / ChatGPT** subscription
-  (via the Codex runtime) or an **Anthropic Claude Code** subscription (via the
-  Claude Agent SDK), so you can run a committee without paying per token.
+  (via the Codex runtime), an **Anthropic Claude Code** subscription (via the
+  Claude Agent SDK), or a **Grok SuperGrok / X Premium+** subscription (a
+  read-only reuse of your `grok` CLI sign-in, or a device-code sign-in of
+  TinyIC's own), so you can run a committee without paying per token.
 
-> **Policy note.** The Anthropic subscription lane is gated by a `policy_guard`
-> kill switch in `tinyic.toml` (`[auth.anthropic] policy_guard`). Subscription
-> lanes are **additive, never load-bearing**: if a lane is disabled or a rate
-> window is exhausted, an API-key profile takes over as overflow. Third-party
-> subscription policies change — use the lane at your own discretion.
+> **Policy note.** The Anthropic and Grok subscription lanes are each gated by
+> a `policy_guard` kill switch in `tinyic.toml` (`[auth.anthropic]` /
+> `[auth.grok]`). Google is **API-key-only by policy**: Google's terms prohibit
+> third-party reuse of consumer-subscription OAuth (the June 2026 Antigravity
+> transition), so TinyIC ships no Google subscription lane. Subscription lanes
+> are **additive, never load-bearing**: if a lane is disabled or a rate window
+> is exhausted, an API-key profile takes over as overflow. Third-party
+> subscription policies change — use the lanes at your own discretion.
 
 Committees are described by **presets** in `tinyic.toml` (a `default`
 single-model preset and a mixed-provider `heterogeneous` example). Select one
 with `--preset`, or force every role onto one model with
-`--model provider/model` (e.g. `anthropic/claude-opus-4-8`, `ollama/qwen3:32b`)
-and `--thinking off|minimal|low|medium|high|xhigh|max`.
+`--model provider/model` (e.g. `openai/gpt-5.6-sol`, `grok/grok-4.5`,
+`kimi/kimi-k2.6`, `ollama/qwen3:32b`) and
+`--thinking off|minimal|low|medium|high|xhigh|max`. Discover what each
+provider offers with `tinyic models [provider] [--refresh] [--json]`, and set
+a personal default from the onboarding wizard's model step (persisted to the
+`~/.tinyic/tinyic.toml` overlay, which wins over the repo config key-by-key).
 
 ## Architecture
 
@@ -220,14 +237,14 @@ is enforced by tests.
 ```
 src/
 ├── tinyic/                     # the application
-│   ├── cli.py                  # argparse entry point (tinyic debate|runs|result|export|replay|doctor|onboard)
+│   ├── cli.py                  # argparse entry point (tinyic debate|runs|result|export|replay|models|doctor|onboard)
 │   ├── headless.py             # the debate worker + log-follower bridge (interactive vs --json)
 │   ├── events.py               # EventLog + schema-v1 envelope (the engine↔renderer contract)
 │   ├── result.py · report.py   # result document assembly · HTML/MD renderers
 │   ├── personas/               # 6 investor configs + registry
 │   ├── data/                   # graceful-degradation data pipeline (yfinance, EDGAR, news, sentiment, research)
 │   ├── debate/                 # orchestrator, moderator, steering, extraction, MoA memo, analytics
-│   ├── models/                 # model-agnostic layer: bindings, adapters (×wire-formats), thinking ladder, presets
+│   ├── models/                 # model-agnostic layer: bindings, adapters (×wire-formats), thinking ladder, presets, catalog
 │   ├── auth/                   # profiles, keyring, OAuth/subscription lanes, doctor, live probe
 │   └── tui/                    # Textual Town Hall + onboarding wizard + live follower
 └── tinytroupe/                 # forked Microsoft TinyTroupe (vendored; treat deliberately)
