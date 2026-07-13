@@ -165,9 +165,27 @@ _MEMO_SECTIONS = (
 )
 
 
+# Deterministic character-slice width for the synthetic ``*_delta`` streams. The
+# only property that matters is that the fragments concatenate back to exactly
+# the ``*_completed`` full_text (see ``_chunks``), so a delta log and its
+# completed-only twin fold to identical final render state.
+DELTA_CHUNK_CHARS = 24
+
+
 def _fmt_ts(moment: datetime) -> str:
     """UTC ISO-8601 with millisecond precision and a trailing ``Z``."""
     return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
+
+
+def _chunks(text: str, size: int = DELTA_CHUNK_CHARS) -> list[str]:
+    """Slice ``text`` into fixed-width fragments that join back to exactly ``text``.
+
+    Deterministic and reversible: ``"".join(_chunks(s)) == s`` for any ``s``, and
+    empty text yields no fragments. Used to fabricate ``think_delta`` /
+    ``talk_delta`` streams whose pieces concatenate to the ``*_completed``
+    full_text — the invariant the delta/completed-consistency pilots rely on.
+    """
+    return [text[i : i + size] for i in range(0, len(text), size)]
 
 
 class _Log:
@@ -229,9 +247,18 @@ def _turn(
     goals: list[str],
     attention: str,
     emotions: str,
+    stream: bool = False,
 ) -> str:
     """Emit one committed turn: started -> think -> talk -> cognitive_state ->
-    completed -> usage. Returns the turn_id (used for steering delivery refs)."""
+    completed -> usage. Returns the turn_id (used for steering delivery refs).
+
+    With ``stream=True`` the turn additionally emits ``think_delta`` fragments
+    before its ``think_completed`` and ``talk_delta`` fragments before its
+    ``talk_completed`` (turn-scoped, ordered exactly as the M2 engine streams
+    them). The fragments concatenate to the matching ``full_text`` — the
+    delta/completed-consistency contract the live-think pilots exercise — so a
+    streamed turn folds to the identical final state as its completed-only twin.
+    """
     turn_id = log.next_turn_id()
     started: dict[str, Any] = {
         "turn_id": turn_id,
@@ -242,7 +269,13 @@ def _turn(
     if target_persona is not None:
         started["target_persona"] = target_persona
     log.emit("turn_started", started)
+    if stream:
+        for fragment in _chunks(think):
+            log.emit("think_delta", {"turn_id": turn_id, "text": fragment})
     log.emit("think_completed", {"turn_id": turn_id, "full_text": think})
+    if stream:
+        for fragment in _chunks(talk):
+            log.emit("talk_delta", {"turn_id": turn_id, "text": fragment})
     log.emit("talk_completed", {"turn_id": turn_id, "full_text": talk})
     log.emit(
         "cognitive_state",
@@ -280,8 +313,15 @@ def _turn(
     return turn_id
 
 
-def build_events() -> list[dict[str, Any]]:
-    """Return the full ordered list of envelope dicts for the synthetic debate."""
+def build_events(*, stream: bool = False) -> list[dict[str, Any]]:
+    """Return the full ordered list of envelope dicts for the synthetic debate.
+
+    ``stream=False`` (the default) is the byte-stable, completed-only log the
+    committed fixture and every existing renderer test consume. ``stream=True``
+    interleaves ``think_delta`` / ``talk_delta`` fragments into each turn (see
+    :func:`_turn`) to exercise the live-think path; it folds to the identical
+    final render state as the default (:func:`build_delta_events`).
+    """
     log = _Log()
 
     # --- Lifecycle: debate_started -------------------------------------- #
@@ -373,6 +413,7 @@ def build_events() -> list[dict[str, Any]]:
             goals=[f"State an evidence-based opening view on {TICKER}"],
             attention=angle,
             emotions="Composed and deliberate, laying out first principles.",
+            stream=stream,
         )
         stance = _STANCE[persona]
         log.emit(
@@ -408,6 +449,7 @@ def build_events() -> list[dict[str, Any]]:
         goals=["Expose unpriced downside in the bull case"],
         attention="crowded positioning risk",
         emotions="Skeptical and probing, hunting for complacency.",
+        stream=stream,
     )
     _turn(
         log,
@@ -421,6 +463,7 @@ def build_events() -> list[dict[str, Any]]:
         goals=["Defend the durable-earnings thesis"],
         attention="owner earnings and buybacks",
         emotions="Calm and unbothered by the crowd framing.",
+        stream=stream,
     )
 
     # Mid-phase steer: delivered at the next speaker-turn boundary (steer mode).
@@ -451,6 +494,7 @@ def build_events() -> list[dict[str, Any]]:
         goals=["Force a concrete answer on supply concentration"],
         attention="China assembly dependency",
         emotions="Blunt and impatient with hand-waving.",
+        stream=stream,
     )
     _turn(
         log,
@@ -464,6 +508,7 @@ def build_events() -> list[dict[str, Any]]:
         goals=["Acknowledge the risk without abandoning the thesis"],
         attention="assembly diversification timeline",
         emotions="Candid, giving ground where the fact demands it.",
+        stream=stream,
     )
     log.emit("phase_completed", {"phase": "cross_exam", "index": 1, "turn_count": 4})
 
@@ -497,6 +542,7 @@ def build_events() -> list[dict[str, Any]]:
             goals=["Rebut with an explicit valuation anchor"],
             attention="valuation multiple vs. history",
             emotions="Firm, sharpening rather than softening the view.",
+            stream=stream,
         )
     # Collapse metrics: one persona caves under the cross-exam pressure, one holds.
     log.emit(
@@ -538,6 +584,7 @@ def build_events() -> list[dict[str, Any]]:
             goals=["Cast a final, reasoned vote"],
             attention="final decision",
             emotions="Resolved, ready to commit to a verdict.",
+            stream=stream,
         )
         log.emit(
             "vote_recorded",
@@ -645,6 +692,21 @@ def build_events() -> list[dict[str, Any]]:
     )
 
     return log.events
+
+
+def build_delta_events() -> list[dict[str, Any]]:
+    """The synthetic debate with per-turn ``think_delta`` / ``talk_delta`` streams.
+
+    The *delta twin* of :func:`build_events`: same personas, phases, votes, and
+    artifacts, but every turn additionally streams its private reasoning and
+    speech in fragments before the matching ``*_completed`` event. Because the
+    fragments concatenate to the same ``full_text`` and ``*_completed`` overwrites
+    the accumulated deltas, this folds to the identical final render state as the
+    completed-only :func:`build_events` — the property the live-think pilots
+    assert (delta/completed consistency), while additionally driving the FR-5.1
+    live-think highlight block that a completed-only log never triggers.
+    """
+    return build_events(stream=True)
 
 
 def to_jsonl(events: list[dict[str, Any]]) -> str:
