@@ -6,10 +6,12 @@ Public API:
   fetch_news(ticker) -> Optional[NewsSummary]
   fetch_filings(ticker, form_type) -> Optional[FilingSummary]
   fetch_social_sentiment(ticker, company_name) -> Optional[SocialSentiment]
+  fetch_cn_market_data(ticker, company_name) -> Optional[CNMarketData]
   build_data_package(ticker) -> DataPackage
 """
 
 from .models import (
+    CNMarketData,
     DataPackage,
     FinancialData,
     FilingSummary,
@@ -22,10 +24,12 @@ from .financials import fetch_financials
 from .news import fetch_news
 from .filings import fetch_filings
 from .social import fetch_social_sentiment
+from .cnmarket import fetch_cn_market_data
 from .research import build_research_brief
 from .pipeline import build_data_package
 
 __all__ = [
+    "CNMarketData",
     "DataPackage",
     "FinancialData",
     "FilingSummary",
@@ -37,6 +41,7 @@ __all__ = [
     "fetch_news",
     "fetch_filings",
     "fetch_social_sentiment",
+    "fetch_cn_market_data",
     "build_research_brief",
     "build_data_package",
 ]

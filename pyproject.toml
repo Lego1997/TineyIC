@@ -7,6 +7,12 @@ dependencies = [
     "tinytroupe",
 ]
 
+[project.optional-dependencies]
+# `uv sync --extra <name>` resolves extras against THIS root project, so the
+# documented `uv sync --extra cn` command must be forwarded to the tinyic
+# member (which declares the actual akshare dependency).
+cn = ["tinyic[cn]"]
+
 [tool.uv.workspace]
 members = ["src/tinytroupe", "src/tinyic"]
 
