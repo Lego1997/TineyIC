@@ -6,8 +6,10 @@ to render a recorded event log in the Textual TUI. M3 adds the headless
 M6 adds the flagship ``tinyic debate`` (interactive Town Hall or headless/JSON
 agent mode, FR-6.1/6.2) plus ``tinyic runs list`` and ``tinyic result`` for
 consuming recorded debates, and ``tinyic export`` for rendering a recorded debate
-as a self-contained HTML page or a Markdown bundle (FR-3.2). The parser keeps
-subcommands *optional* so a bare ``tinyic`` and ``tinyic --help`` both work.
+as a self-contained HTML page or a Markdown bundle (FR-3.2). v2.1 adds ``tinyic
+models`` — the per-provider model catalog (static, or ``--refresh`` live). The
+parser keeps subcommands *optional* so a bare ``tinyic`` and ``tinyic --help``
+both work.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_runs_parser(subparsers)
     _add_result_parser(subparsers)
     _add_export_parser(subparsers)
+    _add_models_parser(subparsers)
 
     replay = subparsers.add_parser(
         "replay",
@@ -234,6 +237,67 @@ def _add_export_parser(subparsers) -> None:
         help="Write the report to FILE (default: STDOUT).",
     )
     export.set_defaults(func=_cmd_export)
+
+
+def _add_models_parser(subparsers) -> None:
+    """Register ``tinyic models [provider] [--refresh] [--json]`` (v2.1)."""
+    models = subparsers.add_parser(
+        "models",
+        help="List the per-provider model catalog (static, or --refresh live).",
+        description=(
+            "Show the model catalog per provider: the shipped static catalogs, "
+            "or — with --refresh — each provider's live model listing merged "
+            "over them. Refresh uses the configured credentials; a provider "
+            "whose refresh fails degrades to its static catalog with a warning "
+            "(the command still exits 0)."
+        ),
+    )
+    models.add_argument(
+        "provider",
+        nargs="?",
+        help="Limit the catalog to one provider (e.g. anthropic).",
+    )
+    models.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Query the providers' live model-listing endpoints (network).",
+    )
+    models.add_argument(
+        "--json",
+        dest="json_mode",
+        action="store_true",
+        help="Write one machine-readable models schema-v1 JSON document.",
+    )
+    models.add_argument("--config", help="Path to tinyic.toml.")
+    models.set_defaults(func=_cmd_models)
+
+
+def _cmd_models(args: argparse.Namespace) -> int:
+    """List the merged model catalog (human table or ``--json``)."""
+    # Imported lazily so ``--help`` and the other light commands never pull the
+    # model registry (and, on --refresh, the auth manager / keyring). Importing
+    # tinyic.models transitively triggers TinyTroupe's one-time disclaimer +
+    # config dump; run under a redirect so ``--json`` stays one clean document.
+    try:
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            from .models import catalog as catalog_module
+
+            service = catalog_module.CatalogService(config_path=args.config)
+            catalogs = service.snapshot(args.provider, refresh=args.refresh)
+    except KeyError as exc:
+        print(f"tinyic: {exc.args[0]}", file=sys.stderr)
+        return 2
+    if args.json_mode:
+        document = catalog_module.to_document(catalogs)
+        print(_json.dumps(document, ensure_ascii=False, separators=(",", ":")))
+    else:
+        print(catalog_module.render_human(catalogs))
+    # Per-provider refresh degradation is reported in the output, never via a
+    # non-zero exit: the command itself succeeded.
+    return 0
 
 
 def _cmd_debate(args: argparse.Namespace) -> int:

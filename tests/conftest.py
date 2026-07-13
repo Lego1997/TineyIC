@@ -31,6 +31,12 @@ def isolate_tinyic_run_logs(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("TINYIC_RUNS_DIR", str(tmp_path / "tinyic-runs"))
     monkeypatch.setenv("TINYIC_STATE_DIR", str(tmp_path / "tinyic-state"))
+    # The user config overlay (~/.tinyic/tinyic.toml) deep-merges over every
+    # loaded config; point it into the sandbox so a developer's real overlay
+    # never leaks into (or is written by) the offline suite.
+    monkeypatch.setenv(
+        "TINYIC_USER_CONFIG", str(tmp_path / "tinyic-user" / "tinyic.toml")
+    )
 
 
 @pytest.fixture

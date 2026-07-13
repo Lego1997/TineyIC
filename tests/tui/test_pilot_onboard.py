@@ -306,6 +306,11 @@ async def test_c_device_code_flow_renders_code_url_and_completes(tmp_path):
 
         # Release the fake poll -> verify + persist the secretless OAuth marker.
         release.set()
+        # The verified lane lands on the MODEL step; esc keeps the default.
+        await _pump_until(
+            pilot, lambda: controller.screen is OnboardScreen.MODEL
+        )
+        await pilot.press("escape")
         await _pump_until(
             pilot,
             lambda: controller.current_plan() is not None
@@ -352,6 +357,10 @@ async def test_c_api_key_input_is_masked_and_persists(tmp_path):
         assert profile is not None and profile.lane is AuthLane.API_KEY
         assert store.get_auth_order("openai") == ("openai:key",)
         assert controller.plans[0].outcome == "verified"
+        # The verified lane lands on the MODEL step; esc keeps the default.
+        assert controller.screen is OnboardScreen.MODEL
+        await pilot.press("escape")
+        await pilot.pause()
         assert controller.current_plan().provider == "anthropic"
 
         # The secret survives nowhere the user (or a log) could read it.
