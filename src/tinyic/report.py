@@ -558,8 +558,9 @@ a{color:var(--amber)}
 .th-header h1{font-size:22px;letter-spacing:.2px}
 .th-meta,.th-usage-chip{color:var(--muted);font-size:13px;margin-top:6px}
 .th-usage-chip{margin-top:2px}
-.status-complete b,.th-meta .status-complete{color:var(--buy)}
-.status-partial b{color:var(--hold)} .status-error b,.status-incomplete b{color:var(--sell)}
+.th-meta .status-complete{color:var(--buy)}
+.th-meta .status-partial{color:var(--hold)}
+.th-meta .status-error,.th-meta .status-incomplete{color:var(--sell)}
 .th-main{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:24px;
   max-width:1200px;margin:0 auto;padding:24px}
 .th-transcript{min-width:0}
