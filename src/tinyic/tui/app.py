@@ -83,9 +83,11 @@ from .widgets import (
     ArtifactCard,
     PersonaCard,
     PhaseBanner,
+    ScorecardTable,
     StatusHeader,
     SteeringNote,
     TurnCard,
+    UsageTable,
 )
 
 if TYPE_CHECKING:
@@ -337,6 +339,24 @@ class TownHallApp(App):
     }
     .artifact-card.kind-scorecard { border: round $success; }
     .artifact-card.kind-debate-error { border: round $error; }
+    .artifact-card.kind-usage-rollup { border: round $accent; }
+    /* Disagreement: literally stance-colored sides — bull left, bear right. */
+    .artifact-card.kind-disagreement {
+        border: round $warning;
+        border-left: thick $success;
+        border-right: thick $error;
+    }
+    /* Collapse check: the border takes the verdict's color. */
+    .artifact-card.kind-collapse-metric.caved {
+        border: round $error;
+        border-left: thick $error;
+    }
+    .artifact-card.kind-collapse-metric.held {
+        border: round $success;
+        border-left: thick $success;
+    }
+    .table-card-summary { height: auto; }
+    .table-card-table { height: auto; }
 
     .older-placeholder {
         height: auto;
@@ -460,7 +480,11 @@ class TownHallApp(App):
             id="composer-input",
         )
         self._persona_widgets: dict[str, PersonaCard] = {}
-        self._item_widgets: dict[str, TurnCard | PhaseBanner | SteeringNote | ArtifactCard] = {}
+        self._item_widgets: dict[
+            str,
+            TurnCard | PhaseBanner | SteeringNote | ArtifactCard
+            | ScorecardTable | UsageTable,
+        ] = {}
         # Transcript virtualization (FR-5.5): only the newest ``_window_size``
         # transcript items stay mounted; ``PageUp`` widens the window and the
         # ``_older_placeholder`` stands in for everything scrolled out above it.
@@ -779,6 +803,12 @@ class TownHallApp(App):
             return TurnCard(item)
         if item.kind == "steering":
             return SteeringNote(item)
+        # Tabular artifacts render as real DataTable cards (Stage-2); a
+        # scorecard with no derivable rows degrades to the generic card.
+        if item.kind == "scorecard" and item.rows:
+            return ScorecardTable(item)
+        if item.kind == "usage_rollup" and item.rows:
+            return UsageTable(item)
         return ArtifactCard(item)
 
     # -- key routing (FR-5.2) --------------------------------------------- #

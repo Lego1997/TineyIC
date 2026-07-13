@@ -110,6 +110,11 @@ class PersonaState:
     stance: str = ""
     vote: str = ""
     confidence: str = ""
+    # Vote provenance (Stage-2 scorecard table): whether the persona changed
+    # their mind between opening and verdict, and whether the vote came from a
+    # structured emission or transcript extraction.
+    changed_mind: bool | None = None
+    vote_source: str = ""
     caved: bool | None = None
     speaking: bool = False
 
@@ -204,13 +209,21 @@ class SteeringState:
 
 @dataclass
 class ArtifactState:
-    """A standalone transcript card for a structured artifact (memo, scorecard…)."""
+    """A standalone transcript card for a structured artifact (memo, scorecard…).
+
+    ``rows`` is an optional *derived* tabular form of the artifact (one mapping
+    per row), populated by the fold for artifacts that render as real tables in
+    the TUI (the scorecard's per-persona votes, the end-of-debate per-model
+    usage rollup). ``body`` always remains a plain-text rendition so any
+    renderer that ignores ``rows`` still shows something faithful.
+    """
 
     key: str
     kind: str
     title: str
     body: str
     payload: Mapping[str, Any] = field(default_factory=dict)
+    rows: list[Mapping[str, Any]] = field(default_factory=list)
 
 
 TranscriptItem = TurnState | PhaseState | SteeringState | ArtifactState
@@ -278,6 +291,10 @@ class TownHallState:
         self.usage_calls: int = 0
         self.subscription_calls: int = 0
         self.usage_window: Mapping[str, Any] | None = None
+        # Per-model accumulation (ordered by first appearance) for the
+        # end-of-debate usage rollup table. Purely event-derived.
+        self.usage_by_model: dict[str, dict[str, Any]] = {}
+        self._usage_rollup_added: bool = False
 
         # Structured results
         self.scorecard: Mapping[str, Any] | None = None
@@ -396,6 +413,7 @@ class TownHallState:
         dur = p.get("duration_s")
         if isinstance(dur, (int, float)):
             self.duration_s = float(dur)
+        self._append_usage_rollup()
 
     def _on_debate_error(self, p: Mapping[str, Any]) -> None:
         self.finished = True
@@ -407,6 +425,7 @@ class TownHallState:
             body=str(p.get("message", "") or ""),
             payload=p,
         )
+        self._append_usage_rollup()
 
     # -- turn handlers ----------------------------------------------------- #
 
@@ -536,18 +555,74 @@ class TownHallState:
         if member is not None:
             member.vote = vote
             member.confidence = str(p.get("confidence", "") or "")
+            if "changed_mind" in p:
+                member.changed_mind = bool(p.get("changed_mind"))
+            member.vote_source = str(p.get("source", "") or "")
         self._stamp_stance(persona, vote)
 
     def _on_collapse_metric(self, p: Mapping[str, Any]) -> None:
-        member = self.personas.get(str(p.get("persona", "")))
+        persona = str(p.get("persona", "") or "")
+        member = self.personas.get(persona)
+        caved = bool(p.get("caved"))
         if member is not None:
-            member.caved = bool(p.get("caved"))
+            member.caved = caved
             after = str(p.get("stance_after", "") or "")
             if after:
                 member.stance = after
+        # Stage-2: the collapse check is also a first-class transcript card
+        # (caved red / held green), matching the disagreement card's weight.
+        before = str(p.get("stance_before", "") or "")
+        after = str(p.get("stance_after", "") or "")
+        body_bits = []
+        if before or after:
+            body_bits.append(f"{before or '?'} → {after or '?'}")
+        if p.get("note"):
+            body_bits.append(str(p["note"]))
+        self._append_artifact(
+            key=f"collapse-{self.applied_count}",
+            kind="collapse_metric",
+            title=f"Collapse check · {persona or '?'} · {'caved' if caved else 'held'}",
+            body="\n".join(body_bits),
+            payload=p,
+        )
 
     def _on_scorecard(self, p: Mapping[str, Any]) -> None:
         self.scorecard = p
+        # Derive one table row per vote, merging the scorecard's votes list with
+        # the per-persona detail captured from ``vote_recorded`` (changed_mind /
+        # source), which the summary votes list may omit.
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for entry in p.get("votes") or []:
+            if not isinstance(entry, Mapping):
+                continue
+            name = str(entry.get("persona", "") or "")
+            member = self.personas.get(name)
+            rows.append({
+                "persona": name,
+                "vote": str(entry.get("vote", "") or ""),
+                "confidence": str(entry.get("confidence", "") or ""),
+                "changed_mind": (
+                    bool(entry["changed_mind"]) if "changed_mind" in entry
+                    else (member.changed_mind if member else None)
+                ),
+                "source": str(
+                    entry.get("source") or (member.vote_source if member else "")
+                ),
+            })
+            if name:
+                seen.add(name)
+        # Tolerance: personas whose vote_recorded landed but who are missing
+        # from the scorecard's votes list still get a row.
+        for name, member in self.personas.items():
+            if member.vote and name not in seen:
+                rows.append({
+                    "persona": name,
+                    "vote": member.vote,
+                    "confidence": member.confidence,
+                    "changed_mind": member.changed_mind,
+                    "source": member.vote_source,
+                })
         consensus = p.get("consensus") or "none"
         self._append_artifact(
             key="scorecard",
@@ -559,6 +634,7 @@ class TownHallState:
                 f"SELL {p.get('bear_count', 0)}"
             ),
             payload=p,
+            rows=rows,
         )
 
     def _on_memo_section(self, p: Mapping[str, Any]) -> None:
@@ -584,15 +660,38 @@ class TownHallState:
 
     def _on_usage(self, p: Mapping[str, Any]) -> None:
         self.usage_calls += 1
-        self.input_tokens += _as_int(p.get("input_tokens"), default=0)
-        self.output_tokens += _as_int(p.get("output_tokens"), default=0)
-        self.cached_tokens += _as_int(p.get("cached_tokens"), default=0)
+        cin = _as_int(p.get("input_tokens"), default=0)
+        cout = _as_int(p.get("output_tokens"), default=0)
+        cached = _as_int(p.get("cached_tokens"), default=0)
+        self.input_tokens += cin
+        self.output_tokens += cout
+        self.cached_tokens += cached
         cost = p.get("cost_usd")
-        if isinstance(cost, (int, float)):
-            self.cost_usd += float(cost)
-        else:
+        subscription = not isinstance(cost, (int, float))
+        if subscription:
             # None cost == a subscription lane call (no dollar figure).
             self.subscription_calls += 1
+        else:
+            self.cost_usd += float(cost)
+        # Per-model accumulation for the end-of-debate rollup table.
+        model_ref = str(p.get("model_ref", "") or "?")
+        row = self.usage_by_model.setdefault(model_ref, {
+            "model_ref": model_ref,
+            "calls": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cached_tokens": 0,
+            "cost_usd": 0.0,
+            "subscription_calls": 0,
+        })
+        row["calls"] += 1
+        row["input_tokens"] += cin
+        row["output_tokens"] += cout
+        row["cached_tokens"] += cached
+        if subscription:
+            row["subscription_calls"] += 1
+        else:
+            row["cost_usd"] += float(cost)
 
     def _on_usage_window(self, p: Mapping[str, Any]) -> None:
         self.usage_window = p
@@ -621,11 +720,51 @@ class TownHallState:
         if member is not None:
             member.think = turn.thinking
 
+    def _append_usage_rollup(self) -> None:
+        """Append the end-of-debate per-model usage table (Stage-2, FR usage meter).
+
+        Derived entirely from already-folded ``usage`` events, appended when a
+        terminal event lands — so replay and live render it identically, and a
+        truncated log (no terminal event) simply never shows it. Idempotent:
+        a malformed log with two terminal events appends it once.
+        """
+        if self._usage_rollup_added or not self.usage_by_model:
+            return
+        self._usage_rollup_added = True
+        rows = [dict(row) for row in self.usage_by_model.values()]
+        title = f"Usage · {self.usage_calls} calls · ${self.cost_usd:.4f}"
+        if self.subscription_calls:
+            title += f" · +{self.subscription_calls} sub"
+        body = "\n".join(
+            f"{row['model_ref']}: {row['calls']} calls · "
+            f"{humanize_count(row['input_tokens'])} in / "
+            f"{humanize_count(row['output_tokens'])} out"
+            for row in rows
+        )
+        self._append_artifact(
+            key="usage-rollup",
+            kind="usage_rollup",
+            title=title,
+            body=body,
+            payload={},
+            rows=rows,
+        )
+
     def _append_artifact(
-        self, *, key: str, kind: str, title: str, body: str, payload: Mapping[str, Any]
+        self,
+        *,
+        key: str,
+        kind: str,
+        title: str,
+        body: str,
+        payload: Mapping[str, Any],
+        rows: list[Mapping[str, Any]] | None = None,
     ) -> None:
         self.transcript.append(
-            ArtifactState(key=key, kind=kind, title=title, body=body, payload=payload)
+            ArtifactState(
+                key=key, kind=kind, title=title, body=body, payload=payload,
+                rows=list(rows) if rows else [],
+            )
         )
 
     def _track_time(self, ts: str) -> None:

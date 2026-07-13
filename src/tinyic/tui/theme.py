@@ -43,6 +43,8 @@ __all__ = [
     "pill",
     "muted",
     "accent",
+    "semantic",
+    "vote_pill",
 ]
 
 DARK_THEME_NAME = "tinyic-dark"
@@ -146,6 +148,21 @@ _PILL_STYLES: dict[bool, dict[str, str]] = {
 _MUTED = {True: "#8d8471", False: "#6f6653"}
 _ACCENT = {True: "bold #ffb454", False: "bold #8a5300"}
 
+# The semantic status colors of each registered theme (success/warning/error),
+# so Rich content can color stance/vote/status text with the exact hues the CSS
+# ``$success``/``$warning``/``$error`` tokens resolve to per variant — instead
+# of the old raw ANSI "green"/"yellow"/"red" that broke on light terminals.
+_SEMANTIC = {
+    True: {"success": "#98c379", "warning": "#e5c07b", "error": "#e06c75"},
+    False: {"success": "#2e7d4f", "warning": "#8a6d00", "error": "#b3261e"},
+}
+
+# Each theme's ground color: pill foregrounds sit on colored backgrounds, so
+# the text is always charcoal-on-color (dark) / paper-on-color (light).
+_GROUND = {True: "#14120f", False: "#f7f3ea"}
+
+_VOTE_SEMANTIC = {"BUY": "success", "HOLD": "warning", "SELL": "error"}
+
 
 def pill(kind: str, *, dark: bool = True) -> str:
     """The badge/pill style for a steering mode chip (``steer`` | ``queue``).
@@ -165,3 +182,27 @@ def muted(*, dark: bool = True) -> str:
 def accent(*, dark: bool = True) -> str:
     """The amber emphasis style (replaces the hard-coded ``bold cyan``)."""
     return _ACCENT[bool(dark)]
+
+
+def semantic(kind: str, *, dark: bool = True) -> str:
+    """The theme's status hue for ``success`` | ``warning`` | ``error``.
+
+    Returns a bare color (no attributes) so callers can compose it
+    (``f"bold {semantic('error', dark=dark)}"``). Unknown kinds degrade to the
+    muted hue so a forward-compatible status still renders legibly.
+    """
+    return _SEMANTIC[bool(dark)].get(kind, _MUTED[bool(dark)])
+
+
+def vote_pill(vote: str, *, dark: bool = True) -> str:
+    """The badge style for a verdict vote (BUY green / HOLD amber / SELL red).
+
+    Ground-colored text on the vote's semantic background — the same
+    fg-on-bg construction as :func:`pill`, so the badge stays high-contrast in
+    both variants. Unknown votes get a muted pill rather than crashing or
+    reusing a misleading stance color.
+    """
+    variant = bool(dark)
+    kind = _VOTE_SEMANTIC.get(vote)
+    bg = _SEMANTIC[variant][kind] if kind else _MUTED[variant]
+    return f"bold {_GROUND[variant]} on {bg}"

@@ -17,16 +17,19 @@ stay legible on both ``tinyic-dark`` and ``tinyic-light``.
 
 from __future__ import annotations
 
+from typing import Mapping
+
 from rich.markdown import Markdown
 from rich.text import Text
 from textual.containers import Vertical
 from textual.message import Message
-from textual.widgets import Collapsible, Static
+from textual.widgets import Collapsible, DataTable, Static
 
 from ..persona_style import FALLBACK_COLORS_DARK as _FALLBACK_COLORS  # noqa: F401 - re-export
-from ..persona_style import persona_color
+from ..persona_style import persona_color, persona_monogram
 from .motion import GlyphPulse
 from .state import (
+    PHASE_ORDER,
     ArtifactState,
     PersonaState,
     PhaseState,
@@ -36,7 +39,7 @@ from .state import (
     humanize_count,
     humanize_duration,
 )
-from .theme import accent, is_dark, muted, pill
+from .theme import accent, is_dark, muted, pill, semantic, vote_pill
 
 __all__ = [
     "StatusHeader",
@@ -44,19 +47,44 @@ __all__ = [
     "TurnCard",
     "SteeringNote",
     "ArtifactCard",
+    "ScorecardTable",
+    "UsageTable",
     "PersonaCard",
     "persona_color",
     "speech_markdown",
+    "build_header_text",
+    "build_phase_stepper",
+    "build_header_meters",
+    "HEADER_METERS_MIN_WIDTH",
 ]
 
-_VOTE_COLORS = {"BUY": "green", "SELL": "red", "HOLD": "yellow"}
-_STANCE_COLORS = {"bullish": "green", "bearish": "red", "neutral": "yellow"}
+# Stance / vote coloring routes through the theme's semantic hues (Stage-2), so
+# BUY/bullish is the theme's success green, SELL/bearish its error red, and
+# HOLD/neutral its warning amber — legible in both variants, unlike the old
+# raw ANSI "green"/"red"/"yellow".
+_VOTE_SEMANTIC = {"BUY": "success", "SELL": "error", "HOLD": "warning"}
+_STANCE_SEMANTIC = {"bullish": "success", "bearish": "error", "neutral": "warning"}
+# Directional vote glyphs from the app's existing vocabulary (never emoji).
+_VOTE_GLYPHS = {"BUY": "▲", "SELL": "▾", "HOLD": "●"}
 _PHASE_LABELS = {
     "opening": "OPENING",
     "cross_exam": "CROSS-EXAMINATION",
     "rebuttal": "REBUTTAL",
     "verdict": "VERDICT",
 }
+# Compact phase names for the header's stepper strip.
+_PHASE_STEP_LABELS = {
+    "opening": "opening",
+    "cross_exam": "cross-exam",
+    "rebuttal": "rebuttal",
+    "verdict": "verdict",
+}
+
+
+def _stance_style(value: str, *, dark: bool) -> str:
+    """Bold, theme-tuned style for a stance/vote badge (fallback: plain bold)."""
+    kind = _VOTE_SEMANTIC.get(value) or _STANCE_SEMANTIC.get(value)
+    return f"bold {semantic(kind, dark=dark)}" if kind else "bold"
 
 
 def speech_markdown(text: str) -> Markdown | Text:
@@ -81,17 +109,137 @@ def _clip(text: str, limit: int) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Header
+# Header — the ticker strip (Stage-2)
 # --------------------------------------------------------------------------- #
 
-class StatusHeader(Static):
-    """Top strip: company/ticker, current phase, elapsed, cost/usage rollup.
+# Below this many content columns the header drops its meters block first
+# (FR: degrade gracefully under 80 cols), keeping identity + stepper intact.
+HEADER_METERS_MIN_WIDTH = 80
 
-    While a live feed is running (``state.live`` and not finished) the
-    "debating…" indicator breathes via a :class:`GlyphPulse`; the pulse stops —
-    and the glyph rests at the static ``◉`` — the moment a terminal event flips
-    ``finished``. Presentation-only: ``sync`` derives run/stop purely from the
-    already-folded state.
+
+def build_phase_stepper(
+    st: TownHallState, *, dark: bool = True, glyph: str = "◉"
+) -> Text:
+    """The four-phase stepper: done = ``✓`` accent · current = ``glyph`` bold ·
+    future = ``·`` muted (an errored current phase shows ``✗``).
+
+    Pure: derived only from folded phase events (``phases_completed`` /
+    ``current_phase``), so replay and live render identically. ``glyph`` is the
+    caller's pulse frame — a live header breathes it; replay passes the resting
+    ``◉``.
+    """
+    dim = muted(dark=dark)
+    emph = accent(dark=dark)
+    text = Text()
+    for i, phase in enumerate(PHASE_ORDER):
+        if i:
+            text.append("   ")
+        label = _PHASE_STEP_LABELS.get(phase, phase)
+        if phase in st.phases_completed:
+            text.append(f"✓ {label}", style=emph)
+        elif phase == st.current_phase and st.errored:
+            text.append(f"✗ {label}", style=f"bold {semantic('error', dark=dark)}")
+        elif phase == st.current_phase and not st.finished:
+            text.append(f"{glyph} {label}", style="bold")
+        else:
+            text.append(f"· {label}", style=dim)
+    # A forward-compatible phase outside the canonical four still shows up.
+    if st.current_phase and st.current_phase not in PHASE_ORDER:
+        text.append("   ")
+        text.append(f"{glyph} {st.current_phase}", style="bold")
+    return text
+
+
+def build_header_meters(st: TownHallState, *, dark: bool = True) -> Text:
+    """The live meters block: elapsed · tokens · cost (+sub) · window.
+
+    Elapsed comes from :attr:`TownHallState.elapsed_s` — event ``ts`` deltas
+    (or the recorded duration), never the wall clock — so a replayed log shows
+    the same figures as the live run that produced it. Tokens/cost accumulate
+    from ``usage`` events; the window meter is the latest ``usage_window``
+    subscription snapshot when one exists.
+    """
+    dim = muted(dark=dark)
+    text = Text()
+    text.append("elapsed ", style=dim)
+    text.append(humanize_duration(st.elapsed_s))
+    text.append("  tok ", style=dim)
+    text.append(
+        f"{humanize_count(st.input_tokens)}/{humanize_count(st.output_tokens)}"
+    )
+    text.append("  cost ", style=dim)
+    cost = f"${st.cost_usd:.4f}" if st.cost_usd else "$0.00"
+    text.append(cost, style=f"bold {semantic('success', dark=dark)}")
+    if st.subscription_calls:
+        text.append(f" +{st.subscription_calls} sub", style=dim)
+    if st.usage_window:
+        used = st.usage_window.get("window_used_msgs", "?")
+        est = st.usage_window.get("window_estimate_msgs", "?")
+        text.append("  win ", style=dim)
+        text.append(f"{used}/{est}")
+    return text
+
+
+def build_header_text(
+    st: TownHallState, *, width: int = 120, dark: bool = True, glyph: str = "◉"
+) -> Text:
+    """The whole two-line ticker strip, pure and width-aware.
+
+    Line 1: identity (ticker · company, bold) + lifecycle status on the left,
+    the meters block right-aligned — dropped first when ``width`` falls under
+    :data:`HEADER_METERS_MIN_WIDTH`. Line 2: the phase stepper. Never more
+    than two lines.
+    """
+    dim = muted(dark=dark)
+    emph = accent(dark=dark)
+    line1 = Text()
+    title = st.ticker or "TinyIC"
+    if st.company_name:
+        title = f"{title} · {st.company_name}"
+    line1.append(title, style="bold")
+    if st.preset:
+        line1.append(f"  preset {st.preset}", style=dim)
+    if st.finished:
+        if st.errored:
+            line1.append("  ✗ error", style=f"bold {semantic('error', dark=dark)}")
+        else:
+            line1.append(
+                "  ✓ complete", style=f"bold {semantic('success', dark=dark)}"
+            )
+    elif st.live:
+        # A live feed shows a running status until a terminal event lands;
+        # this is the live counterpart of the truncated-log indicator.
+        line1.append(f"  {glyph} debating…", style=emph)
+    elif st.truncated:
+        line1.append(
+            "  ⚠ incomplete (truncated log)",
+            style=f"bold {semantic('warning', dark=dark)}",
+        )
+
+    if width >= HEADER_METERS_MIN_WIDTH:
+        meters = build_header_meters(st, dark=dark)
+        pad = width - line1.cell_len - meters.cell_len
+        if pad >= 2:  # right-align; drop the meters when they would wrap
+            line1.append(" " * pad)
+            line1.append_text(meters)
+
+    out = Text()
+    out.append_text(line1)
+    out.append("\n")
+    out.append_text(build_phase_stepper(st, dark=dark, glyph=glyph))
+    return out
+
+
+class StatusHeader(Static):
+    """The header ticker strip: identity + lifecycle, meters, phase stepper.
+
+    A thin widget over the pure builders above: ``render`` passes its live
+    content width (for the under-80-col degradation), the theme variant, and
+    the current pulse frame. While a live feed is running (``state.live`` and
+    not finished) the indicator breathes via a :class:`GlyphPulse`; the pulse
+    stops — and the glyph rests at the static ``◉`` — the moment a terminal
+    event flips ``finished``. Presentation-only: ``sync`` derives run/stop
+    purely from the already-folded state.
     """
 
     def __init__(self, state: TownHallState) -> None:
@@ -102,57 +250,28 @@ class StatusHeader(Static):
     def on_mount(self) -> None:
         self.sync()
 
+    def on_resize(self, event) -> None:  # noqa: ANN001 - textual event
+        self.refresh()  # re-evaluate the meters-drop threshold
+
     def sync(self) -> None:
         self._pulse.set_running(self.state.live and not self.state.finished)
         self.refresh()
 
+    def _render_width(self) -> int:
+        """The current content width, or a wide default before layout."""
+        try:
+            width = int(self.content_size.width)
+        except Exception:
+            width = 0
+        return width if width > 0 else 120
+
     def render(self) -> Text:
-        st = self.state
-        dark = is_dark(self)
-        dim = muted(dark=dark)
-        emph = accent(dark=dark)
-        title = st.ticker or "TinyIC"
-        if st.company_name:
-            title = f"{title} · {st.company_name}"
-        line1 = Text()
-        line1.append(title, style="bold")
-        if st.preset:
-            line1.append(f"   preset {st.preset}", style=dim)
-        if st.finished:
-            line1.append("   ✓ complete" if not st.errored else "   ✗ error",
-                         style="green" if not st.errored else "red")
-        elif st.live:
-            # A live feed shows a running status until a terminal event lands;
-            # this is the live counterpart of the truncated-log indicator.
-            line1.append(f"   {self._pulse.glyph} debating…", style=emph)
-        elif st.truncated:
-            line1.append("   ⚠ incomplete (truncated log)", style="bold yellow")
-
-        line2 = Text()
-        line2.append("phase ", style=dim)
-        line2.append(st.phase_position, style=emph)
-        line2.append("   elapsed ", style=dim)
-        line2.append(humanize_duration(st.elapsed_s))
-        line2.append("   cost ", style=dim)
-        cost = f"${st.cost_usd:.4f}" if st.cost_usd else "$0.00"
-        if st.subscription_calls:
-            cost += f" (+{st.subscription_calls} sub)"
-        line2.append(cost, style="bold green")
-        line2.append("   tokens ", style=dim)
-        line2.append(
-            f"{humanize_count(st.input_tokens)} in / "
-            f"{humanize_count(st.output_tokens)} out"
+        return build_header_text(
+            self.state,
+            width=self._render_width(),
+            dark=is_dark(self),
+            glyph=self._pulse.glyph,
         )
-        if st.usage_window:
-            used = st.usage_window.get("window_used_msgs", "?")
-            est = st.usage_window.get("window_estimate_msgs", "?")
-            line2.append(f"   window {used}/{est}", style=dim)
-
-        out = Text()
-        out.append_text(line1)
-        out.append("\n")
-        out.append_text(line2)
-        return out
 
 
 # --------------------------------------------------------------------------- #
@@ -310,13 +429,10 @@ class TurnCard(Vertical):
         badge = f"  ⟨{turn.phase or '?'} · {turn.role or '?'}⟩"
         head.append(badge, style="dim")
         if turn.stance:
-            stance_color = (
-                _VOTE_COLORS.get(turn.stance)
-                or _STANCE_COLORS.get(turn.stance)
-                or "white"
-            )
             head.append("  ")
-            head.append(f"[{turn.stance}]", style=f"bold {stance_color}")
+            head.append(
+                f"[{turn.stance}]", style=_stance_style(turn.stance, dark=is_dark(self))
+            )
         if turn.target_persona:
             head.append(f" → {turn.target_persona}", style="italic")
         if turn.interrupted:
@@ -371,12 +487,23 @@ class SteeringNote(Static):
 
 
 class ArtifactCard(Static):
-    """A standalone card for a structured artifact (data, scorecard, memo…)."""
+    """A standalone card for a structured artifact (data, memo, disagreement…).
+
+    Kind-aware (Stage-2): ``disagreement`` renders each side with its persona's
+    color, and ``collapse_metric`` renders as a caved-red / held-green verdict
+    card (the CSS ``caved``/``held`` classes color its border). Every other
+    kind keeps the generic title + body rendering, so a forward-compatible
+    artifact still shows faithfully.
+    """
 
     def __init__(self, artifact: ArtifactState) -> None:
         super().__init__(classes="artifact-card")
         self.artifact = artifact
         self.set_class(True, f"kind-{artifact.kind.replace('_', '-')}")
+        if artifact.kind == "collapse_metric":
+            caved = bool(artifact.payload.get("caved"))
+            self.set_class(caved, "caved")
+            self.set_class(not caved, "held")
 
     def on_mount(self) -> None:
         self.sync()
@@ -386,11 +513,188 @@ class ArtifactCard(Static):
 
     def render(self) -> Text:
         art = self.artifact
+        if art.kind == "collapse_metric":
+            return self._render_collapse(is_dark(self))
+        if art.kind == "disagreement":
+            return self._render_disagreement(is_dark(self))
         text = Text()
         text.append(f"{art.title}\n", style="bold")
         if art.body:
             text.append(art.body, style="none")
         return text
+
+    def _render_collapse(self, dark: bool) -> Text:
+        p = self.artifact.payload
+        persona = str(p.get("persona", "") or "?")
+        caved = bool(p.get("caved"))
+        dim = muted(dark=dark)
+        text = Text()
+        text.append("Collapse check · ", style="bold")
+        text.append(persona, style=f"bold {persona_color(persona, dark=dark)}")
+        text.append("\n")
+        if caved:
+            text.append("⚑ caved", style=f"bold {semantic('error', dark=dark)}")
+        else:
+            text.append("✓ held", style=f"bold {semantic('success', dark=dark)}")
+        before = str(p.get("stance_before", "") or "")
+        after = str(p.get("stance_after", "") or "")
+        if before or after:
+            text.append(f" · {before or '?'} → {after or '?'}")
+        if p.get("note"):
+            text.append("\n")
+            text.append(_clip(str(p["note"]), 200), style=dim)
+        return text
+
+    def _render_disagreement(self, dark: bool) -> Text:
+        p = self.artifact.payload
+        dim = muted(dark=dark)
+        text = Text()
+        text.append(f"{self.artifact.title}\n", style="bold")
+        if p.get("description"):
+            text.append(f"{p['description']}\n")
+        for side in p.get("sides") or []:
+            if not isinstance(side, Mapping):
+                continue
+            name = str(side.get("persona", "") or "?")
+            text.append("▸ ", style=dim)
+            text.append(name, style=f"bold {persona_color(name, dark=dark)}")
+            if side.get("position"):
+                text.append(f" — {side['position']}")
+            text.append("\n")
+            if side.get("evidence_quote"):
+                text.append(f'   "{_clip(str(side["evidence_quote"]), 160)}"\n',
+                            style=f"italic {dim}")
+        if p.get("resolution"):
+            text.append(f"resolution · {p['resolution']}", style=dim)
+        return text
+
+
+# --------------------------------------------------------------------------- #
+# Table cards (Stage-2): the scorecard and end-of-debate usage rollup
+# --------------------------------------------------------------------------- #
+
+class _TableCard(Vertical):
+    """A bordered artifact card holding a one-line summary + a real DataTable.
+
+    The summary line keeps long transcripts scannable even when the table is
+    tall; the table itself is rebuilt only when its inputs change (theme
+    variant or the derived row set), so the ~30 ms pump can re-``sync`` mounted
+    cards for free. Non-focusable: drive-mode keys stay with the app.
+    """
+
+    def __init__(self, artifact: ArtifactState, *, classes: str) -> None:
+        super().__init__(classes=classes)
+        self.artifact = artifact
+        self._summary = Static(classes="table-card-summary")
+        self._table = DataTable(
+            show_cursor=False, zebra_stripes=False, classes="table-card-table"
+        )
+        self._table.can_focus = False
+        self._built_for: tuple | None = None
+
+    def compose(self):
+        yield self._summary
+        yield self._table
+
+    def on_mount(self) -> None:
+        self.sync()
+
+    def sync(self) -> None:
+        dark = is_dark(self)
+        key = (dark, len(self.artifact.rows))
+        if key == self._built_for:
+            return
+        self._built_for = key
+        self._summary.update(self._summary_text(dark))
+        self._table.clear(columns=True)
+        self._build_table(self._table, dark)
+
+    # subclass hooks ------------------------------------------------------- #
+
+    def _summary_text(self, dark: bool) -> Text:
+        return Text(self.artifact.title, style="bold")
+
+    def _build_table(self, table: DataTable, dark: bool) -> None:
+        raise NotImplementedError
+
+
+class ScorecardTable(_TableCard):
+    """The verdict scorecard as a real table: member · vote · conf · mind · source."""
+
+    def __init__(self, artifact: ArtifactState) -> None:
+        super().__init__(artifact, classes="artifact-card kind-scorecard")
+
+    def _summary_text(self, dark: bool) -> Text:
+        p = self.artifact.payload
+        dim = muted(dark=dark)
+        text = Text()
+        text.append("Scorecard", style="bold")
+        text.append(" · consensus ", style=dim)
+        consensus = str(p.get("consensus") or "none")
+        text.append(consensus, style=_stance_style(consensus, dark=dark))
+        for vote, count_key in (
+            ("BUY", "bull_count"), ("HOLD", "hold_count"), ("SELL", "bear_count"),
+        ):
+            text.append("   ")
+            text.append(
+                f"{_VOTE_GLYPHS[vote]} {p.get(count_key, 0)}",
+                style=_stance_style(vote, dark=dark),
+            )
+        return text
+
+    def _build_table(self, table: DataTable, dark: bool) -> None:
+        dim = muted(dark=dark)
+        table.add_columns("member", "vote", "conf", "mind", "source")
+        for row in self.artifact.rows:
+            name = str(row.get("persona", "") or "?")
+            color = persona_color(name, dark=dark)
+            member = Text()
+            member.append(persona_monogram(name), style=f"bold {color}")
+            member.append(f" {name}", style=color)
+            vote = str(row.get("vote", "") or "")
+            vote_cell = Text(
+                f" {_VOTE_GLYPHS.get(vote, '·')} {vote or '—'} ",
+                style=vote_pill(vote, dark=dark),
+            )
+            conf = Text(str(row.get("confidence", "") or "—"))
+            if row.get("changed_mind"):
+                mind = Text("⚑ changed", style=f"bold {semantic('warning', dark=dark)}")
+            else:
+                mind = Text("—", style=dim)
+            source = Text(str(row.get("source", "") or "—"), style=dim)
+            table.add_row(member, vote_cell, conf, mind, source)
+
+
+class UsageTable(_TableCard):
+    """The end-of-debate per-model usage rollup: model · calls · tokens · cost."""
+
+    def __init__(self, artifact: ArtifactState) -> None:
+        super().__init__(artifact, classes="artifact-card kind-usage-rollup")
+
+    def _build_table(self, table: DataTable, dark: bool) -> None:
+        dim = muted(dark=dark)
+        table.add_columns("model", "calls", "in", "out", "cached", "cost")
+        for row in self.artifact.rows:
+            model = Text(str(row.get("model_ref", "") or "?"))
+            calls = Text(str(row.get("calls", 0)), justify="right")
+            tin = Text(humanize_count(row.get("input_tokens", 0)), justify="right")
+            tout = Text(humanize_count(row.get("output_tokens", 0)), justify="right")
+            cached = Text(
+                humanize_count(row.get("cached_tokens", 0)),
+                style=dim, justify="right",
+            )
+            cost_usd = row.get("cost_usd") or 0.0
+            sub_calls = row.get("subscription_calls") or 0
+            if cost_usd:
+                cost = Text(
+                    f"${cost_usd:.4f}",
+                    style=f"bold {semantic('success', dark=dark)}", justify="right",
+                )
+            elif sub_calls:
+                cost = Text("sub", style=dim, justify="right")
+            else:
+                cost = Text("$0", style=dim, justify="right")
+            table.add_row(model, calls, tin, tout, cached, cost)
 
 
 # --------------------------------------------------------------------------- #
@@ -459,23 +763,19 @@ class PersonaCard(Static):
             text.append(_clip(p.goal, 60))
 
         # Stance / vote line.
+        dark = is_dark(self)
         if p.stance or p.vote or p.caved:
             text.append("\n")
             if p.stance:
-                text.append(
-                    p.stance,
-                    style=f"bold {_STANCE_COLORS.get(p.stance, 'white')}",
-                )
+                text.append(p.stance, style=_stance_style(p.stance, dark=dark))
             if p.vote:
                 if p.stance:
                     text.append(" · ")
-                text.append(
-                    p.vote, style=f"bold {_VOTE_COLORS.get(p.vote, 'white')}"
-                )
+                text.append(p.vote, style=_stance_style(p.vote, dark=dark))
                 if p.confidence:
                     text.append(f" ({p.confidence})", style="dim")
             if p.caved:
-                text.append("  ⚑ caved", style="bold red")
+                text.append("  ⚑ caved", style=f"bold {semantic('error', dark=dark)}")
 
         # Mind view: the `m` key expands this card to reveal the latest private
         # reasoning snippet (the goal/attention/mood badges above already surface
