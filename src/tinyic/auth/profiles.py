@@ -330,6 +330,20 @@ class ProfileStore:
         self._mode: str | None = None
         self._lock = threading.RLock()
 
+    @property
+    def backend(self) -> str:
+        """Return the resolved storage backend: ``"keyring"`` or ``"file"``.
+
+        The backend is chosen lazily on first access (keyring when a usable OS
+        keyring is present, else the ``0600`` credential file).  The onboarding
+        summary card reports this so the user can see where a verified route was
+        persisted; it never exposes any credential material.
+        """
+        with self._lock:
+            if self._mode is None:
+                self._load_document()
+            return self._mode or "file"
+
     def get(self, ref: str) -> AuthProfile | None:
         canonical, _, _ = _normalise_ref(ref)
         with self._lock:
