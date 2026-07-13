@@ -1,6 +1,8 @@
 """Pydantic data models for the financial data pipeline."""
 
+import json
 from datetime import datetime
+from numbers import Real
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -19,9 +21,72 @@ class FinancialData(BaseModel):
     net_income: Optional[float] = None
     free_cash_flow: Optional[float] = None
     dividend_yield: Optional[float] = None
+    currency: Optional[str] = None
+    dividend_yield_source_unit: Optional[str] = None
     # Summarized statements (most recent year, key rows as dict)
     income_summary: Optional[dict] = None
     balance_summary: Optional[dict] = None
+
+    def to_context_dict(self) -> dict:
+        """Return the model-facing representation with explicit units.
+
+        Values remain plain numbers on the boundary model so application code
+        can calculate and render them normally.  Only the LLM-context boundary
+        wraps each number as ``{"value": ..., "unit": ...}``.
+        """
+        amount_unit = self.currency or "unknown_currency"
+        field_units = {
+            "pe_ratio": "x",
+            "pb_ratio": "x",
+            "profit_margin": "ratio",
+            "roe": "ratio",
+            "debt_to_equity": "ratio",
+            "market_cap": amount_unit,
+            "revenue": amount_unit,
+            "net_income": amount_unit,
+            "free_cash_flow": amount_unit,
+        }
+
+        context: dict = {}
+        for field_name, unit in field_units.items():
+            value = getattr(self, field_name)
+            if value is not None:
+                context[field_name] = {"value": value, "unit": unit}
+
+        if self.dividend_yield is not None:
+            dividend = {"value": self.dividend_yield, "unit": "ratio"}
+            if self.dividend_yield_source_unit is not None:
+                dividend["source_unit"] = self.dividend_yield_source_unit
+            context["dividend_yield"] = dividend
+
+        if self.income_summary is not None:
+            context["income_summary"] = self._unitize_statement(
+                self.income_summary, amount_unit
+            )
+        if self.balance_summary is not None:
+            context["balance_summary"] = self._unitize_statement(
+                self.balance_summary, amount_unit
+            )
+        if self.currency is not None:
+            context["currency"] = self.currency
+
+        return context
+
+    @classmethod
+    def _unitize_statement(cls, value, unit: str):
+        """Recursively label every numeric statement value with ``unit``."""
+        if isinstance(value, dict):
+            if "value" in value and "unit" in value:
+                return value
+            return {
+                key: cls._unitize_statement(item, unit)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [cls._unitize_statement(item, unit) for item in value]
+        if isinstance(value, Real) and not isinstance(value, bool):
+            return {"value": value, "unit": unit}
+        return value
 
 
 class FilingSummary(BaseModel):
@@ -82,10 +147,16 @@ class DataPackage(BaseModel):
 
         Returns JSON excluding None fields, capped at ~20K chars.
         """
-        json_str = self.model_dump_json(indent=2, exclude_none=True)
+        data = self.model_dump(mode="json", exclude_none=True)
+        if self.financials is not None:
+            data["financials"] = self.financials.to_context_dict()
+
+        def serialize() -> str:
+            return json.dumps(data, indent=2, ensure_ascii=False)
+
+        json_str = serialize()
         if len(json_str) > 20000:
             # Truncate to fit budget
-            data = self.model_dump(exclude_none=True)
             for key in ["research_brief", "social", "filing_10q", "filing_10k"]:
                 if key in data and len(json_str) > 20000:
                     if key == "research_brief" and isinstance(data[key], dict):
@@ -96,5 +167,5 @@ class DataPackage(BaseModel):
                         data[key]["text_summary"] = data[key]["text_summary"][:1500] + "..."
                     elif isinstance(data[key], dict) and "summary" in data[key]:
                         data[key]["summary"] = data[key]["summary"][:1000] + "..."
-                    json_str = self.__class__.model_validate(data).model_dump_json(indent=2, exclude_none=True)
+                    json_str = serialize()
         return json_str

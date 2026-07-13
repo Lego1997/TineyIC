@@ -75,9 +75,23 @@ class ResultsExtractor:
         """
         results = []
         for agent in agents:
-            result = self.extract_results_from_agent(
-                agent, extraction_objective, situation, fields, fields_hints, verbose
-            )
+            try:
+                result = self.extract_results_from_agent(
+                    agent,
+                    extraction_objective,
+                    situation,
+                    fields,
+                    fields_hints,
+                    verbose,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Result extraction failed for agent %s: %s",
+                    agent.name,
+                    exc,
+                )
+                self.agent_extraction[agent.name] = None
+                result = None
             results.append(result)
 
         return results

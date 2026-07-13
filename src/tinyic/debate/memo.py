@@ -2,7 +2,6 @@
 
 import json
 import logging
-from typing import Optional
 
 from tinytroupe.clients import client
 from tinytroupe.utils import extract_json
@@ -17,15 +16,22 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
-# Maximum transcript length (characters) to include in synthesis prompts.
-# Prevents exceeding context window with large 6-persona debates.
-MAX_TRANSCRIPT_LENGTH = 8000
+# A transcript is processed losslessly in sequential windows. Each later call
+# receives a bounded representation of the structured draft from earlier
+# windows plus one new source slice. Fixed slots prevent an expanding synthesis
+# or data package from crowding the next transcript window out of context.
+TRANSCRIPT_WINDOW_LENGTH = 6000
+RUNNING_SYNTHESIS_MAX_LENGTH = 4000
+SCORECARD_CONTEXT_MAX_LENGTH = 2500
+FINANCIAL_CONTEXT_MAX_LENGTH = 5000
 
 MEMO_SYSTEM_PROMPT = (
     "You are an expert investment analyst synthesizing a structured investment memo "
     "from a committee debate.\n\n"
-    "You will receive the full debate transcript, the scorecard with each investor's "
-    "vote and reasoning, and the financial data package.\n\n"
+    "You will receive one window of a debate transcript, the running memo draft "
+    "from earlier windows, the scorecard with each investor's vote and reasoning, "
+    "and the financial data package. Revise the complete draft to incorporate the "
+    "new window without dropping well-grounded earlier findings.\n\n"
     "Produce a JSON object with exactly these 5 sections:\n"
     "{\n"
     '    "executive_summary": {\n'
@@ -50,7 +56,9 @@ MEMO_SYSTEM_PROMPT = (
 
 DISAGREEMENT_SYSTEM_PROMPT = (
     "You are analyzing an investment committee debate to identify the key areas "
-    "where investors disagreed.\n\n"
+    "where investors disagreed. You will receive one transcript window and the "
+    "running structured analysis from earlier windows. Revise the complete analysis "
+    "without dropping well-grounded earlier evidence.\n\n"
     "Produce a JSON object:\n"
     "{\n"
     '    "disagreements": [\n'
@@ -77,12 +85,36 @@ DISAGREEMENT_SYSTEM_PROMPT = (
 )
 
 
-def _truncate_transcript(transcript: str) -> str:
-    """Truncate transcript to fit within prompt budget."""
-    if not transcript or len(transcript) <= MAX_TRANSCRIPT_LENGTH:
-        return transcript or ""
-    # Keep the end (cross-exam, rebuttal, verdict) which is most informative
-    return "..." + transcript[-(MAX_TRANSCRIPT_LENGTH - 3) :]
+def _transcript_windows(transcript: str | None) -> list[str]:
+    """Split a transcript into ordered, lossless, bounded character windows."""
+    text = transcript or ""
+    if not text:
+        return [""]
+    return [
+        text[start : start + TRANSCRIPT_WINDOW_LENGTH]
+        for start in range(0, len(text), TRANSCRIPT_WINDOW_LENGTH)
+    ]
+
+
+def _bounded_slot(text: str, max_length: int) -> str:
+    """Bound one prompt component while retaining both its start and end."""
+    if len(text) <= max_length:
+        return text
+    marker = "\n...[content compacted to reserved prompt slot]...\n"
+    remaining = max_length - len(marker)
+    head_length = remaining * 2 // 3
+    tail_length = remaining - head_length
+    return f"{text[:head_length]}{marker}{text[-tail_length:]}"
+
+
+def _running_draft_json(data: dict | None) -> str:
+    """Render the prior structured synthesis for the next sequential window."""
+    if data is None:
+        return "(No prior draft; this is the first transcript window.)"
+    return _bounded_slot(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        RUNNING_SYNTHESIS_MAX_LENGTH,
+    )
 
 
 def _make_fallback_section(title: str, message: str) -> MemoSection:
@@ -131,36 +163,39 @@ def generate_memo(
         InvestmentMemo with 5 structured sections. Returns a fallback memo
         if LLM synthesis fails.
     """
-    transcript = _truncate_transcript(debate_result.transcript)
-    scorecard_md = debate_result.scorecard.to_markdown()
-    context_str = data_package.to_context_string()
-
-    user_prompt = (
-        f"## Debate Transcript\n{transcript}\n\n"
-        f"## Scorecard\n{scorecard_md}\n\n"
-        f"## Financial Data\n{context_str}"
+    transcript_windows = _transcript_windows(debate_result.transcript)
+    scorecard_md = _bounded_slot(
+        debate_result.scorecard.to_markdown(), SCORECARD_CONTEXT_MAX_LENGTH
+    )
+    context_str = _bounded_slot(
+        data_package.to_context_string(), FINANCIAL_CONTEXT_MAX_LENGTH
     )
 
-    messages = [
-        {"role": "system", "content": MEMO_SYSTEM_PROMPT},
-        {"role": "user", "content": user_prompt},
-    ]
-
+    data = None
     try:
-        response = client().send_message(messages, temperature=0.7)
-        data = extract_json(response["content"])
+        for index, transcript_window in enumerate(transcript_windows, start=1):
+            user_prompt = (
+                f"## Transcript Window {index} of {len(transcript_windows)}\n"
+                f"{transcript_window}\n\n"
+                f"## Running Memo Draft From Earlier Windows\n"
+                f"{_running_draft_json(data)}\n\n"
+                f"## Scorecard\n{scorecard_md}\n\n"
+                f"## Financial Data\n{context_str}"
+            )
+            messages = [
+                {"role": "system", "content": MEMO_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ]
+            response = client().send_message(messages, temperature=0.7)
+            data = extract_json(response["content"])
+            if not isinstance(data, dict) or not data:
+                raise ValueError(
+                    f"Invalid JSON response for transcript window {index}"
+                )
     except Exception as e:
         logger.warning("Memo generation LLM call failed: %s", e)
         return _make_fallback_memo(
             debate_result.ticker, debate_result.company_name, str(e)
-        )
-
-    if not data:
-        logger.warning("Memo generation returned empty/invalid JSON")
-        return _make_fallback_memo(
-            debate_result.ticker,
-            debate_result.company_name,
-            "Invalid JSON response",
         )
 
     section_keys = [
@@ -194,31 +229,33 @@ def extract_disagreements(
         DisagreementAnalysis with up to 3 disagreements. Returns a fallback
         with empty disagreements list if extraction fails.
     """
-    transcript = _truncate_transcript(debate_result.transcript)
-    scorecard_md = debate_result.scorecard.to_markdown()
-
-    user_prompt = (
-        f"## Debate Transcript\n{transcript}\n\n"
-        f"## Scorecard\n{scorecard_md}"
+    transcript_windows = _transcript_windows(debate_result.transcript)
+    scorecard_md = _bounded_slot(
+        debate_result.scorecard.to_markdown(), SCORECARD_CONTEXT_MAX_LENGTH
     )
 
-    messages = [
-        {"role": "system", "content": DISAGREEMENT_SYSTEM_PROMPT},
-        {"role": "user", "content": user_prompt},
-    ]
-
+    data = None
     try:
-        response = client().send_message(messages, temperature=0.7)
-        data = extract_json(response["content"])
+        for index, transcript_window in enumerate(transcript_windows, start=1):
+            user_prompt = (
+                f"## Transcript Window {index} of {len(transcript_windows)}\n"
+                f"{transcript_window}\n\n"
+                f"## Running Disagreement Analysis From Earlier Windows\n"
+                f"{_running_draft_json(data)}\n\n"
+                f"## Scorecard\n{scorecard_md}"
+            )
+            messages = [
+                {"role": "system", "content": DISAGREEMENT_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ]
+            response = client().send_message(messages, temperature=0.7)
+            data = extract_json(response["content"])
+            if not isinstance(data, dict) or "disagreements" not in data:
+                raise ValueError(
+                    f"Invalid JSON response for transcript window {index}"
+                )
     except Exception as e:
         logger.warning("Disagreement extraction LLM call failed: %s", e)
-        return DisagreementAnalysis(
-            ticker=debate_result.ticker,
-            company_name=debate_result.company_name,
-        )
-
-    if not data or "disagreements" not in data:
-        logger.warning("Disagreement extraction returned empty/invalid JSON")
         return DisagreementAnalysis(
             ticker=debate_result.ticker,
             company_name=debate_result.company_name,

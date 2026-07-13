@@ -90,15 +90,29 @@ def extract_votes(orchestrator) -> list[Vote]:
             for agent in orchestrator.agents
         ]
 
-    for agent, raw_result in zip(orchestrator.agents, results):
-        try:
-            if raw_result is None:
-                raw_result = {}
+    # The vendored extractor is expected to return one slot per agent, but
+    # preserve committee cardinality if a provider/client regression returns
+    # a short iterable. Extra results have no owning persona and are ignored.
+    results = list(results or [])
+    for index, agent in enumerate(orchestrator.agents):
+        raw_result = results[index] if index < len(results) else None
+        if raw_result is None:
+            votes.append(
+                Vote(
+                    investor=agent.name,
+                    vote=VoteChoice.HOLD,
+                    confidence=Confidence.LOW,
+                    reasoning=["Extraction failed"],
+                    changed_mind=False,
+                )
+            )
+            continue
 
+        try:
             vote = Vote(
                 investor=agent.name,
-                vote=raw_result.get("vote", "HOLD"),
-                confidence=raw_result.get("confidence", "MEDIUM"),
+                vote=raw_result.get("vote") or "HOLD",
+                confidence=raw_result.get("confidence") or "MEDIUM",
                 reasoning=_parse_list_field(raw_result.get("reasoning")),
                 key_risks=_parse_list_field(raw_result.get("key_risks")),
                 changed_mind=_parse_bool(raw_result.get("changed_mind", False)),

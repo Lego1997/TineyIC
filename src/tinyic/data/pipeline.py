@@ -1,7 +1,8 @@
 """Pipeline orchestrator: assembles DataPackage from all data sources."""
 
 import logging
-from datetime import datetime
+import os
+from datetime import datetime, timezone
 from typing import Optional
 
 from .models import DataPackage
@@ -78,21 +79,31 @@ def build_data_package(ticker: str, deep_research: bool = True) -> DataPackage:
     # Step 6: Fetch social sentiment (DATA-05)
     social = fetch_social_sentiment(resolved_ticker, company_name)
     if social is None:
-        warnings.append("X/Twitter sentiment unavailable")
+        if not os.getenv("XAI_API_KEY"):
+            warnings.append(
+                "X/Twitter sentiment disabled: XAI_API_KEY not configured"
+            )
+        else:
+            warnings.append("X/Twitter sentiment unavailable")
 
     # Step 7: Deep research (DATA-06) -- optional, default enabled
     research_brief = None
     if deep_research:
         research_brief = build_research_brief(resolved_ticker, company_name, description)
         if research_brief is None:
-            warnings.append("Deep research unavailable")
+            if not os.getenv("OPENAI_API_KEY"):
+                warnings.append(
+                    "Deep research disabled: OPENAI_API_KEY not configured"
+                )
+            else:
+                warnings.append("Deep research unavailable")
 
     # Step 8: Assemble DataPackage
     package = DataPackage(
         ticker=resolved_ticker,
         company_name=company_name,
         description=description,
-        fetched_at=datetime.now(),
+        fetched_at=datetime.now(timezone.utc),
         financials=financials,
         filing_10k=filing_10k,
         filing_10q=filing_10q,

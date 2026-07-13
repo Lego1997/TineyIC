@@ -21,6 +21,12 @@ def pytest_configure(config):
             pass
 
 
+@pytest.fixture(autouse=True)
+def isolate_tinyic_run_logs(tmp_path, monkeypatch):
+    """Keep default append-only debate logs inside each offline test sandbox."""
+    monkeypatch.setenv("TINYIC_RUNS_DIR", str(tmp_path / "tinyic-runs"))
+
+
 @pytest.fixture
 def has_api_key():
     """Check if OPENAI_API_KEY is available, skip if not."""

@@ -2,7 +2,26 @@
 Various utility functions for behavior analysis and action similarity computation.
 """
 
-import textdistance
+import re
+from collections import Counter
+
+
+_WORD_TOKEN_PATTERN = re.compile(r"\b[\w']+\b", re.UNICODE)
+
+
+def _normalized_word_tokens(content: object) -> list[str]:
+    """Return case-normalized word tokens for repetition comparison."""
+    if not isinstance(content, str):
+        content = str(content or "")
+    return _WORD_TOKEN_PATTERN.findall(content.casefold())
+
+
+def _token_shingle_counts(content: object) -> Counter:
+    """Count normalized token bigrams, falling back to unigrams."""
+    tokens = _normalized_word_tokens(content)
+    if len(tokens) < 2:
+        return Counter(tokens)
+    return Counter(zip(tokens, tokens[1:]))
 
 
 def _compute_single_action_jaccard_similarity(current_action, proposed_action):
@@ -21,14 +40,21 @@ def _compute_single_action_jaccard_similarity(current_action, proposed_action):
             (current_action["type"] != proposed_action["type"] or current_action["target"] != proposed_action["target"]):
         return 0.0
     
-    # Compute the Jaccard similarity between the content of the two actions
+    # Compute multiset Jaccard over normalized token bigrams. Applying Jaccard
+    # directly to strings compares character multisets, while token sets lose
+    # both frequency and local claim order. Counted bigrams retain near-copy
+    # detection without conflating reordered, potentially opposite claims.
     current_action_content = current_action.get("content", "")
     proposed_action_content = proposed_action.get("content", "")
-
-    # using textdistance to compute the Jaccard similarity
-    jaccard_similarity = textdistance.jaccard(current_action_content, proposed_action_content)
-
-    return jaccard_similarity
+    current_shingles = _token_shingle_counts(current_action_content)
+    proposed_shingles = _token_shingle_counts(proposed_action_content)
+    union_size = sum((current_shingles | proposed_shingles).values())
+    if union_size == 0:
+        return 1.0
+    intersection_size = sum(
+        (current_shingles & proposed_shingles).values()
+    )
+    return intersection_size / union_size
 
 
 def next_action_jaccard_similarity(agent, proposed_next_action):
@@ -37,8 +63,8 @@ def next_action_jaccard_similarity(agent, proposed_next_action):
     modulo target and type (i.e., similarity will be computed using only the content, provided that the action 
     type and target are the same). If the action type or target is different, the similarity will be 0.
 
-    Jaccard similarity is a measure of similarity between two sets, defined as the size of the intersection 
-    divided by the size of the union of the sets.
+    Jaccard similarity is computed over counted normalized token bigrams: the
+    multiset intersection size divided by the multiset union size.
 
     Args:
         agent (TinyPerson): The agent whose current action is to be compared.

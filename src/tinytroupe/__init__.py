@@ -348,7 +348,13 @@ class ConfigManager:
 
     def config_defaults(self, **config_mappings):
         """
-        Returns a decorator that replaces None default values with current config values.
+        Returns a decorator that fills unset arguments with current config values.
+
+        Upstream APIs use ``None`` to request the configured default. The one
+        intentional exception is ``max_content_display_length``: an explicit
+        ``None`` means unlimited text, while omission still applies the
+        configured display cap. Keeping that exception keyed to the relevant
+        config value avoids changing model, timeout, retry, and cache APIs.
 
         Args:
             **config_mappings: Mapping of parameter names to config keys
@@ -356,7 +362,7 @@ class ConfigManager:
         Example:
             @config_manager.config_defaults(model="model", temp="temperature")
             def generate(prompt, model=None, temp=None):
-                # model will be the current config value for "model" if None is passed
+                # model and temp inherit configuration when omitted or None.
                 # ...
         """
         import functools
@@ -365,21 +371,28 @@ class ConfigManager:
         def decorator(func):
             @functools.wraps(func)
             def wrapper(*args, **kwargs):
-                # Get the function's signature
                 sig = inspect.signature(func)
                 bound_args = sig.bind_partial(*args, **kwargs)
-                bound_args.apply_defaults()
 
                 # For each parameter that maps to a config key
                 for param_name, config_key in config_mappings.items():
-                    # If the parameter is None, replace with config value
-                    if (
-                        param_name in bound_args.arguments
+                    is_omitted = param_name not in bound_args.arguments
+                    is_explicit_none = (
+                        not is_omitted
                         and bound_args.arguments[param_name] is None
+                    )
+                    none_means_value = (
+                        config_key == "max_content_display_length"
+                    )
+                    if is_omitted or (
+                        is_explicit_none and not none_means_value
                     ):
-                        kwargs[param_name] = self.get(config_key)
+                        bound_args.arguments[param_name] = self.get(config_key)
 
-                return func(*args, **kwargs)
+                # Reconstruct both positional and keyword arguments from the
+                # binding so replacing a positional None never creates a
+                # duplicate keyword argument.
+                return func(*bound_args.args, **bound_args.kwargs)
 
             return wrapper
 
