@@ -132,7 +132,41 @@ class TurnState:
     stance: str = ""
     interrupted: bool = False
     completed: bool = False
+    # Live-think tracking (FR-5.1 locked decision). ``thinking_streaming`` flips
+    # True the moment a *think_delta* arrives (never on think_completed), so a
+    # completed-only log keeps the old collapsed-row behavior. ``talk_started``
+    # flips True on the first talk_delta *or* talk_completed — the instant the
+    # live thinking block must auto-collapse. See :attr:`thinking_live`.
+    thinking_streaming: bool = False
+    talk_started: bool = False
+    # Interrupt provenance (FR-5.3), captured from ``turn_interrupted`` so the
+    # card can render the badge as the esc affordance's result (by == "user")
+    # versus a system/provider interruption.
+    interrupted_by: str = ""
+    interrupt_disposition: str = ""
     kind: str = "turn"
+
+    @property
+    def thinking_live(self) -> bool:
+        """True while this turn's THINK is streaming and should render as an
+        auto-expanded, highlighted live block (FR-5.1's locked decision).
+
+        The block shows exactly when a ``think_delta`` has arrived
+        (``thinking_streaming``) and the speaker has **not** begun talking, and
+        the turn is neither completed nor interrupted. The moment the first
+        ``talk_delta`` / ``talk_completed`` lands (``talk_started``) it flips
+        False and the card auto-collapses to the standard ``▸ thinking`` row.
+
+        A completed-only log (``think_completed`` with no deltas) never sets
+        ``thinking_streaming``, so ``thinking_live`` stays False and that log
+        keeps its current, non-live rendering.
+        """
+        return (
+            self.thinking_streaming
+            and not self.talk_started
+            and not self.completed
+            and not self.interrupted
+        )
 
 
 @dataclass
@@ -205,6 +239,11 @@ class TownHallState:
         # whole parsed log (see ``TownHallApp.on_mount``) so the header can show
         # an explicit "incomplete" indicator for a truncated replay.
         self.truncated: bool = False
+        # Mode flag: this view is fed by a live event queue rather than a recorded
+        # log. Like ``truncated`` it is a renderer-level fact the app sets once
+        # (not folded per-event), so the header can show a live "debating…" status
+        # until ``finished`` flips it to complete/error.
+        self.live: bool = False
         self.duration_s: float | None = None
 
         # Data package
@@ -392,6 +431,9 @@ class TownHallState:
     def _on_think_delta(self, p: Mapping[str, Any]) -> None:
         turn = self._turns_by_id.get(str(p.get("turn_id", "")))
         if turn is not None:
+            # A delta (not a one-shot completion) is what makes the think stream
+            # "live" and drives the auto-expanded highlight block (FR-5.1).
+            turn.thinking_streaming = True
             turn.thinking += str(p.get("text", "") or "")
             self._sync_think_snippet(turn)
 
@@ -404,11 +446,15 @@ class TownHallState:
     def _on_talk_delta(self, p: Mapping[str, Any]) -> None:
         turn = self._turns_by_id.get(str(p.get("turn_id", "")))
         if turn is not None:
+            # The first talk fragment collapses the live thinking block.
+            turn.talk_started = True
             turn.speech += str(p.get("text", "") or "")
 
     def _on_talk_completed(self, p: Mapping[str, Any]) -> None:
         turn = self._turns_by_id.get(str(p.get("turn_id", "")))
         if turn is not None:
+            # A one-shot talk_completed (no talk_delta) still collapses the block.
+            turn.talk_started = True
             turn.speech = str(p.get("full_text", "") or "")
 
     def _on_cognitive_state(self, p: Mapping[str, Any]) -> None:
@@ -427,7 +473,8 @@ class TownHallState:
         turn = self._turns_by_id.get(str(p.get("turn_id", "")))
         if turn is not None:
             turn.completed = True
-            turn.interrupted = bool(p.get("interrupted"))
+            # Never *un*-set an interrupt a prior ``turn_interrupted`` recorded.
+            turn.interrupted = turn.interrupted or bool(p.get("interrupted"))
         member = self.personas.get(str(p.get("persona", "")))
         if member is not None:
             member.speaking = False
@@ -436,6 +483,8 @@ class TownHallState:
         turn = self._turns_by_id.get(str(p.get("turn_id", "")))
         if turn is not None:
             turn.interrupted = True
+            turn.interrupted_by = str(p.get("by", "") or "")
+            turn.interrupt_disposition = str(p.get("disposition", "") or "")
 
     # -- steering handlers ------------------------------------------------- #
 

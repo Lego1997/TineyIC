@@ -11,6 +11,9 @@ from __future__ import annotations
 
 from tinyic.tui.events import Event
 from tinyic.tui.steering import (
+    InterruptRequest,
+    RecordingControlSink,
+    ReplayControlSink,
     ReplaySink,
     SteeringMessage,
     parse_steering_input,
@@ -110,3 +113,32 @@ def test_replay_sink_omits_target_when_untargeted_and_increments_ids():
     assert "target_persona" not in emitted[0].payload
     # No steering_delivered is ever produced — replay steer stays queued.
     assert all(e.type == "steering_submitted" for e in emitted)
+
+
+# --------------------------------------------------------------------------- #
+# ControlSink: the esc hard-interrupt seam (mirror of the steering sink)
+# --------------------------------------------------------------------------- #
+
+def test_interrupt_request_defaults_and_fields():
+    assert InterruptRequest() == InterruptRequest(turn_id=None, source="tui")
+    req = InterruptRequest(turn_id="t7", source="stdin")
+    assert req.turn_id == "t7" and req.source == "stdin"
+
+
+def test_replay_control_sink_skips_to_next_turn():
+    calls: list[InterruptRequest] = []
+    # ReplayControlSink is a thin adapter over an app-provided skip callback; it
+    # must invoke it once per interrupt (the "skip to next turn boundary" today).
+    sink = ReplayControlSink(lambda: calls.append(True))
+    sink.interrupt(InterruptRequest(turn_id="t3"))
+    sink.interrupt(InterruptRequest(turn_id="t4"))
+    assert calls == [True, True]
+
+
+def test_recording_control_sink_records_requests_for_later_honoring():
+    sink = RecordingControlSink()
+    assert sink.requests == []
+    sink.interrupt(InterruptRequest(turn_id="t1", source="tui"))
+    sink.interrupt(InterruptRequest(turn_id="t2", source="stdin"))
+    assert [r.turn_id for r in sink.requests] == ["t1", "t2"]
+    assert [r.source for r in sink.requests] == ["tui", "stdin"]

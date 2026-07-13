@@ -86,3 +86,57 @@ def test_persona_card_expanded_without_reasoning_shows_placeholder():
     card = PersonaCard(PersonaState(name="Ghost"))
     card.expanded = True
     assert "no private reasoning yet" in str(card.render())
+
+
+# --------------------------------------------------------------------------- #
+# Live-think highlight block (FR-5.1)
+# --------------------------------------------------------------------------- #
+
+def test_turn_card_live_think_text_shows_streaming_thought():
+    turn = TurnState(
+        key="turn-1", turn_id="t1", persona="Warren Buffett",
+        phase="opening", role="statement",
+    )
+    turn.thinking_streaming = True
+    turn.thinking = "weighing the durable moat"
+    assert turn.thinking_live is True
+    live = str(TurnCard(turn)._live_think_text())
+    assert "thinking" in live
+    assert "weighing the durable moat" in live
+
+
+# --------------------------------------------------------------------------- #
+# Interrupt badge (FR-5.3): esc affordance vs. system interruption
+# --------------------------------------------------------------------------- #
+
+def test_turn_card_interrupt_badge_reads_as_esc_for_user():
+    turn = TurnState(
+        key="turn-i", turn_id="i", persona="Warren Buffett",
+        phase="cross_exam", role="response",
+        interrupted=True, interrupted_by="user", interrupt_disposition="cancelled",
+    )
+    head = str(TurnCard(turn)._head_text())
+    assert "interrupted" in head
+    assert "(esc)" in head          # the user's esc affordance result
+    assert "cancelled" in head      # disposition surfaced
+
+
+def test_turn_card_interrupt_badge_names_a_system_source():
+    turn = TurnState(
+        key="turn-i", turn_id="i", persona="Howard Marks",
+        phase="cross_exam", role="response",
+        interrupted=True, interrupted_by="system",
+        interrupt_disposition="discarded_on_arrival",
+    )
+    head = str(TurnCard(turn)._head_text())
+    assert "interrupted" in head
+    assert "(system)" in head
+    assert "(esc)" not in head
+
+
+def test_turn_card_omits_interrupt_badge_when_not_interrupted():
+    turn = TurnState(
+        key="turn-ok", turn_id="ok", persona="Li Lu",
+        phase="opening", role="statement",
+    )
+    assert "interrupted" not in str(TurnCard(turn)._head_text())

@@ -276,3 +276,110 @@ def test_humanize_helpers():
     assert humanize_duration(372.5) == "6:12"
     assert humanize_duration(8) == "0:08"
     assert humanize_duration(None) == "0:00"
+
+
+# --------------------------------------------------------------------------- #
+# Live-think fold (FR-5.1 locked decision): think_delta streams live, talk
+# auto-collapses; completed-only logs keep the old behavior.
+# --------------------------------------------------------------------------- #
+
+def _feed(state: TownHallState):
+    """Return a helper that dispatches ``(type, **payload)`` into ``state``."""
+    def ev(type_: str, **payload) -> None:
+        state.dispatch(parse_event({"type": type_, "payload": payload}))
+    return ev
+
+
+def _only_turn(state: TownHallState) -> TurnState:
+    return next(i for i in state.transcript if isinstance(i, TurnState))
+
+
+def test_thinking_live_property_semantics():
+    t = TurnState(key="k", turn_id="t", persona="p", phase="opening", role="statement")
+    assert t.thinking_live is False  # nothing streaming yet
+    t.thinking_streaming = True
+    assert t.thinking_live is True  # a delta arrived, no talk/complete/interrupt
+    t.talk_started = True
+    assert t.thinking_live is False  # talk collapses the live block
+    t.talk_started = False
+    t.completed = True
+    assert t.thinking_live is False  # completion collapses it
+    t.completed = False
+    t.interrupted = True
+    assert t.thinking_live is False  # an interrupt collapses it
+
+
+def test_think_delta_marks_thinking_live_until_talk_begins():
+    state = TownHallState()
+    ev = _feed(state)
+    ev("turn_started", turn_id="t1", persona="Warren Buffett", phase="opening", role="statement")
+    turn = _only_turn(state)
+    assert turn.thinking_live is False  # no think yet
+
+    ev("think_delta", turn_id="t1", text="weighing ")
+    ev("think_delta", turn_id="t1", text="the moat")
+    assert turn.thinking_streaming is True
+    assert turn.thinking == "weighing the moat"
+    assert turn.thinking_live is True  # streaming, talk not begun -> live block
+
+    # think_completed alone must NOT collapse the block (talk hasn't begun).
+    ev("think_completed", turn_id="t1", full_text="weighing the moat carefully")
+    assert turn.thinking == "weighing the moat carefully"
+    assert turn.thinking_live is True
+
+    # The first talk fragment collapses it, content preserved for the ▸ row.
+    ev("talk_delta", turn_id="t1", text="I would buy.")
+    assert turn.talk_started is True
+    assert turn.thinking_live is False
+    assert turn.thinking == "weighing the moat carefully"
+
+
+def test_completed_only_turn_never_goes_live():
+    state = TownHallState()
+    ev = _feed(state)
+    ev("turn_started", turn_id="t1", persona="X", phase="opening", role="statement")
+    ev("think_completed", turn_id="t1", full_text="a full private thought")
+    turn = _only_turn(state)
+    # No think_delta ever arrived, so the stream was never "live": the turn keeps
+    # the standard collapsed ▸ thinking row (current behavior).
+    assert turn.thinking_streaming is False
+    assert turn.thinking_live is False
+    assert turn.thinking == "a full private thought"
+    ev("talk_completed", turn_id="t1", full_text="my statement")
+    ev("turn_completed", turn_id="t1", persona="X", phase="opening", interrupted=False)
+    assert turn.talk_started is True
+    assert turn.thinking_live is False
+
+
+def test_one_shot_talk_completed_collapses_a_live_block():
+    # A provider that streams THINK deltas but delivers TALK in one shot still
+    # collapses the block the instant talk_completed lands.
+    state = TownHallState()
+    ev = _feed(state)
+    ev("turn_started", turn_id="t1", persona="X", phase="opening", role="statement")
+    ev("think_delta", turn_id="t1", text="streamed thought")
+    turn = _only_turn(state)
+    assert turn.thinking_live is True
+    ev("talk_completed", turn_id="t1", full_text="one-shot statement")
+    assert turn.talk_started is True
+    assert turn.thinking_live is False
+
+
+def test_turn_interrupted_captures_provenance_and_clears_live():
+    state = TownHallState()
+    ev = _feed(state)
+    ev("turn_started", turn_id="t1", persona="X", phase="cross_exam", role="response")
+    ev("think_delta", turn_id="t1", text="mid thought")
+    turn = _only_turn(state)
+    assert turn.thinking_live is True
+
+    ev("turn_interrupted", turn_id="t1", persona="X", by="user", disposition="cancelled")
+    assert turn.interrupted is True
+    assert turn.interrupted_by == "user"
+    assert turn.interrupt_disposition == "cancelled"
+    assert turn.thinking_live is False  # an interrupt clears the live block
+
+    # A trailing turn_completed(interrupted=False) must not erase the interrupt.
+    ev("turn_completed", turn_id="t1", persona="X", phase="cross_exam", interrupted=False)
+    assert turn.interrupted is True
+    assert turn.interrupted_by == "user"
