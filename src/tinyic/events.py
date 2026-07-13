@@ -327,6 +327,10 @@ _CREDENTIAL_ENV_VARS = (
     "GEMINI_API_KEY",
     "MOONSHOT_API_KEY",
     "KIMI_API_KEY",
+    # DeepSeek support is removed, but a stale key may still be exported in a
+    # user's environment; redacting it costs nothing (matches the vendored
+    # backstop in tinytroupe/utils/config.py).
+    "DEEPSEEK_API_KEY",
     "AZURE_OPENAI_API_KEY",
     "AZURE_OPENAI_KEY",
     "CLAUDE_CODE_OAUTH_TOKEN",
