@@ -6,8 +6,10 @@ No test touches the network.
 """
 
 import importlib.machinery
+import re
 import sys
 import time
+import tomllib
 import types
 from datetime import datetime, timezone
 from pathlib import Path
@@ -124,8 +126,20 @@ class TestCallWithTimeout:
 # --------------------------------------------------------------------------- #
 
 def _a_share_profit_df() -> pd.DataFrame:
+    # *_by_yearly_em frames: one wide row per FISCAL YEAR (annual reports only).
     return pd.DataFrame(
         [
+            {
+                "SECUCODE": "600519.SH",
+                "REPORT_DATE": "2024-12-31 00:00:00",
+                "TOTAL_OPERATE_INCOME": 150_000_000_000.0,
+                "OPERATE_COST": 12_000_000_000.0,
+                "OPERATE_PROFIT": 104_000_000_000.0,
+                "TOTAL_PROFIT": 103_000_000_000.0,
+                "NETPROFIT": 78_000_000_000.0,
+                "PARENT_NETPROFIT": 76_000_000_000.0,
+                "BASIC_EPS": 60.1,
+            },
             {
                 "SECUCODE": "600519.SH",
                 "REPORT_DATE": "2025-12-31 00:00:00",
@@ -137,17 +151,6 @@ def _a_share_profit_df() -> pd.DataFrame:
                 "PARENT_NETPROFIT": 88_000_000_000.0,
                 "BASIC_EPS": 68.64,
             },
-            {
-                "SECUCODE": "600519.SH",
-                "REPORT_DATE": "2026-03-31 00:00:00",
-                "TOTAL_OPERATE_INCOME": 46_000_000_000.0,
-                "OPERATE_COST": 3_680_000_000.0,
-                "OPERATE_PROFIT": 34_000_000_000.0,
-                "TOTAL_PROFIT": 33_900_000_000.0,
-                "NETPROFIT": 26_500_000_000.0,
-                "PARENT_NETPROFIT": 26_000_000_000.0,
-                "BASIC_EPS": 20.71,
-            },
         ]
     )
 
@@ -156,7 +159,7 @@ def _a_share_balance_df() -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "REPORT_DATE": "2026-03-31 00:00:00",
+                "REPORT_DATE": "2025-12-31 00:00:00",
                 "TOTAL_ASSETS": 300_000_000_000.0,
                 "TOTAL_LIABILITIES": 60_000_000_000.0,
                 "TOTAL_EQUITY": 240_000_000_000.0,
@@ -170,7 +173,7 @@ def _a_share_cash_df() -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "REPORT_DATE": "2026-03-31 00:00:00",
+                "REPORT_DATE": "2025-12-31 00:00:00",
                 "NETCASH_OPERATE": 12_000_000_000.0,
                 "NETCASH_INVEST": -1_000_000_000.0,
                 "NETCASH_FINANCE": -20_000_000_000.0,
@@ -258,9 +261,9 @@ def _a_share_forecast_df() -> pd.DataFrame:
 
 def _install_a_share_stub(monkeypatch, overrides: dict | None = None):
     functions = {
-        "stock_profit_sheet_by_report_em": lambda symbol: _a_share_profit_df(),
-        "stock_balance_sheet_by_report_em": lambda symbol: _a_share_balance_df(),
-        "stock_cash_flow_sheet_by_report_em": lambda symbol: _a_share_cash_df(),
+        "stock_profit_sheet_by_yearly_em": lambda symbol: _a_share_profit_df(),
+        "stock_balance_sheet_by_yearly_em": lambda symbol: _a_share_balance_df(),
+        "stock_cash_flow_sheet_by_yearly_em": lambda symbol: _a_share_cash_df(),
         "stock_financial_analysis_indicator": (
             lambda symbol, start_year: _a_share_indicator_df()
         ),
@@ -280,7 +283,7 @@ class TestAShareNormalization:
             return _a_share_profit_df()
 
         _install_a_share_stub(
-            monkeypatch, {"stock_profit_sheet_by_report_em": profit}
+            monkeypatch, {"stock_profit_sheet_by_yearly_em": profit}
         )
         result = fetch_cn_market_data("600519.SS", "Kweichow Moutai")
 
@@ -289,14 +292,14 @@ class TestAShareNormalization:
         assert result.failed_sections == []
         assert seen_symbols == ["SH600519"]  # yfinance form converted for akshare
 
-        # Statements: latest period wins, English keys, margins derived.
+        # Statements: latest fiscal year wins, English keys, margins derived.
         statements = result.statements
-        assert statements.period == "2026-03-31"
+        assert statements.period == "2025-12-31"
         assert statements.currency == "CNY"
-        assert statements.income["total_revenue"] == 46_000_000_000.0
-        assert statements.income["net_profit_attributable"] == 26_000_000_000.0
-        assert statements.income["gross_margin_pct"] == 92.0
-        assert statements.income["net_margin_pct"] == pytest.approx(56.52)
+        assert statements.income["total_revenue"] == 174_000_000_000.0
+        assert statements.income["net_profit_attributable"] == 88_000_000_000.0
+        assert statements.income["gross_margin_pct"] == pytest.approx(91.95)
+        assert statements.income["net_margin_pct"] == pytest.approx(50.57)
         assert statements.balance["total_assets"] == 300_000_000_000.0
         assert statements.balance["total_liabilities"] == 60_000_000_000.0
         assert statements.cash_flow["operating_cash_flow"] == 12_000_000_000.0
@@ -347,9 +350,9 @@ class TestAShareNormalization:
 
         _stub_akshare(
             monkeypatch,
-            stock_profit_sheet_by_report_em=broken,
-            stock_balance_sheet_by_report_em=broken,
-            stock_cash_flow_sheet_by_report_em=broken,
+            stock_profit_sheet_by_yearly_em=broken,
+            stock_balance_sheet_by_yearly_em=broken,
+            stock_cash_flow_sheet_by_yearly_em=broken,
             stock_financial_analysis_indicator=broken,
             stock_value_em=broken,
             stock_profit_forecast_em=broken,
@@ -360,14 +363,77 @@ class TestAShareNormalization:
         empty = lambda *args, **kwargs: pd.DataFrame()  # noqa: E731
         _stub_akshare(
             monkeypatch,
-            stock_profit_sheet_by_report_em=empty,
-            stock_balance_sheet_by_report_em=empty,
-            stock_cash_flow_sheet_by_report_em=empty,
+            stock_profit_sheet_by_yearly_em=empty,
+            stock_balance_sheet_by_yearly_em=empty,
+            stock_cash_flow_sheet_by_yearly_em=empty,
             stock_financial_analysis_indicator=empty,
             stock_value_em=empty,
             stock_profit_forecast_em=empty,
         )
         assert fetch_cn_market_data("600519.SS", "Kweichow Moutai") is None
+
+    def test_operating_cost_falls_back_when_first_column_is_null(
+        self, monkeypatch
+    ):
+        """Wide EM frames keep every column; present-but-NaN first candidates
+        (e.g. OPERATE_COST for securities/insurance company types) must fall
+        through to the next candidate instead of dropping the field."""
+        df = _a_share_profit_df()
+        df["OPERATE_COST"] = None  # all-null column, as EM emits it
+        df["TOTAL_OPERATE_COST"] = [30_000_000_000.0, 34_800_000_000.0]
+        _install_a_share_stub(
+            monkeypatch, {"stock_profit_sheet_by_yearly_em": lambda symbol: df}
+        )
+        result = fetch_cn_market_data("600519.SS", "Kweichow Moutai")
+
+        income = result.statements.income
+        assert income["operating_cost"] == 34_800_000_000.0
+        # Margin derivation runs off the fallback column, not silently skipped.
+        assert income["gross_margin_pct"] == pytest.approx(80.0)
+
+    def test_ratios_start_year_walks_forward_for_recent_ipos(self, monkeypatch):
+        """Sina returns an EMPTY frame when start_year predates the stock's
+        year list (recent IPOs); the fetcher must retry with later years."""
+        seen_years: list[str] = []
+        year = datetime.now().year
+
+        def indicator(symbol, start_year):
+            seen_years.append(start_year)
+            if start_year == str(year - 3):
+                return pd.DataFrame()  # start_year not in the page's year list
+            return _a_share_indicator_df()
+
+        _install_a_share_stub(
+            monkeypatch, {"stock_financial_analysis_indicator": indicator}
+        )
+        result = fetch_cn_market_data("600519.SS", "Kweichow Moutai")
+
+        assert seen_years == [str(year - 3), str(year - 1)]
+        assert result.failed_sections == []
+        assert result.ratios is not None
+        assert result.ratios.ratios["roe_pct"] == 34.2
+
+    def test_ratios_empty_after_all_retries_is_a_failed_section(
+        self, monkeypatch
+    ):
+        """Persistently-empty indicator frames must surface as a failed
+        section (degraded warning), not silently vanish with status ok."""
+        seen_years: list[str] = []
+
+        def indicator(symbol, start_year):
+            seen_years.append(start_year)
+            return pd.DataFrame()
+
+        _install_a_share_stub(
+            monkeypatch, {"stock_financial_analysis_indicator": indicator}
+        )
+        result = fetch_cn_market_data("600519.SS", "Kweichow Moutai")
+
+        year = datetime.now().year
+        assert seen_years == [str(year - 3), str(year - 1), str(year)]
+        assert result is not None  # other sections still present
+        assert result.ratios is None
+        assert "ratios" in result.failed_sections
 
 
 # --------------------------------------------------------------------------- #
@@ -398,16 +464,22 @@ def _hk_report_rows(sheet: str) -> pd.DataFrame:
             ("投资业务现金净额", -90_000_000_000.0),
             ("融资业务现金净额", -60_000_000_000.0),
         ]
+    # Real column set of stock_financial_hk_report_em (akshare 1.18.64):
+    # SECUCODE, SECURITY_CODE, SECURITY_NAME_ABBR, ORG_CODE, REPORT_DATE,
+    # DATE_TYPE_CODE, FISCAL_YEAR, START_DATE/STD_REPORT_DATE, STD_ITEM_CODE,
+    # STD_ITEM_NAME, AMOUNT.  There is NO currency column.
     rows = []
     for report_date, scale in (("2025-12-31 00:00:00", 1.0), ("2024-12-31 00:00:00", 0.9)):
-        for name, amount in items:
+        for index, (name, amount) in enumerate(items):
             rows.append(
                 {
                     "SECUCODE": "00700.HK",
+                    "SECURITY_CODE": "00700",
                     "REPORT_DATE": report_date,
+                    "FISCAL_YEAR": report_date[:4],
+                    "STD_ITEM_CODE": f"00{index:02d}",
                     "STD_ITEM_NAME": name,
                     "AMOUNT": amount * scale,
-                    "CURRENCY": "CNY",
                 }
             )
     return pd.DataFrame(rows)
@@ -489,7 +561,12 @@ class TestHKNormalization:
 
         statements = result.statements
         assert statements.period == "2025-12-31"  # latest FY only
-        assert statements.currency == "CNY"
+        # The source has no currency column (HK issuers report in HKD, CNY,
+        # or USD); the absence must be explicit, never a guessed label.
+        assert statements.currency is None
+        assert statements.currency_note is not None
+        for token in ("HKD", "CNY", "USD"):
+            assert token in statements.currency_note
         assert statements.income["total_revenue"] == 660_000_000_000.0
         assert statements.income["gross_profit"] == 320_000_000_000.0
         assert statements.income["net_profit_attributable"] == 194_000_000_000.0
@@ -528,6 +605,25 @@ class TestHKNormalization:
         assert result.failed_sections == ["profile"]
         assert result.statements is not None
         assert result.ratios is not None
+
+    def test_hk_roe_falls_back_when_first_column_is_null(self, monkeypatch):
+        """ROE_AVG present-but-null (e.g. a first-year listing) must fall
+        through to ROE_YEARLY instead of dropping roe_pct."""
+        df = _hk_indicator_df()
+        df["ROE_AVG"] = None  # all-null column, as EM emits it
+        df["ROE_YEARLY"] = [23.4, 15.0]
+        _install_hk_stub(
+            monkeypatch,
+            {
+                "stock_financial_hk_analysis_indicator_em": (
+                    lambda symbol, indicator: df
+                )
+            },
+        )
+        result = fetch_cn_market_data("0700.HK", "Tencent Holdings")
+
+        assert result.ratios is not None
+        assert result.ratios.ratios["roe_pct"] == 23.4
 
 
 # --------------------------------------------------------------------------- #
@@ -758,3 +854,99 @@ class TestCNMarketEventContract:
         assert source is not None
         assert source["status"] == "unavailable"
         assert source["warning"] == MISSING_EXTRA_WARNING
+
+
+# --------------------------------------------------------------------------- #
+# Packaging: the documented install command must actually work
+# --------------------------------------------------------------------------- #
+
+class TestCNExtraPackaging:
+    def test_workspace_root_defines_cn_extra(self):
+        """``uv sync --extra cn`` resolves extras against the workspace ROOT
+        project, not the tinyic member -- so the exact command baked into the
+        pipeline warning / module docstring must be declared at the root and
+        forwarded to the member that owns the akshare dependency."""
+        root = Path(__file__).resolve().parents[1]
+
+        root_project = tomllib.loads(
+            (root / "pyproject.toml").read_text(encoding="utf-8")
+        )
+        assert root_project["project"]["optional-dependencies"]["cn"] == (
+            ["tinyic[cn]"]
+        )
+
+        member = tomllib.loads(
+            (root / "src" / "tinyic" / "pyproject.toml").read_text(
+                encoding="utf-8"
+            )
+        )
+        cn_deps = member["project"]["optional-dependencies"]["cn"]
+        assert any(dep.startswith("akshare") for dep in cn_deps)
+
+
+# --------------------------------------------------------------------------- #
+# Live smoke tier (network + the cn extra; run: uv run pytest -m live_api)
+# --------------------------------------------------------------------------- #
+
+class TestLiveCNMarket:
+    """Pins the real EastMoney/Sina response shapes that the offline stubs
+    only echo back (wide/long column names, Chinese labels, akshare function
+    signatures).  akshare renames columns across minor versions; this tier
+    catches that drift instead of letting every section silently degrade to
+    ``failed_sections`` in production.
+    """
+
+    @pytest.mark.live_api
+    @pytest.mark.timeout(300)
+    def test_live_a_share_moutai(self):
+        pytest.importorskip("akshare")
+        result = fetch_cn_market_data("600519.SS", "Kweichow Moutai")
+
+        assert result is not None
+        assert result.market == "a_share"
+        # Statements + valuation are EastMoney datacenter/F10 endpoints
+        # (reachable internationally) -- hard-assert the mapped English keys.
+        assert result.statements is not None, result.failed_sections
+        assert result.statements.currency == "CNY"
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", result.statements.period)
+        assert result.statements.income.get("total_revenue")
+        assert result.statements.income.get("net_profit_attributable")
+        assert result.statements.balance.get("total_assets")
+        assert result.statements.cash_flow.get("operating_cash_flow")
+        assert result.valuation is not None, result.failed_sections
+        assert (
+            result.valuation.pe_ttm is not None
+            or result.valuation.pb is not None
+            or result.valuation.market_cap is not None
+        )
+        # Sina ratios and the whole-market consensus crawl are best-effort
+        # (TLS trouble seen from some overseas exits), but when they do come
+        # back they must carry mapped keys.
+        if result.ratios is not None:
+            assert result.ratios.ratios
+        if result.consensus is not None:
+            assert (
+                result.consensus.report_count is not None
+                or result.consensus.ratings
+                or result.consensus.consensus_eps
+            )
+
+    @pytest.mark.live_api
+    @pytest.mark.timeout(300)
+    def test_live_hk_tencent(self):
+        pytest.importorskip("akshare")
+        result = fetch_cn_market_data("0700.HK", "Tencent Holdings")
+
+        assert result is not None
+        assert result.market == "hk"
+        assert result.statements is not None, result.failed_sections
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", result.statements.period)
+        assert result.statements.income.get("total_revenue")
+        assert result.statements.income.get("net_profit_attributable")
+        assert result.statements.balance.get("total_assets")
+        # The source has no currency column: absence stays explicit.
+        assert result.statements.currency is None
+        assert result.statements.currency_note
+        assert result.ratios is not None, result.failed_sections
+        assert result.ratios.ratios.get("roe_pct") is not None
+        assert result.profile

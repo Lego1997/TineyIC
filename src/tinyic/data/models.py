@@ -112,15 +112,19 @@ class SocialSentiment(BaseModel):
 
 
 class CNStatements(BaseModel):
-    """Key line items from the latest reported period (A-share or HK).
+    """Key line items from the latest reported fiscal year (A-share or HK).
 
     Keys are English (language-neutral for downstream prompts); when the
     source label was Chinese/ambiguous, the original label is preserved in
     ``source_labels`` keyed by the same English name.  Amounts are raw
     currency units (not 万元 / thousands).
     """
-    period: Optional[str] = None       # report-period label, e.g. "2026-03-31"
-    currency: Optional[str] = None     # "CNY" for A-share; from source for HK
+    period: Optional[str] = None       # report-period label, e.g. "2025-12-31"
+    # "CNY" for A-share.  Always None for HK: EastMoney's F10 statement rows
+    # carry no currency column and HK issuers report in HKD, CNY, or USD --
+    # ``currency_note`` spells that out for the persona-facing context.
+    currency: Optional[str] = None
+    currency_note: Optional[str] = None
     income: dict = Field(default_factory=dict)
     balance: dict = Field(default_factory=dict)
     cash_flow: dict = Field(default_factory=dict)

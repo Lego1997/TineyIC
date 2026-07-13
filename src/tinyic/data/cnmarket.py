@@ -11,7 +11,10 @@ geo-blocked from some overseas IPs).  Quotes remain yfinance's job; this
 module deliberately fetches no quote data.
 
 Each sub-fetch (statements, ratios, valuation, consensus, profile) is wrapped
-independently with try/except and a bounded timeout so partial data survives.
+independently with try/except so partial data survives, and every individual
+akshare call runs under its own bounded wall-clock timeout (one akshare call
+can fan out to many sequential HTTP round-trips internally, which is slow
+from overseas exits -- hence the yearly statement variants below).
 Field names emitted downstream are English (language-neutral prompts); the
 original Chinese label is preserved in ``source_labels`` where ambiguous.
 """
@@ -33,8 +36,9 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
-# Bounded wall-clock budget per sub-fetch (a sub-fetch may make up to three
-# akshare calls, e.g. the three statements).
+# Bounded wall-clock budget per akshare CALL (not per section): each call may
+# still fan out to several HTTP round-trips inside akshare, but no single hung
+# or crawling call can starve the sibling calls of its section.
 _FETCH_TIMEOUT_S = 60.0
 
 _DATE_KEYS = ("REPORT_DATE", "日期", "数据日期")
@@ -185,12 +189,34 @@ def _pick(record: dict, candidates: tuple[str, ...]):
     return None, None
 
 
+def _pick_number(record: dict, candidates: tuple[str, ...]):
+    """(number, matched column) for the first candidate holding a parseable value.
+
+    Wide EastMoney frames contain EVERY column for every row (all-null ones
+    coerced to NaN), so a present-but-null first candidate must fall through
+    to the next candidate instead of dropping the field (e.g. ``ROE_AVG`` null
+    while ``ROE_YEARLY`` is populated).  Exact matches win over substring
+    matches across all candidates, mirroring :func:`_pick`.
+    """
+    for candidate in candidates:
+        if candidate in record:
+            number = _to_float(record[candidate])
+            if number is not None:
+                return number, candidate
+    for candidate in candidates:
+        for key in record:
+            if candidate in str(key):
+                number = _to_float(record[key])
+                if number is not None:
+                    return number, str(key)
+    return None, None
+
+
 def _map_record(record: dict, field_map: dict, labels: dict) -> dict:
     """Map source columns to English keys; keep non-ASCII labels alongside."""
     values: dict = {}
     for english, candidates in field_map.items():
-        raw, matched = _pick(record, candidates)
-        number = _to_float(raw)
+        number, matched = _pick_number(record, candidates)
         if number is None:
             continue
         values[english] = number
@@ -255,15 +281,31 @@ _A_RATIO_FIELDS = {
 
 
 def _fetch_a_share_statements(ak, em_symbol: str) -> Optional[CNStatements]:
+    # The *_by_yearly_em variants crawl only annual report dates (~1/4 of the
+    # HTTP round-trips of *_by_report_em, which batch-downloads every report
+    # period since listing).  Each sheet gets its own timeout window so one
+    # slow crawl cannot consume the budget of its siblings.
     labels: dict = {}
     income_rec = _latest_record(
-        _records(ak.stock_profit_sheet_by_report_em(symbol=em_symbol))
+        _records(
+            _call_with_timeout(
+                lambda: ak.stock_profit_sheet_by_yearly_em(symbol=em_symbol)
+            )
+        )
     )
     balance_rec = _latest_record(
-        _records(ak.stock_balance_sheet_by_report_em(symbol=em_symbol))
+        _records(
+            _call_with_timeout(
+                lambda: ak.stock_balance_sheet_by_yearly_em(symbol=em_symbol)
+            )
+        )
     )
     cash_rec = _latest_record(
-        _records(ak.stock_cash_flow_sheet_by_report_em(symbol=em_symbol))
+        _records(
+            _call_with_timeout(
+                lambda: ak.stock_cash_flow_sheet_by_yearly_em(symbol=em_symbol)
+            )
+        )
     )
     income = _map_record(income_rec or {}, _A_INCOME_FIELDS, labels)
     balance = _map_record(balance_rec or {}, _A_BALANCE_FIELDS, labels)
@@ -288,12 +330,28 @@ def _fetch_a_share_statements(ak, em_symbol: str) -> Optional[CNStatements]:
 
 
 def _fetch_a_share_ratios(ak, bare_code: str) -> Optional[CNRatios]:
-    start_year = str(datetime.now().year - 3)
-    records = _records(
-        ak.stock_financial_analysis_indicator(
-            symbol=bare_code, start_year=start_year
+    # Sina returns an EMPTY frame (no error) when start_year is not among the
+    # year links on the stock's page -- true for anything listed less than
+    # ~3 years ago.  Walk the start year forward instead of failing silently,
+    # and treat still-empty as a failed section so the pipeline surfaces it.
+    current_year = datetime.now().year
+    start_years = (current_year - 3, current_year - 1, current_year)
+    records: list[dict] = []
+    for start_year in start_years:
+        records = _records(
+            _call_with_timeout(
+                lambda year=str(start_year): ak.stock_financial_analysis_indicator(
+                    symbol=bare_code, start_year=year
+                )
+            )
         )
-    )
+        if records:
+            break
+    if not records:
+        raise ValueError(
+            f"no financial-analysis indicator rows for {bare_code} "
+            f"(start_year tried: {', '.join(str(y) for y in start_years)})"
+        )
     record = _latest_record(records)
     if not record:
         return None
@@ -306,7 +364,9 @@ def _fetch_a_share_ratios(ak, bare_code: str) -> Optional[CNRatios]:
 
 
 def _fetch_a_share_valuation(ak, bare_code: str) -> Optional[CNValuation]:
-    record = _latest_record(_records(ak.stock_value_em(symbol=bare_code)))
+    record = _latest_record(
+        _records(_call_with_timeout(lambda: ak.stock_value_em(symbol=bare_code)))
+    )
     if not record:
         return None
     pe_ttm = _to_float(_pick(record, ("PE(TTM)",))[0])
@@ -329,7 +389,11 @@ _EPS_COLUMN = re.compile(r"(\d{4}).*每股收益")
 
 
 def _fetch_a_share_consensus(ak, bare_code: str) -> Optional[CNAnalystConsensus]:
-    records = _records(ak.stock_profit_forecast_em())
+    # stock_profit_forecast_em has no per-stock filter (its ``symbol`` selects
+    # an industry board), so this is a whole-market paginated table (~11
+    # requests of 500 rows).  It runs strictly best-effort inside its own
+    # timeout window; a slow crawl fails this section alone, never the rest.
+    records = _records(_call_with_timeout(ak.stock_profit_forecast_em))
     row = next(
         (
             record
@@ -454,15 +518,26 @@ def _map_hk_items(rows: list[dict], item_map: dict, labels: dict) -> dict:
     return values
 
 
+# EastMoney's HK F10 statement rows carry NO reporting-currency column (the
+# CURRENCY field lives only in an internal report-list query that akshare
+# does not return), and HK issuers report in HKD, CNY, or USD.  Rather than
+# guessing, the absence is stated explicitly so personas do not assume CNY.
+_HK_CURRENCY_NOTE = (
+    "Reporting currency not provided by the source; HK-listed issuers report "
+    "in HKD, CNY, or USD depending on the company."
+)
+
+
 def _fetch_hk_statements(ak, hk_code: str) -> Optional[CNStatements]:
     labels: dict = {}
     sections: dict = {"income": {}, "balance": {}, "cash_flow": {}}
     period = None
-    currency = None
     for attribute, sheet_name, item_map in _HK_STATEMENTS:
         records = _records(
-            ak.stock_financial_hk_report_em(
-                stock=hk_code, symbol=sheet_name, indicator="年度"
+            _call_with_timeout(
+                lambda sheet=sheet_name: ak.stock_financial_hk_report_em(
+                    stock=hk_code, symbol=sheet, indicator="年度"
+                )
             )
         )
         if not records:
@@ -477,12 +552,6 @@ def _fetch_hk_statements(ak, hk_code: str) -> Optional[CNStatements]:
             if str(record.get("REPORT_DATE") or "") == latest_date
         ]
         period = period or _period_label(latest_date)
-        if currency is None:
-            for record in latest_rows:
-                raw = record.get("CURRENCY")
-                if raw is not None and str(raw).strip():
-                    currency = str(raw).strip()
-                    break
         sections[attribute] = _map_hk_items(latest_rows, item_map, labels)
     income = sections["income"]
     _add_margins(income)
@@ -490,7 +559,8 @@ def _fetch_hk_statements(ak, hk_code: str) -> Optional[CNStatements]:
         return None
     return CNStatements(
         period=period,
-        currency=currency,
+        currency=None,
+        currency_note=_HK_CURRENCY_NOTE,
         income=income,
         balance=sections["balance"],
         cash_flow=sections["cash_flow"],
@@ -500,8 +570,10 @@ def _fetch_hk_statements(ak, hk_code: str) -> Optional[CNStatements]:
 
 def _fetch_hk_ratios(ak, hk_code: str) -> Optional[CNRatios]:
     records = _records(
-        ak.stock_financial_hk_analysis_indicator_em(
-            symbol=hk_code, indicator="年度"
+        _call_with_timeout(
+            lambda: ak.stock_financial_hk_analysis_indicator_em(
+                symbol=hk_code, indicator="年度"
+            )
         )
     )
     record = _latest_record(records)
@@ -520,7 +592,11 @@ _PROFILE_MAX_CHARS = 800
 
 
 def _fetch_hk_profile(ak, hk_code: str) -> Optional[str]:
-    records = _records(ak.stock_hk_company_profile_em(symbol=hk_code))
+    records = _records(
+        _call_with_timeout(
+            lambda: ak.stock_hk_company_profile_em(symbol=hk_code)
+        )
+    )
     if not records:
         return None
     first = records[0]
@@ -574,8 +650,10 @@ def fetch_cn_market_data(
     failed_sections: list[str] = []
 
     def _safe(section: str, func: Callable):
+        # Timeouts are enforced per akshare call inside each fetcher (via
+        # _call_with_timeout); this wrapper only isolates section failures.
         try:
-            return _call_with_timeout(func)
+            return func()
         except Exception as exc:
             logger.warning(
                 "China market %s fetch failed for %s: %s", section, ticker, exc
