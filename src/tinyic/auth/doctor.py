@@ -59,6 +59,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, TypeAlias
 
+from .live_probe import live_token_probe
+
 
 DOCTOR_SCHEMA_VERSION = 1
 _SAFE_CODE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -312,7 +314,7 @@ def run_doctor(
         live=live,
         openai_probe=openai_probe or _default_openai_probe,
         anthropic_probe=anthropic_probe or _default_anthropic_probe,
-        live_probe=live_probe or _default_live_probe,
+        live_probe=live_probe or live_token_probe,
         runtime_locator=runtime_locator or shutil.which,
     )
     try:
@@ -437,28 +439,6 @@ def _call_candidate_probe(probe: ReasonProbe, candidate) -> object:
     except (TypeError, ValueError):
         return probe()
     return probe(candidate)
-
-
-def _default_live_probe(binding, candidate) -> object:
-    """Perform the explicit live completion check through the normal adapter."""
-    from tinyic.models import ChatMessage, ChatRequest, FinalMessage, Role
-    from tinyic.models.credentials import StaticCredentialProvider
-    from tinyic.models.registry import get_provider
-
-    probe_binding = binding.with_params(max_tokens=1)
-    provider = get_provider(probe_binding.provider)
-    credentials = candidate or StaticCredentialProvider({})
-    transport = provider._new_child_transport(probe_binding, credentials)
-    request = ChatRequest(
-        (ChatMessage(Role.USER, "Reply with exactly one token: OK"),),
-        probe_binding,
-        stream=False,
-    )
-    return (
-        "ok"
-        if any(isinstance(event, FinalMessage) for event in transport.generate(request))
-        else "probe_failed"
-    )
 
 
 class _ProbeContext:

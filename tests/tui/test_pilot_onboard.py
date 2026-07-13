@@ -269,7 +269,9 @@ async def test_b_policy_guard_off_disables_anthropic_subscription(tmp_path):
         await pilot.pause()
         assert controller.screen is OnboardScreen.CHOOSE
         assert controller.current_plan().provider == "anthropic"
-        assert controller.current_plan().error == sub.disabled_reason
+        # The error chip is the short reason code; the full policy sentence stays
+        # in the branch detail (asserted above via POLICY_DISABLED_MSG in body).
+        assert controller.current_plan().error == "policy_disabled"
 
 
 # --------------------------------------------------------------------------- #

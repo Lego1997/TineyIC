@@ -65,6 +65,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Input, Static
 
 from tinyic.auth.doctor import DoctorReport, ProbeResult
+from tinyic.auth.live_probe import live_token_probe
 from tinyic.auth.manager import (
     DEFAULT_PROVIDER_ENV_REFS,
     AuthCandidate,
@@ -302,33 +303,6 @@ def _reason_str(value: object) -> str:
     return reason if isinstance(reason, str) and reason else "probe_failed"
 
 
-def _default_verify(binding, candidate) -> str:
-    """The production one-token live check — mirrors the doctor's live seam.
-
-    Never runs in the offline suite: every offline test injects a fake
-    ``verify_probe``. It only fires for real when a human runs ``tinyic onboard``
-    or under the ``live_api`` marker, so it may consume a token of quota.
-    """
-    from tinyic.models import ChatMessage, ChatRequest, FinalMessage, Role
-    from tinyic.models.credentials import StaticCredentialProvider
-    from tinyic.models.registry import get_provider
-
-    probe_binding = binding.with_params(max_tokens=1)
-    provider = get_provider(probe_binding.provider)
-    credentials = candidate or StaticCredentialProvider({})
-    transport = provider._new_child_transport(probe_binding, credentials)
-    request = ChatRequest(
-        (ChatMessage(Role.USER, "Reply with exactly one token: OK"),),
-        probe_binding,
-        stream=False,
-    )
-    return (
-        "ok"
-        if any(isinstance(event, FinalMessage) for event in transport.generate(request))
-        else "probe_failed"
-    )
-
-
 def _default_openai_login_factory():
     """Open one official Codex login session (delegates all OAuth to app-server)."""
     from tinyic.auth.openai import CodexLoginSession
@@ -368,7 +342,9 @@ class OnboardController:
         self.store = manager.store
         self.config_path = config_path
         self.report_factory = report_factory
-        self.verify_probe = verify_probe or _default_verify
+        # The VERIFY gate shares the doctor's one live-check seam (live_probe.py),
+        # so the interactive wizard and headless ``doctor`` can never drift.
+        self.verify_probe = verify_probe or live_token_probe
         self.openai_login_factory = openai_login_factory or _default_openai_login_factory
 
         self.screen = OnboardScreen.DETECT
@@ -641,7 +617,9 @@ class OnboardController:
             self.screen = OnboardScreen.CONNECT_KEY
         elif choice.id in {"subscription", "local"}:
             if not choice.enabled:
-                plan.error = choice.disabled_reason or "policy_disabled"
+                # Surface the short reason chip; the full policy sentence still
+                # shows in the disabled branch's detail (see ``_menu_lines``).
+                plan.error = "policy_disabled"
                 return ("navigate", None)
             self.screen = OnboardScreen.CONNECT_SUB
             self._sub_stage = "menu"
@@ -871,6 +849,10 @@ class OnboardController:
         if kind is not None and candidate is not None:
             try:
                 self.store.put(candidate.profile)
+            except Exception:
+                plan.error = "probe_failed"
+                return False
+            try:
                 rest = [
                     existing
                     for existing in self.store.get_auth_order(provider)
@@ -878,6 +860,11 @@ class OnboardController:
                 ]
                 self.store.set_auth_order(provider, [ref, *rest])
             except Exception:
+                # Keep the two writes failure-coherent: if ordering fails, undo
+                # the just-put profile so a partial failure can never leave a
+                # profile stranded outside the provider's auth order.
+                with contextlib.suppress(Exception):
+                    self.store.delete(ref)
                 plan.error = "probe_failed"
                 return False
             plan.persisted_ref = ref
@@ -1052,13 +1039,27 @@ class OnboardApp(App):
         self.controller.start()
         self._sync()
 
+    def on_unmount(self) -> None:
+        # Secrets hygiene: never let a pasted key survive in the widget past the
+        # app's own lifetime (e.g. force-quit straight from the key screen).
+        self._clear_key_input()
+
     # -- render ----------------------------------------------------------- #
+
+    def _clear_key_input(self) -> None:
+        """Wipe the masked key field so a pasted secret can't linger in memory."""
+        if self._key_input.value:
+            self._key_input.value = ""
 
     def _sync(self) -> None:
         self._header.update(self._render_title())
         self._view.update(self.render_body())
         is_key = self.controller.screen is OnboardScreen.CONNECT_KEY
         self._key_input.display = is_key
+        # Every exit from the key screen (back / esc / step transition) funnels
+        # through _sync; clear the secret the instant we are no longer on it.
+        if not is_key:
+            self._clear_key_input()
         if is_key and self.focused is not self._key_input:
             self.set_focus(self._key_input)
         elif not is_key and self.focused is self._key_input:

@@ -263,7 +263,10 @@ def test_policy_guard_off_disables_anthropic_subscription(tmp_path):
     _select(controller, "subscription")
     controller.activate()
     assert controller.screen is OnboardScreen.CHOOSE
-    assert controller.current_plan().error == sub.disabled_reason
+    # The error surfaces the short reason code, not the full policy sentence —
+    # the full message stays in the branch detail (sub.disabled_reason).
+    assert controller.current_plan().error == "policy_disabled"
+    assert controller.current_plan().error != sub.disabled_reason
 
 
 def test_skip_is_first_class(tmp_path):
@@ -336,6 +339,32 @@ def test_failed_verify_never_persists_and_never_overwrites(tmp_path):
     assert controller.plans[0].outcome is None
     assert controller.plans[0].error == "invalid_credential"
     assert controller.screen is OnboardScreen.CONNECT_KEY
+
+
+def test_persist_rolls_back_profile_when_auth_order_write_fails(tmp_path):
+    # The put + set_auth_order pair must be failure-coherent: if ordering raises
+    # after the profile is written, the just-put profile is removed so nothing is
+    # stranded outside the provider's auth order.
+    class BrokenOrderStore(ProfileStore):
+        def set_auth_order(self, provider, refs):
+            raise RuntimeError("ordering write failed")
+
+    store = BrokenOrderStore(
+        keyring_backend=MemoryKeyring(), path=tmp_path / "credentials.json"
+    )
+    controller = _controller(
+        tmp_path, manager=_manager(store), verify=lambda _b, _c: "ok"
+    )
+    controller.activate()  # openai CHOOSE
+    _select(controller, "api_key")
+    controller.activate()  # -> CONNECT_KEY
+    assert controller.submit_key("sk-partial-secret") is False
+    # Rolled back: no orphaned profile, no partial order, no verified outcome.
+    assert store.get("openai:key") is None
+    assert store.get_auth_order("openai") == ()
+    assert controller.plans[0].outcome is None
+    assert controller.plans[0].persisted_ref is None
+    assert controller.plans[0].error == "probe_failed"
 
 
 # --------------------------------------------------------------------------- #
@@ -649,6 +678,43 @@ async def test_app_escape_exits_from_detect(tmp_path):
         await pilot.press("escape")
         await pilot.pause()
     assert app.return_code == 0
+
+
+async def test_masked_key_is_cleared_on_escape_and_never_lingers(tmp_path):
+    # Secrets hygiene: backing out of the key screen must wipe the pasted key from
+    # the widget, and it must not resurface on return to the step.
+    secret = "sk-ESCAPE-LEAK-CANARY-4242"
+    controller = _controller(tmp_path)
+    app = OnboardApp(controller, threaded_verify=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")  # begin -> openai CHOOSE
+        await pilot.pause()
+        await pilot.press("down")  # move highlight to "api_key"
+        await pilot.press("enter")  # -> CONNECT_KEY
+        await pilot.pause()
+        assert controller.screen is OnboardScreen.CONNECT_KEY
+
+        # Simulate a paste into the masked field.
+        app.query_one("#key-input").value = secret
+        await pilot.pause()
+        assert app._key_input.value == secret  # paste landed
+
+        # Escape backs out to CHOOSE and must wipe the secret from the widget.
+        await pilot.press("escape")
+        await pilot.pause()
+        assert controller.screen is OnboardScreen.CHOOSE
+        assert app._key_input.value == ""
+        assert secret not in app.render_body().plain
+        assert secret not in app.export_screenshot()
+
+        # Returning to the key step shows an empty field — no lingering secret.
+        await pilot.press("enter")  # highlight still on api_key -> CONNECT_KEY
+        await pilot.pause()
+        assert controller.screen is OnboardScreen.CONNECT_KEY
+        assert app._key_input.value == ""
+        assert secret not in app.render_body().plain
+        assert secret not in app.export_screenshot()
 
 
 # --------------------------------------------------------------------------- #
