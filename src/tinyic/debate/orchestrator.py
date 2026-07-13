@@ -81,11 +81,11 @@ class DebateOrchestrator(TinyWorld):
         moved_personas = []
         world_initialized = False
         try:
-            # The pre-M6 Streamlit worker loads personas before constructing
-            # the orchestrator and cannot pass a Session without changing that
-            # UI file. Isolated default-loaded personas are adopted into the
-            # first persona's scope here. The batch is preflighted and every
-            # move is rolled back if any later constructor step fails.
+            # A caller that loads personas before constructing the orchestrator
+            # (rather than handing in a prepared Session) leaves those personas
+            # in isolated default scopes; adopt them into the first persona's
+            # scope here. The batch is preflighted and every move is rolled back
+            # if any later constructor step fails.
             if session is None:
                 real_personas = [
                     persona
@@ -145,10 +145,11 @@ class DebateOrchestrator(TinyWorld):
 
             # The moderator is a system component (FR-4.1), never a debating
             # voice: it owns phase gating, exchange caps, devil's-advocate
-            # rotation, and steering delivery. A rules-only default keeps the
-            # pre-M6 Streamlit path (which constructs the orchestrator directly)
-            # working without an LLM. Validate any --da override now, while the
-            # committee is known, so a bad name fails before the debate runs.
+            # rotation, and steering delivery. A rules-only default keeps a
+            # direct-construction caller (one that builds the orchestrator with
+            # no explicit moderator) working without an LLM. Validate any --da
+            # override now, while the committee is known, so a bad name fails
+            # before the debate runs.
             self.moderator = moderator if moderator is not None else Moderator()
             self.moderator.validate_override(self.agents)
 

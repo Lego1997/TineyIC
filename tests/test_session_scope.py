@@ -242,8 +242,8 @@ def test_world_rejects_agent_owned_by_another_session():
     assert agent.environment is None
 
 
-def test_unchanged_streamlit_engine_path_can_run_twice(monkeypatch):
-    """A1: the pre-M6 worker call path must also avoid default-registry leaks."""
+def test_direct_orchestrator_engine_path_can_run_twice(monkeypatch):
+    """A1: a direct DebateOrchestrator construction path must also avoid default-registry leaks."""
     from tinyic.personas.registry import load_persona
 
     monkeypatch.setattr(InvestorPersona, "act", _mock_persona_act)

@@ -12,7 +12,6 @@ dependencies = [
     "python-dotenv",
     "yfinance>=1.2.0",
     "edgartools>=5.25.1",
-    "streamlit>=1.40.0",
     "textual>=0.60",
 ]
 
@@ -27,7 +26,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["tinyic", "tinyic.auth", "tinyic.personas", "tinyic.data", "tinyic.debate", "tinyic.models", "tinyic.models.adapters", "tinyic.ui", "tinyic.tui"]
+packages = ["tinyic", "tinyic.auth", "tinyic.personas", "tinyic.data", "tinyic.debate", "tinyic.models", "tinyic.models.adapters", "tinyic.tui"]
 
 [tool.setuptools.package-dir]
 tinyic = "."
