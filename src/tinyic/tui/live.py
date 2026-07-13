@@ -27,6 +27,7 @@ framework-free event reader (:func:`tinyic.tui.events.parse_event`).
 
 from __future__ import annotations
 
+import codecs
 import queue as _queue
 import threading
 from pathlib import Path
@@ -107,9 +108,12 @@ class EventLogFollower(threading.Thread):
 
     It reads the file from the start (so a watcher attaching mid-debate still
     sees the whole story), parses each *complete* newline-terminated line into an
-    :class:`Event`, and puts it on the queue. A half-written trailing line (no
-    newline yet) is held until its newline arrives — exactly the partial record a
-    concurrent writer momentarily leaves. The follower finishes after a terminal
+    :class:`Event`, and puts it on the queue. Whatever a concurrent writer's
+    mid-flush snapshot leaves dangling is held until it is complete: a
+    half-written trailing *line* (no newline yet) waits for its newline, and a
+    truncated trailing multi-byte UTF-8 *character* (the file is read as bytes
+    through an incremental decoder) waits for its remaining bytes. The follower
+    finishes after a terminal
     event (``debate_completed`` / ``debate_error``) or when :meth:`stop` is
     called, and **always** puts :data:`QUEUE_SENTINEL` on the way out so the
     paired :class:`EventQueueSource` flips ``closed`` and the app can end cleanly.
@@ -181,10 +185,23 @@ class EventLogFollower(threading.Thread):
             if self._wait():
                 return
 
+        # Two nested layers of buffering keep the follower robust against a
+        # concurrent writer's mid-flush snapshots. The *decoder* holds an
+        # incomplete trailing multi-byte UTF-8 sequence (a poll that lands
+        # mid-character, e.g. the first two bytes of a 3-byte '…') until its
+        # remaining bytes arrive; ``buffer`` holds an incomplete trailing *line*
+        # (no newline yet) until its newline arrives. That is why the file is
+        # opened in **binary** mode and fed through an incremental decoder: a
+        # text-mode read() of the whole position..EOF span decodes it as one
+        # unit and raises UnicodeDecodeError on a partial trailing char — killing
+        # the follower and losing even the fully-written lines ahead of it. LLM
+        # debate speech is full of '—', '…', curly quotes and non-ASCII names,
+        # so this mid-character split is a routine transient, not an edge case.
+        decoder = codecs.getincrementaldecoder("utf-8")()
         buffer = ""
         line_index = 0
         position = 0
-        with self._path.open("r", encoding="utf-8") as handle:
+        with self._path.open("rb") as handle:
             if not self._from_start:
                 handle.seek(0, 2)  # tail from the current end
                 position = handle.tell()
@@ -194,7 +211,10 @@ class EventLogFollower(threading.Thread):
                 chunk = handle.read()
                 position = handle.tell()
                 if chunk:
-                    buffer += chunk
+                    # final=False: an incomplete trailing byte sequence is held
+                    # inside the decoder (no raise), to be completed by the next
+                    # read — mirroring how ``buffer`` holds an incomplete line.
+                    buffer += decoder.decode(chunk)
                     # Only whole, newline-terminated lines are parsed; a partial
                     # tail stays buffered until its newline arrives.
                     while "\n" in buffer:
