@@ -81,11 +81,11 @@ class DebateOrchestrator(TinyWorld):
         moved_personas = []
         world_initialized = False
         try:
-            # The pre-M6 Streamlit worker loads personas before constructing
-            # the orchestrator and cannot pass a Session without changing that
-            # UI file. Isolated default-loaded personas are adopted into the
-            # first persona's scope here. The batch is preflighted and every
-            # move is rolled back if any later constructor step fails.
+            # A caller that loads personas before constructing the orchestrator
+            # (rather than handing in a prepared Session) leaves those personas
+            # in isolated default scopes; adopt them into the first persona's
+            # scope here. The batch is preflighted and every move is rolled back
+            # if any later constructor step fails.
             if session is None:
                 real_personas = [
                     persona
@@ -145,10 +145,11 @@ class DebateOrchestrator(TinyWorld):
 
             # The moderator is a system component (FR-4.1), never a debating
             # voice: it owns phase gating, exchange caps, devil's-advocate
-            # rotation, and steering delivery. A rules-only default keeps the
-            # pre-M6 Streamlit path (which constructs the orchestrator directly)
-            # working without an LLM. Validate any --da override now, while the
-            # committee is known, so a bad name fails before the debate runs.
+            # rotation, and steering delivery. A rules-only default keeps a
+            # direct-construction caller (one that builds the orchestrator with
+            # no explicit moderator) working without an LLM. Validate any --da
+            # override now, while the committee is known, so a bad name fails
+            # before the debate runs.
             self.moderator = moderator if moderator is not None else Moderator()
             self.moderator.validate_override(self.agents)
 
@@ -159,6 +160,12 @@ class DebateOrchestrator(TinyWorld):
 
             # Optional message queue for user steering (set by UI)
             self.message_queue = None  # Optional[queue.Queue] -- items are (message_str, target_agent_name_or_None)
+            # Optional engine-backed steering inbox (M6): the headless
+            # ``--steer-stdin`` reader and the live TUI composer push
+            # SteeringCommands/interrupts here; the loop drains them at turn/phase
+            # boundaries and emits the authoritative steering_* / turn_interrupted
+            # events. ``None`` keeps the pre-M6 behavior (legacy message_queue only).
+            self.steering_inbox = None  # Optional[tinyic.debate.steering.SteeringInbox]
             # Optional phase gate for inter-phase pausing (set by UI)
             self.phase_gate = None     # Optional[threading.Event] -- if set, _step waits for it before proceeding
 
@@ -289,6 +296,15 @@ class DebateOrchestrator(TinyWorld):
         """
         self._turn_seq += 1
         return f"turn-{self._turn_seq:04d}"
+
+    def _peek_next_turn_id(self) -> str:
+        """Return the id :meth:`_next_turn_id` will mint next, without consuming it.
+
+        Steering delivered at a turn boundary references the turn it precedes
+        (``steering_delivered.delivered_before_turn_id``), which is exactly the
+        id the imminent ``turn_started`` will carry.
+        """
+        return f"turn-{self._turn_seq + 1:04d}"
 
     @staticmethod
     def _action_texts(actions: list, action_type: str) -> list[str]:
@@ -612,10 +628,18 @@ class DebateOrchestrator(TinyWorld):
         rounds = self.moderator.rounds_for(canonical_phase)
         agents_actions: dict = {}
         turn_count = 0
+        # Queue-mode steering is delivered at the phase boundary (before the very
+        # first turn of this phase); steer-mode at every speaker-turn boundary.
+        first_turn_of_phase = True
         for _exchange in range(rounds):
             for agent in self.agents:
-                # Drain message queue before each agent acts
+                # Drain user steering before each agent acts. The legacy tuple
+                # message_queue keeps its pre-M6 semantics; the engine inbox
+                # additionally emits steering_submitted/delivered and honors the
+                # steer-vs-queue delivery boundary (FR-5.3).
                 self._process_message_queue()
+                self._deliver_inbox_steering(phase_boundary=first_turn_of_phase)
+                first_turn_of_phase = False
 
                 # Anti-convergence: inject persona-specific reinforcement (ALL phases)
                 reinforcement = self._get_reinforcement_prompt(agent)
@@ -625,64 +649,64 @@ class DebateOrchestrator(TinyWorld):
                 if phase == DebatePhase.CROSS_EXAM and agent == self._current_devils_advocate:
                     agent.listen(DEVILS_ADVOCATE_PROMPT)
 
-                turn_id = self._next_turn_id()
-                turn_count += 1
-                self._emit_event(
-                    "turn_started",
-                    {
-                        "turn_id": turn_id,
-                        "persona": agent.name,
-                        "phase": canonical_phase,
-                        "role": CANONICAL_TURN_ROLES[phase],
-                    },
-                )
-
-                # Notify: agent about to act
-                if self.on_agent_start:
-                    self.on_agent_start(agent.name, phase.value)
-
-                binding_client = (
-                    self.committee.client_for(agent.name)
-                    if self.committee is not None
-                    else None
-                )
-                if binding_client is not None:
-                    # Binding-routed turn: stream think/talk deltas and capture
-                    # native per-call usage at the adapter boundary.
-                    committed_actions, latest, binding_usage = self._run_bound_turn(
-                        agent, binding_client, turn_id
+                # Run the turn, honoring a hard interrupt with discard-on-arrival
+                # semantics + a single retake (FR-5.3): the turn's content is
+                # produced, and only if an interrupt landed while it ran do we
+                # discard it, emit turn_interrupted, land the steering message, and
+                # let the speaker retake. At most one retake keeps this bounded.
+                latest = None
+                for attempt in range(2):
+                    turn_id = self._next_turn_id()
+                    turn_count += 1
+                    self._emit_event(
+                        "turn_started",
+                        {
+                            "turn_id": turn_id,
+                            "persona": agent.name,
+                            "phase": canonical_phase,
+                            "role": CANONICAL_TURN_ROLES[phase],
+                        },
                     )
+
+                    # Notify: agent about to act
+                    if self.on_agent_start:
+                        self.on_agent_start(agent.name, phase.value)
+
+                    outcome = self._run_turn(agent, phase, turn_id)
+
+                    # Only the first attempt can be interrupted; an interrupt that
+                    # arrives during the retake is left in the inbox for the next
+                    # turn rather than consumed here (bounded, at most one retake).
+                    interrupt = (
+                        self.steering_inbox.take_interrupt()
+                        if (self.steering_inbox is not None and attempt == 0)
+                        else None
+                    )
+                    if interrupt is not None:
+                        self._emit_event(
+                            "turn_interrupted",
+                            {
+                                "turn_id": turn_id,
+                                "persona": agent.name,
+                                "by": "user",
+                                "disposition": "discarded_on_arrival",
+                            },
+                        )
+                        self._land_interrupt_message(agent, interrupt)
+                        continue
+
+                    latest = outcome["latest"]
                     agents_actions[agent.name] = latest
                     self._emit_committed_turn(
                         agent=agent,
                         phase=phase,
                         turn_id=turn_id,
                         actions=latest,
-                        committed_actions=committed_actions,
-                        usage_delta={},
-                        binding_usage=binding_usage,
+                        committed_actions=outcome["committed_actions"],
+                        usage_delta=outcome["usage_delta"],
+                        binding_usage=outcome["binding_usage"],
                     )
-                else:
-                    # Legacy turn: snapshot the process-global counter delta (M1).
-                    usage_before = self._usage_snapshot()
-                    committed_actions = agent.act(return_actions=True)
-                    latest = agent.pop_latest_actions()
-                    agents_actions[agent.name] = latest
-                    self._handle_actions(agent, latest)
-                    usage_after = self._usage_snapshot()
-                    usage_delta = (
-                        diff_cost_counters(usage_after, usage_before)
-                        if usage_before and usage_after
-                        else {}
-                    )
-                    self._emit_committed_turn(
-                        agent=agent,
-                        phase=phase,
-                        turn_id=turn_id,
-                        actions=latest,
-                        committed_actions=committed_actions,
-                        usage_delta=usage_delta,
-                    )
+                    break
 
                 # Structured artifacts (FR-4.4): lift the opening thesis / final
                 # verdict from this turn's TALK prose. Emits thesis_recorded for
@@ -709,6 +733,83 @@ class DebateOrchestrator(TinyWorld):
             self.current_phase = DebatePhase.COMPLETE
 
         return agents_actions
+
+    def _run_turn(self, agent, phase, turn_id) -> dict:
+        """Execute one persona turn, streaming its deltas; return commit inputs.
+
+        Routes through the binding client when a committee is present (native
+        streaming + per-call usage) or the legacy ``client()`` path otherwise.
+        Deliberately does **not** emit the committed-turn events, so a hard
+        interrupt can discard the just-produced actions (FR-5.3) before they are
+        recorded, and only a retained turn is committed by the caller.
+        """
+        binding_client = (
+            self.committee.client_for(agent.name)
+            if self.committee is not None
+            else None
+        )
+        if binding_client is not None:
+            committed_actions, latest, binding_usage = self._run_bound_turn(
+                agent, binding_client, turn_id
+            )
+            return {
+                "latest": latest,
+                "committed_actions": committed_actions,
+                "usage_delta": {},
+                "binding_usage": binding_usage,
+            }
+        usage_before = self._usage_snapshot()
+        committed_actions = agent.act(return_actions=True)
+        latest = agent.pop_latest_actions()
+        self._handle_actions(agent, latest)
+        usage_after = self._usage_snapshot()
+        usage_delta = (
+            diff_cost_counters(usage_after, usage_before)
+            if usage_before and usage_after
+            else {}
+        )
+        return {
+            "latest": latest,
+            "committed_actions": committed_actions,
+            "usage_delta": usage_delta,
+            "binding_usage": None,
+        }
+
+    def _deliver_inbox_steering(self, *, phase_boundary: bool) -> None:
+        """Drain the M6 engine inbox at this boundary and emit delivery events.
+
+        ``steer`` commands are delivered at every speaker-turn boundary; ``queue``
+        commands only at a phase boundary (the first turn of a phase). Each
+        delivered command is relayed through the moderator's procedure framing and
+        acknowledged with a ``steering_delivered`` referencing the imminent turn.
+        """
+        inbox = self.steering_inbox
+        if inbox is None:
+            return
+        commands = inbox.drain(phase_boundary=phase_boundary)
+        if not commands:
+            return
+        before_turn_id = self._peek_next_turn_id()
+        for command in commands:
+            self.moderator.relay_message(
+                command.text,
+                command.target,
+                agents=self.agents,
+                name_to_agent=self.name_to_agent,
+                broadcast=self.broadcast,
+            )
+            inbox.emit_delivered(command.msg_id, before_turn_id=before_turn_id)
+
+    def _land_interrupt_message(self, agent, interrupt) -> None:
+        """Land an interrupt's accompanying steering message on the speaker.
+
+        FR-5.3: the interrupted speaker retakes the turn *with the message in
+        context*. A bare interrupt (no text) simply forces a retake.
+        """
+        text = getattr(interrupt, "text", None)
+        if not text:
+            return
+        agent.listen(f"[Moderator to {agent.name}]: {text}")
 
     def _process_message_queue(self):
         """Deliver queued user steering at a turn boundary via the moderator.

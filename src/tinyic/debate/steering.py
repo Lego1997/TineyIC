@@ -1,0 +1,297 @@
+"""Engine-backed steering + interrupt — the moderator-side command channel.
+
+The renderer side (``tinyic.tui.steering``) parses a composer line or a stdin
+JSON line into a :class:`~tinyic.tui.steering.SteeringMessage` /
+:class:`~tinyic.tui.steering.InterruptRequest` and hands it to a *sink*.  Until
+M6 those sinks were inert (replay echo / recording).  This module supplies the
+**engine-backed** sinks the live TUI and the headless ``--steer-stdin`` reader
+use: they push commands into a thread-safe :class:`SteeringInbox` that the
+debate loop drains at turn/phase boundaries, and the *engine* emits the
+authoritative ``steering_submitted`` / ``steering_delivered`` / ``steering_dropped``
+events (and ``turn_interrupted`` for an interrupt).  Nothing here draws or
+imports Textual; nothing on the renderer side imports this.
+
+Delivery semantics mirror the frozen contract (``docs/event-schema.md`` /
+FR-5.3), delivered **one at a time** at a boundary:
+
+* ``steer`` — delivered at the next *speaker-turn* boundary (any phase).
+* ``queue`` — delivered at the next *phase* boundary (before that phase's first
+  turn).
+* ``interrupt`` — the in-flight turn is discarded on arrival, the engine emits
+  ``turn_interrupted`` and the speaker retakes the turn with the accompanying
+  message (if any) in context.
+
+An undelivered command still pending when the debate ends is dropped explicitly
+with a ``steering_dropped`` event — never silently.
+"""
+
+from __future__ import annotations
+
+import threading
+from dataclasses import dataclass
+
+__all__ = [
+    "SteeringCommand",
+    "InterruptCommand",
+    "SteeringInbox",
+    "EngineSteeringSink",
+    "EngineControlSink",
+]
+
+#: The two delivery modes carried by ``steering_submitted`` (schema enum).
+_STEERING_MODES = frozenset({"steer", "queue"})
+
+
+@dataclass(frozen=True)
+class SteeringCommand:
+    """A queued steer/queue command awaiting delivery at a boundary."""
+
+    msg_id: str
+    mode: str  # "steer" | "queue"
+    text: str
+    target: str | None = None
+    source: str = "stdin"  # "tui" | "stdin" | "api"
+
+
+@dataclass(frozen=True)
+class InterruptCommand:
+    """A pending hard-interrupt request; ``text`` (if any) lands on the speaker."""
+
+    text: str | None = None
+    target: str | None = None
+    source: str = "stdin"
+
+
+class SteeringInbox:
+    """Thread-safe engine inbox: producers push, the debate loop drains.
+
+    One inbox serves one debate.  Producers (the stdin reader, the live TUI
+    composer sink, a programmatic API) call :meth:`submit` / :meth:`request_interrupt`
+    from any thread; the orchestrator (the single consumer) calls :meth:`drain`
+    / :meth:`take_interrupt` at turn boundaries on the worker thread.  The
+    ``steering_submitted`` acknowledgement is emitted **inside** the inbox lock so
+    a command can never be delivered before it is acknowledged.
+    """
+
+    def __init__(self, event_log=None, *, id_prefix: str = "s") -> None:
+        self._event_log = event_log
+        self._id_prefix = id_prefix
+        self._lock = threading.RLock()
+        self._pending: list[SteeringCommand] = []
+        self._interrupt: InterruptCommand | None = None
+        self._counter = 0
+        self._closed = False
+        #: msg_ids already acknowledged with a ``steering_submitted`` event. The
+        #: ack is emitted eagerly at submit when the log is open, else deferred to
+        #: delivery/drop — so a command submitted before ``debate_started`` (a
+        #: pre-loaded programmatic steer) is still acknowledged before it lands.
+        self._acked: set[str] = set()
+
+    def bind_event_log(self, event_log) -> None:
+        """Attach the debate's event log if one was not supplied at construction."""
+        with self._lock:
+            if self._event_log is None:
+                self._event_log = event_log
+
+    # -- producer side ------------------------------------------------------ #
+
+    def submit(
+        self,
+        mode: str,
+        text: str,
+        *,
+        target: str | None = None,
+        source: str = "stdin",
+        msg_id: str | None = None,
+    ) -> str | None:
+        """Acknowledge and enqueue a steer/queue command; return its ``msg_id``.
+
+        Returns ``None`` (and records nothing) when the inbox is closed, the mode
+        is not ``steer``/``queue``, or the text is blank — a malformed producer
+        line never corrupts the stream.
+        """
+        if mode not in _STEERING_MODES:
+            return None
+        body = (text or "").strip()
+        if not body:
+            return None
+        with self._lock:
+            if self._closed:
+                return None
+            self._counter += 1
+            resolved_id = msg_id or f"{self._id_prefix}-{self._counter:04d}"
+            command = SteeringCommand(
+                msg_id=resolved_id,
+                mode=mode,
+                text=body,
+                target=(target or None),
+                source=source,
+            )
+            self._pending.append(command)
+            # Ack eagerly when the log is already open (the real-time stdin/TUI
+            # path); otherwise defer to drain/close so a pre-start submit is still
+            # acknowledged before it is delivered or dropped.
+            if getattr(self._event_log, "started", False):
+                self._ack(command)
+        return resolved_id
+
+    def _ack(self, command: SteeringCommand) -> None:
+        """Emit ``steering_submitted`` for a command once (idempotent, under lock)."""
+        if command.msg_id in self._acked:
+            return
+        self._acked.add(command.msg_id)
+        payload: dict[str, object] = {
+            "msg_id": command.msg_id,
+            "mode": command.mode,
+            "text": command.text,
+            "source": command.source,
+        }
+        if command.target:
+            payload["target_persona"] = command.target
+        self._safe_emit("steering_submitted", payload)
+
+    def request_interrupt(
+        self,
+        *,
+        text: str | None = None,
+        target: str | None = None,
+        source: str = "stdin",
+    ) -> bool:
+        """Record a hard-interrupt request; the engine acts on it at the turn end.
+
+        The latest request wins (a second interrupt before the first is consumed
+        replaces it).  Returns ``False`` when the inbox is already closed.
+        """
+        clean = (text or "").strip() or None
+        with self._lock:
+            if self._closed:
+                return False
+            self._interrupt = InterruptCommand(
+                text=clean, target=(target or None), source=source
+            )
+        return True
+
+    # -- consumer side (orchestrator, single thread) ------------------------ #
+
+    def drain(self, *, phase_boundary: bool) -> list[SteeringCommand]:
+        """Return the commands deliverable at this boundary, in submit order.
+
+        ``steer`` commands are always returned; ``queue`` commands only when
+        ``phase_boundary`` is set.  Returned commands are removed from the inbox.
+        """
+        with self._lock:
+            if self._closed or not self._pending:
+                return []
+            ready: list[SteeringCommand] = []
+            remaining: list[SteeringCommand] = []
+            for command in self._pending:
+                if command.mode == "steer" or (
+                    command.mode == "queue" and phase_boundary
+                ):
+                    ready.append(command)
+                else:
+                    remaining.append(command)
+            self._pending = remaining
+            # Acknowledge (once) each command as it leaves the inbox, so a
+            # deferred ack strictly precedes its steering_delivered.
+            for command in ready:
+                self._ack(command)
+            return ready
+
+    def take_interrupt(self) -> InterruptCommand | None:
+        """Atomically consume the pending interrupt request, if any."""
+        with self._lock:
+            interrupt = self._interrupt
+            self._interrupt = None
+            return interrupt
+
+    def has_interrupt(self) -> bool:
+        with self._lock:
+            return self._interrupt is not None
+
+    def emit_delivered(self, msg_id: str, *, before_turn_id: str) -> None:
+        """Emit the authoritative ``steering_delivered`` for a delivered command."""
+        with self._lock:
+            self._safe_emit(
+                "steering_delivered",
+                {"msg_id": msg_id, "delivered_before_turn_id": before_turn_id},
+            )
+
+    def close(self, *, reason: str = "debate_ended") -> None:
+        """Mark the inbox closed and drop every still-pending command explicitly.
+
+        Idempotent.  ``steering_dropped`` is emitted only while the log is still
+        open (before the terminal event), so callers must close the inbox *before*
+        emitting ``debate_completed`` / ``debate_error``.
+        """
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            pending = self._pending
+            self._pending = []
+            for command in pending:
+                # Keep the contract: an explicit drop is still preceded by its ack.
+                self._ack(command)
+                self._safe_emit(
+                    "steering_dropped", {"msg_id": command.msg_id, "reason": reason}
+                )
+
+    # -- internals ---------------------------------------------------------- #
+
+    def _safe_emit(self, event_type: str, payload: dict) -> None:
+        """Emit an event, tolerating a not-yet-started or already-terminal log.
+
+        A steering event that cannot legally be written (the debate has not
+        started, or has already ended) is dropped rather than raised — the inbox
+        must never crash the producer thread or abort a completing debate.
+        """
+        log = self._event_log
+        if log is None:
+            return
+        try:
+            log.emit(event_type, payload)
+        except Exception:  # pragma: no cover - defensive, non-load-bearing
+            pass
+
+
+class EngineSteeringSink:
+    """Adapt renderer :class:`SteeringMessage` submissions onto a live inbox.
+
+    Implements the :class:`~tinyic.tui.steering.SteeringSink` protocol, so the
+    live TUI composer submits real steering through the same seam replay used for
+    its echo — but now the *engine* acknowledges and delivers it.
+    """
+
+    def __init__(self, inbox: SteeringInbox, *, source: str = "tui") -> None:
+        self._inbox = inbox
+        self._source = source
+
+    def submit(self, message) -> None:
+        self._inbox.submit(
+            message.mode,
+            message.text,
+            target=getattr(message, "target", None),
+            source=self._source,
+        )
+
+
+class EngineControlSink:
+    """Adapt renderer :class:`InterruptRequest`\\ s onto a live inbox.
+
+    Implements the :class:`~tinyic.tui.steering.ControlSink` protocol; this is
+    the engine-backed replacement for ``RecordingControlSink`` in live mode
+    (FR-5.3): an ``esc`` interrupt cancels/discards the in-flight turn and the
+    engine emits the authoritative ``turn_interrupted``.
+    """
+
+    def __init__(self, inbox: SteeringInbox, *, source: str = "tui") -> None:
+        self._inbox = inbox
+        self._source = source
+
+    def interrupt(self, request) -> None:
+        self._inbox.request_interrupt(
+            text=getattr(request, "text", None),
+            target=getattr(request, "target", None),
+            source=self._source,
+        )

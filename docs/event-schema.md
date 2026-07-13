@@ -72,7 +72,7 @@ Secrets, API keys, and OAuth material MUST never appear in any payload. Full LLM
 
 ## Headless stdin steering (input, not events)
 
-With `--steer-stdin`, each stdin line is `{"type": "steer"|"queue"|"interrupt", "target": "Warren Buffett"?, "text": "..."}` and is acknowledged by a corresponding `steering_submitted` event.
+With `--steer-stdin`, each stdin line is `{"type": "steer"|"queue"|"interrupt", "target": "Warren Buffett"?, "text": "..."}`. Acknowledgement differs by command: `steer`/`queue` lines are acknowledged by a `steering_submitted` event (then `steering_delivered` or `steering_dropped`); an `interrupt` line is acknowledged by the authoritative `turn_interrupted` event on the affected turn — or by nothing at all when no turn is in flight to interrupt (the command is then a no-op by design).
 
 ## Compatibility promises
 
