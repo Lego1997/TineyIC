@@ -172,11 +172,67 @@ class Disagreement(BaseModel):
     resolution: str = ""
 
 
+class StanceShift(BaseModel):
+    """One persona's opening->verdict stance trajectory (FR-4.5).
+
+    ``caved`` flags a disagreement collapse: a contrarian opening stance dropped
+    to join the majority at the verdict without citing new evidence. Surfaced
+    verbatim in the ``collapse_metric`` event and the DCR summary.
+    """
+
+    persona: str
+    stance_before: str
+    stance_after: str
+    caved: bool = False
+    note: str = ""
+
+
+class CollapseSummary(BaseModel):
+    """DCR-style summary of disagreement collapse across the committee (FR-4.5).
+
+    The Disagreement-Collapse-Rate is the fraction of *assessed* personas (those
+    with both an opening thesis and a final vote) flagged as having caved.
+    """
+
+    disagreement_collapse_rate: float = 0.0
+    assessed_count: int = 0
+    caved_count: int = 0
+    caved_personas: list[str] = Field(default_factory=list)
+    majority_stance: Optional[str] = None
+    shifts: list[StanceShift] = Field(default_factory=list)
+
+    def to_markdown(self) -> str:
+        """Render the collapse summary as a Markdown block."""
+        pct = round(self.disagreement_collapse_rate * 100, 1)
+        majority = self.majority_stance or "no clear majority"
+        lines = [
+            "## Disagreement Collapse (DCR)",
+            "",
+            f"**Collapse rate:** {pct}% "
+            f"({self.caved_count} of {self.assessed_count} assessed personas caved) "
+            f"| Majority stance: {majority}",
+            "",
+        ]
+        if self.caved_personas:
+            lines.append(f"**Caved under pressure:** {', '.join(self.caved_personas)}")
+            lines.append("")
+        for shift in self.shifts:
+            flag = "CAVED" if shift.caved else "held"
+            lines.append(
+                f"- {shift.persona}: {shift.stance_before} -> "
+                f"{shift.stance_after} [{flag}] — {shift.note}"
+            )
+        return "\n".join(lines)
+
+
 class DisagreementAnalysis(BaseModel):
     """Top disagreements extracted from the debate."""
     ticker: str
     company_name: str
     disagreements: list[Disagreement] = Field(default_factory=list)
+    #: Optional DCR summary (FR-4.5) attached when the writer is given the
+    #: structured records; ``None`` for the legacy transcript-only path.
+    collapse_summary: Optional["CollapseSummary"] = None
     generated_at: datetime = Field(default_factory=datetime.now)
 
     def to_markdown(self) -> str:
@@ -199,6 +255,9 @@ class DisagreementAnalysis(BaseModel):
             if d.resolution:
                 lines.append(f"**Resolution:** {d.resolution}")
                 lines.append("")
+        if self.collapse_summary is not None:
+            lines.append(self.collapse_summary.to_markdown())
+            lines.append("")
         return "\n".join(lines)
 
 

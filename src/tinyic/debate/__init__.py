@@ -275,6 +275,98 @@ def _emit_aggregate_usage(
     event_log.emit("usage", payload)
 
 
+_MEMO_SECTION_KEYS = (
+    "executive_summary",
+    "investment_thesis",
+    "key_risks",
+    "valuation_discussion",
+    "final_verdict",
+)
+
+
+def _emit_synthesis(
+    event_log: EventLog,
+    *,
+    result: DebateResult,
+    data_package,
+    moderator,
+    committee,
+) -> None:
+    """Run FR-4.5 synthesis through the aggregator and emit its artifacts.
+
+    Routes the memo/disagreement writer through the committee's aggregator
+    binding (capturing its native per-call usage as a ``memo`` usage event),
+    grounds both on the moderator's structured records, attaches the results to
+    ``result``, and emits the ``collapse_metric`` / ``disagreement`` /
+    ``memo_section`` events. Collapse metrics are LLM-independent (derived from
+    the theses + final votes), so they are emitted whenever a trajectory exists.
+    """
+    from tinyic.models.routing import activate as _activate_binding
+
+    recorded_theses = getattr(moderator, "recorded_theses", None)
+    theses = dict(recorded_theses) if isinstance(recorded_theses, dict) else {}
+
+    aggregator_client = committee.aggregator
+    synthesis_before = snapshot_cost_counters(aggregator_client)
+    cached_before = _client_cached_tokens(aggregator_client)
+    with _activate_binding(aggregator_client):
+        memo = generate_memo(result, data_package, theses=theses)
+        disagreement_analysis = extract_disagreements(result, theses=theses)
+    synthesis_after = snapshot_cost_counters(aggregator_client)
+    cached_after = _client_cached_tokens(aggregator_client)
+    _emit_aggregate_usage(
+        event_log,
+        purpose="memo",
+        usage_delta=diff_cost_counters(synthesis_after, synthesis_before),
+        model_ref=committee.aggregator_binding.model_ref,
+        cached_tokens=max(0, cached_after - cached_before),
+    )
+
+    result.memo = memo
+    result.disagreement_analysis = disagreement_analysis
+
+    collapse_summary = disagreement_analysis.collapse_summary
+    if collapse_summary is not None:
+        for shift in collapse_summary.shifts:
+            event_log.emit(
+                "collapse_metric",
+                {
+                    # The trajectory is measured opening thesis -> final verdict,
+                    # so the collapse is realized at the verdict phase.
+                    "persona": shift.persona,
+                    "phase": "verdict",
+                    "stance_before": shift.stance_before,
+                    "stance_after": shift.stance_after,
+                    "caved": shift.caved,
+                    "note": shift.note,
+                },
+            )
+
+    for disagreement in disagreement_analysis.disagreements:
+        event_log.emit(
+            "disagreement",
+            {
+                "dimension": disagreement.dimension,
+                "description": disagreement.description,
+                # Each side carries its transcript evidence_quote, as before.
+                "sides": list(disagreement.sides),
+                "resolution": disagreement.resolution,
+            },
+        )
+
+    for section_key in _MEMO_SECTION_KEYS:
+        section = getattr(memo, section_key)
+        event_log.emit(
+            "memo_section",
+            {
+                "section": section_key,
+                "content": section.content,
+                "contributing_personas": list(section.contributing_personas),
+                "supporting_data": list(section.supporting_data),
+            },
+        )
+
+
 def run_debate(
     ticker: str,
     persona_names: list[str],
@@ -536,6 +628,25 @@ def run_debate(
             transcript=transcript,
             cost_stats=cost_stats,
         )
+
+        # --- FR-4.5: MoA memo + disagreement analytics ---------------------
+        # The memo/disagreement writer IS the committee's aggregator binding, so
+        # this synthesis stage exists only when the model layer is in play. It
+        # grounds the aggregator on the structured records (theses + verdicts),
+        # emits the memo/disagreement artifacts, and computes the collapse
+        # metrics (per-persona stance trajectory + "caved" flags). The legacy
+        # client-only path keeps its prior behavior (memo produced by the
+        # caller), so its recorded logs are byte-unchanged.
+        if resolved_committee is not None:
+            stage = "synthesis"
+            _emit_synthesis(
+                active_event_log,
+                result=result,
+                data_package=data_package,
+                moderator=moderator,
+                committee=resolved_committee,
+            )
+
         canonical_by_value = {
             phase.value: CANONICAL_PHASE_NAMES[phase]
             for phase in CANONICAL_PHASE_NAMES

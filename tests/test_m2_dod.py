@@ -278,6 +278,45 @@ def _mock_votes(orchestrator) -> list[Vote]:
     ]
 
 
+def _mock_memo(debate_result, data_package, **_kwargs):
+    """Adapter-independent memo (M4 FR-4.5 synthesis runs the aggregator).
+
+    Mirrors the ``extract_votes`` mock: the synthesis stage now routes through
+    the aggregator binding, so it is stubbed here to keep the DoD parity/usage
+    assertions about the *debate* turns (not the memo) deterministic and offline.
+    """
+    from tinyic.debate.models import InvestmentMemo, MemoSection
+
+    def _section(title: str) -> MemoSection:
+        return MemoSection(
+            title=title,
+            content=f"{title}: deterministic synthesis.",
+            contributing_personas=["Warren Buffett"],
+            supporting_data=["deterministic"],
+        )
+
+    return InvestmentMemo(
+        ticker=debate_result.ticker,
+        company_name=debate_result.company_name,
+        executive_summary=_section("Executive Summary"),
+        investment_thesis=_section("Investment Thesis"),
+        key_risks=_section("Key Risks"),
+        valuation_discussion=_section("Valuation Discussion"),
+        final_verdict=_section("Final Verdict"),
+    )
+
+
+def _mock_disagreements(debate_result, **_kwargs):
+    """Adapter-independent, empty disagreement analysis (see ``_mock_memo``)."""
+    from tinyic.debate.models import DisagreementAnalysis
+
+    return DisagreementAnalysis(
+        ticker=debate_result.ticker,
+        company_name=debate_result.company_name,
+        disagreements=[],
+    )
+
+
 def _preset_all(model: str, name: str = "dod-parity") -> Preset:
     """One committee-wide model at ``high`` thinking for every role."""
     return Preset(name=name, default=BindingSpec(model=model, thinking="high"))
@@ -304,13 +343,21 @@ def _run_logged_debate(committee, registry_names, log_path, debate_id, *, da=Non
 
 @pytest.fixture
 def _binding_debate_mocks(monkeypatch):
-    """Route every persona turn through its binding client; deterministic votes."""
+    """Route every persona turn through its binding client; deterministic votes.
+
+    The vote extraction and the FR-4.5 memo/disagreement synthesis are stubbed
+    (all three would otherwise call the aggregator), so what remains under test is
+    the adapter-driven *debate*: turn streaming, per-turn usage attribution, and
+    identical event structure across wire adapters.
+    """
     monkeypatch.setattr(InvestorPersona, "act", _act_via_binding)
     monkeypatch.setattr(
         InvestorPersona, "consolidate_episode_memories", lambda _self: False
     )
     monkeypatch.setattr(TinyPerson, "communication_display", False)
     monkeypatch.setattr(debate_module, "extract_votes", _mock_votes)
+    monkeypatch.setattr(debate_module, "generate_memo", _mock_memo)
+    monkeypatch.setattr(debate_module, "extract_disagreements", _mock_disagreements)
 
 
 # ==========================================================================
