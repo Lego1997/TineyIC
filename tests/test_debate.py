@@ -714,18 +714,21 @@ class TestAntiConvergence:
                 )
 
     def test_reinforcement_contains_philosophy_hook(self):
-        """For 'Warren Buffett', reinforcement contains the matching PHILOSOPHY_HOOKS text."""
-        from tinyic.debate.prompts import PHILOSOPHY_HOOKS
+        """Reinforcement contains the hook carried by the persona object."""
+        hook = (
+            "You evaluate businesses based on durable competitive moats "
+            "and owner earnings -- not market sentiment."
+        )
 
         dp = make_mock_data_package()
         personas = [make_mock_persona("Warren Buffett"), make_mock_persona("Benjamin Graham")]
+        personas[0].philosophy_hook = hook
         orch = DebateOrchestrator(name="test_hook", personas=personas, data_package=dp)
 
         orch.run_debate()
 
         buffett = orch.agents[0]
         listen_texts = [str(call) for call in buffett.listen.call_args_list]
-        hook = PHILOSOPHY_HOOKS["Warren Buffett"]
         found = any(hook in text for text in listen_texts)
         assert found, f"Expected philosophy hook '{hook}' in listen() calls for Warren Buffett"
 

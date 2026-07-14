@@ -31,6 +31,10 @@ class InvestorPersona(TinyPerson):
         self._philosophy_config_path = philosophy_config_path
         # Anti-sycophancy temperament (FR-4.3); a config may override it below.
         self.temperament = DEFAULT_TEMPERAMENT
+        self.philosophy_hook: str | None = None
+        self.epithet = ""
+        self.sources: object = []
+        self.tinyic: dict = {}
 
         try:
             if philosophy_config_path:
@@ -56,12 +60,20 @@ class InvestorPersona(TinyPerson):
         with open(path) as f:
             spec = json.load(f)
 
-        # Temperament is top-level metadata (sibling to "persona"), so it steers
-        # the debate reinforcement without being merged into the TinyTroupe
-        # persona definitions. Normalize; an absent/blank value stays balanced.
-        raw_temperament = str(spec.get("temperament") or "").strip().lower()
+        # TinyIC metadata is a top-level extension and must never be merged into
+        # TinyTroupe's persona definition. Prefer the v2.2 block, retaining the
+        # legacy top-level temperament fallback during the deprecation window.
+        tinyic_data = spec.get("tinyic")
+        self.tinyic = dict(tinyic_data) if isinstance(tinyic_data, dict) else {}
+        raw_temperament = str(
+            self.tinyic.get("temperament") or spec.get("temperament") or ""
+        ).strip().lower()
         if raw_temperament:
             self.temperament = raw_temperament
+        hook = str(self.tinyic.get("philosophy_hook") or "").strip()
+        self.philosophy_hook = hook or None
+        self.epithet = str(self.tinyic.get("epithet") or "").strip()
+        self.sources = self.tinyic.get("sources") or []
 
         # The .agent.json format has persona data under the "persona" key
         persona_data = spec.get("persona", spec).copy()

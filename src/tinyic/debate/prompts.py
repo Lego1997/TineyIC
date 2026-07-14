@@ -85,39 +85,8 @@ CONTEXT_PREAMBLE: str = (
     "your analysis:\n\n{context_data}"
 )
 
-# ---------------------------------------------------------------------------
-# Anti-convergence controls
-# ---------------------------------------------------------------------------
-
-PHILOSOPHY_HOOKS: dict[str, str] = {
-    "Warren Buffett": (
-        "You evaluate businesses based on durable competitive moats "
-        "and owner earnings -- not market sentiment."
-    ),
-    "Charlie Munger": (
-        "You apply mental models from multiple disciplines and look for "
-        "businesses so good an idiot could run them."
-    ),
-    "Benjamin Graham": (
-        "You demand quantitative margin of safety -- intrinsic value "
-        "backed by hard numbers, not stories."
-    ),
-    "Peter Lynch": (
-        "You find investments in everyday life -- growth at a reasonable "
-        "price, not abstract financial engineering."
-    ),
-    "Howard Marks": (
-        "You focus on where we stand in the cycle, risk/reward asymmetry, "
-        "and second-level thinking."
-    ),
-    "Li Lu": (
-        "You seek companies with enduring competitive advantages in large "
-        "addressable markets, especially in Asia."
-    ),
-}
-
 # Per-turn anti-convergence reinforcement, tightened to ONE line (FR-4.3): the
-# persona's philosophy hook plus a single temperament-specific clause. The
+# persona file's philosophy hook plus a single temperament-specific clause. The
 # "IMPORTANT REMINDER" prefix and the verbatim philosophy hook are load-bearing
 # for the injection assertions in the debate tests.
 REINFORCEMENT_TEMPLATE: str = (

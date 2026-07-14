@@ -21,7 +21,6 @@ from .prompts import (
     CONTEXT_PREAMBLE,
     DEVILS_ADVOCATE_PROMPT,
     PHASE_PROMPTS,
-    PHILOSOPHY_HOOKS,
     REINFORCEMENT_TEMPLATE,
     ROLE_RELEASE_PROMPT,
     temperament_clause,
@@ -203,8 +202,11 @@ class DebateOrchestrator(TinyWorld):
 
     def _get_reinforcement_prompt(self, agent) -> str:
         """Build the one-line, temperament-aware reinforcement for *agent* (FR-4.3)."""
-        hook = PHILOSOPHY_HOOKS.get(
-            agent.name, "Stay true to your unique perspective."
+        raw_hook = getattr(agent, "philosophy_hook", None)
+        hook = (
+            raw_hook.strip()
+            if isinstance(raw_hook, str) and raw_hook.strip()
+            else "Stay true to your unique perspective."
         )
         temperament = getattr(agent, "temperament", None)
         return REINFORCEMENT_TEMPLATE.format(
