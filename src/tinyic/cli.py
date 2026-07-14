@@ -35,6 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_result_parser(subparsers)
     _add_export_parser(subparsers)
     _add_models_parser(subparsers)
+    _add_persona_parser(subparsers)
 
     replay = subparsers.add_parser(
         "replay",
@@ -305,6 +306,97 @@ def _add_models_parser(subparsers) -> None:
     models.set_defaults(func=_cmd_models)
 
 
+def _max_searches(value: str) -> int:
+    """Validate the persona factory's bounded provider-search budget."""
+    try:
+        searches = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("max searches must be an integer") from exc
+    if not 1 <= searches <= 16:
+        raise argparse.ArgumentTypeError("max searches must be between 1 and 16")
+    return searches
+
+
+def _add_persona_parser(subparsers) -> None:
+    """Register the import-light ``tinyic persona`` command family."""
+    persona = subparsers.add_parser(
+        "persona",
+        help="Research, list, or inspect investor personas.",
+        description=(
+            "Create cited investor personas from public sources, or inspect "
+            "the layered built-in and user persona registry."
+        ),
+    )
+    persona_commands = persona.add_subparsers(
+        dest="persona_command", metavar="<command>", required=True
+    )
+
+    research = persona_commands.add_parser(
+        "research",
+        help="Research an investor and create cited persona artifacts.",
+        description=(
+            "Research an investor through a configured search-capable API lane "
+            "and write an agent JSON file plus a cited Markdown dossier."
+        ),
+    )
+    research.add_argument("name", metavar="NAME", help="Public investor name.")
+    research.add_argument(
+        "--model",
+        metavar="REF",
+        help="Explicit search-capable provider/model binding.",
+    )
+    research.add_argument(
+        "--slug",
+        help="Artifact slug (default: snake-case investor name).",
+    )
+    research.add_argument(
+        "--max-searches",
+        type=_max_searches,
+        default=None,
+        metavar="N",
+        help=(
+            "Maximum provider search calls/echo rounds, 1-16 "
+            "(default: 12; Kimi: 16)."
+        ),
+    )
+    research.add_argument(
+        "--yes",
+        action="store_true",
+        help="Accept the displayed cost estimate without prompting.",
+    )
+    research.add_argument(
+        "--force",
+        action="store_true",
+        help="Atomically replace an existing user persona's two artifacts.",
+    )
+    research.set_defaults(func=_cmd_persona_research)
+
+    list_command = persona_commands.add_parser(
+        "list",
+        help="List built-in and user personas.",
+    )
+    list_command.add_argument(
+        "--json",
+        dest="json_mode",
+        action="store_true",
+        help="Write one stable schema-v1 JSON document.",
+    )
+    list_command.set_defaults(func=_cmd_persona_list)
+
+    show = persona_commands.add_parser(
+        "show",
+        help="Show a persona summary and its artifact paths.",
+    )
+    show.add_argument("slug", metavar="SLUG", help="Persona registry slug.")
+    show.add_argument(
+        "--json",
+        dest="json_mode",
+        action="store_true",
+        help="Write one stable schema-v1 JSON document.",
+    )
+    show.set_defaults(func=_cmd_persona_show)
+
+
 def _cmd_models(args: argparse.Namespace) -> int:
     """List the merged model catalog (human table or ``--json``)."""
     # Imported lazily so ``--help`` and the other light commands never pull the
@@ -331,6 +423,34 @@ def _cmd_models(args: argparse.Namespace) -> int:
     # Per-provider refresh degradation is reported in the output, never via a
     # non-zero exit: the command itself succeeded.
     return 0
+
+
+def _cmd_persona_research(args: argparse.Namespace) -> int:
+    """Create one cited persona through the lazy command service."""
+    from .persona_cli import research_persona
+
+    return research_persona(
+        args.name,
+        model=args.model,
+        slug=args.slug,
+        max_searches=args.max_searches,
+        yes=args.yes,
+        force=args.force,
+    )
+
+
+def _cmd_persona_list(args: argparse.Namespace) -> int:
+    """List the layered persona registry without loading persona agents."""
+    from .persona_cli import list_personas_command
+
+    return list_personas_command(json_mode=args.json_mode)
+
+
+def _cmd_persona_show(args: argparse.Namespace) -> int:
+    """Render one registry persona's metadata summary."""
+    from .persona_cli import show_persona_command
+
+    return show_persona_command(args.slug, json_mode=args.json_mode)
 
 
 def _cmd_debate(args: argparse.Namespace) -> int:

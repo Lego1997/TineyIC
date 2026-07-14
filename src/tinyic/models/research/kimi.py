@@ -27,6 +27,7 @@ from ._base import (
 
 KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 KIMI_BASE_URL_ENV_VAR = "MOONSHOT_BASE_URL"
+MAX_RESEARCH_SEARCH_ROUNDS = 16
 
 _MARKDOWN_URL_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)", re.I)
 _BARE_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.I)
@@ -117,11 +118,34 @@ class KimiResearchBackend(BaseResearchBackend):
     citation_quality = "prose_urls"
     degraded = True
 
-    def __init__(self, binding, credentials, *, base_url=None, **kwargs):
+    def __init__(
+        self,
+        binding,
+        credentials,
+        *,
+        base_url=None,
+        max_search_rounds: int = MAX_RESEARCH_SEARCH_ROUNDS,
+        **kwargs,
+    ):
+        if (
+            not isinstance(max_search_rounds, int)
+            or isinstance(max_search_rounds, bool)
+            or not 1 <= max_search_rounds <= MAX_RESEARCH_SEARCH_ROUNDS
+        ):
+            raise ValueError(
+                "max_search_rounds must be an integer between 1 and "
+                f"{MAX_RESEARCH_SEARCH_ROUNDS}"
+            )
         # Moonshot requires thinking disabled whenever $web_search is present.
         binding = binding.with_thinking("off")
         base_url = base_url or os.environ.get(KIMI_BASE_URL_ENV_VAR) or KIMI_BASE_URL
         super().__init__(binding, credentials, base_url=base_url, **kwargs)
+        self._remaining_search_rounds = max_search_rounds
+
+    @property
+    def remaining_search_rounds(self) -> int:
+        """Unspent HTTP rounds in the run-wide ``$web_search`` budget."""
+        return self._remaining_search_rounds
 
     def _chat_body(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         body = self._body_params()
@@ -166,7 +190,14 @@ class KimiResearchBackend(BaseResearchBackend):
         usage_records: list[UsageNumbers] = []
         search_tool_calls = 0
 
-        for round_index in range(MAX_WEB_SEARCH_ROUNDS):
+        query_round_limit = min(
+            MAX_WEB_SEARCH_ROUNDS, self._remaining_search_rounds
+        )
+        for round_index in range(query_round_limit):
+            # Charge before sending so exceptions cannot accidentally make a
+            # failed network round free.  The same counter survives subsequent
+            # logical search queries in this factory run.
+            self._remaining_search_rounds -= 1
             body = self._chat_body(list(conversation))
             body["tools"] = [_web_search_tool()]
             text, finish, calls, usage = self._one_chat(body)
@@ -203,13 +234,41 @@ class KimiResearchBackend(BaseResearchBackend):
                 calls=round_index + 1,
                 search_tool_calls=search_tool_calls,
             )
-            return SearchResponse(collector.evidence, usage_record)
+            return SearchResponse(
+                collector.evidence,
+                usage_record,
+                budget_exhausted=self._remaining_search_rounds == 0,
+            )
 
+        if self._remaining_search_rounds == 0:
+            # Exhausting the user-selected run-wide budget is a normal bounded
+            # completion condition, not a provider failure.  Preserve usage
+            # from an unfinished final echo loop so the factory can account for
+            # every paid round, then let it continue with evidence gathered by
+            # earlier logical queries and apply its ordinary source gate.
+            usage_record = None
+            if usage_records:
+                usage_record = self._usage(
+                    _usage_total(usage_records),
+                    purpose=PURPOSE_SEARCH,
+                    calls=len(usage_records),
+                    search_tool_calls=search_tool_calls,
+                )
+            return SearchResponse(
+                (),
+                usage_record,
+                budget_exhausted=True,
+            )
         raise TransientError(
             f"kimi {WEB_SEARCH_TOOL_NAME} did not converge within "
-            f"{MAX_WEB_SEARCH_ROUNDS} rounds",
+            f"{MAX_WEB_SEARCH_ROUNDS} rounds for one query",
             provider=self.provider,
         )
 
 
-__all__ = ["KIMI_BASE_URL", "KIMI_BASE_URL_ENV_VAR", "KimiResearchBackend"]
+__all__ = [
+    "KIMI_BASE_URL",
+    "KIMI_BASE_URL_ENV_VAR",
+    "MAX_RESEARCH_SEARCH_ROUNDS",
+    "KimiResearchBackend",
+]

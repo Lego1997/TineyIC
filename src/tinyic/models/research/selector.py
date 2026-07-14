@@ -99,6 +99,7 @@ def make_research_backend(
     *,
     http: HttpTransport | None = None,
     base_url: str | None = None,
+    max_searches: int | None = None,
     **kwargs: Any,
 ):
     """Build the explicit ``--model`` research backend for one binding.
@@ -122,6 +123,11 @@ def make_research_backend(
         "kimi": (KimiResearchBackend, None),
     }
     backend_class, default_base_url = classes[provider]
+    if provider == "kimi" and max_searches is not None:
+        # Kimi's client-executed $web_search echo loop can make several HTTP
+        # rounds for one logical query.  Carry the CLI's budget into that loop
+        # so it caps total search rounds across the entire factory run.
+        kwargs["max_search_rounds"] = max_searches
     return backend_class(
         binding,
         resolved_credentials,

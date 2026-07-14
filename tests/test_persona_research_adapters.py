@@ -418,6 +418,60 @@ def test_kimi_echoes_builtin_results_verbatim_and_extracts_only_final_prose_urls
     assert result.usage.cost_usd == pytest.approx(0.00505975)
 
 
+def test_kimi_cli_budget_caps_echo_rounds_across_logical_searches() -> None:
+    tool_call = {
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call-budget",
+                            "type": "builtin_function",
+                            "function": {
+                                "name": "$web_search",
+                                "arguments": '{"results":[]}',
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+    }
+    completed = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {
+                    "content": "[Memo](https://www.oaktreecapital.com/insights/memos)",
+                },
+            }
+        ],
+        "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+    }
+    http = ScriptedTransport(tool_call, completed, tool_call)
+    backend = make_research_backend(
+        ModelBinding("kimi/kimi-k2.6"),
+        credentials(),
+        http=http,
+        max_searches=3,
+    )
+
+    assert backend.remaining_search_rounds == 3
+    assert backend.search(request()).evidence
+    assert backend.remaining_search_rounds == 1
+    exhausted = backend.search(request())
+    assert exhausted.evidence == ()
+    assert exhausted.budget_exhausted is True
+    assert exhausted.usage is not None
+    assert exhausted.usage.calls == 1
+    assert exhausted.usage.cost_usd == pytest.approx(0.00500685)
+    assert backend.remaining_search_rounds == 0
+    assert len(http.sent) == 3
+
+
 def test_non_search_methods_share_usage_and_json_normalization() -> None:
     dossier_wire = {
         "output": [

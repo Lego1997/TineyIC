@@ -733,9 +733,22 @@ class PersonaFactory:
             evidence = getattr(response, "evidence", None)
             if not isinstance(evidence, Sequence):
                 raise BackendContractError("search() must return SearchResponse.evidence")
-            search_calls += 1
-            if getattr(response, "usage", None) is not None:
-                usage_records.append(response.usage)
+            budget_exhausted = getattr(response, "budget_exhausted", False)
+            if not isinstance(budget_exhausted, bool):
+                raise BackendContractError(
+                    "search() must return a boolean SearchResponse.budget_exhausted"
+                )
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                usage_records.append(usage)
+                # Kimi reports every HTTP echo round here; single-request
+                # providers report one.  This keeps generation metadata and
+                # usage aligned with the unit constrained by --max-searches.
+                search_calls += usage.calls
+            elif not budget_exhausted:
+                # Backends may omit token usage, but a completed ordinary
+                # search still consumed one provider call.
+                search_calls += 1
             for item in evidence:
                 if not isinstance(item, Evidence):
                     raise BackendContractError("search evidence entries must be Evidence")
@@ -746,6 +759,9 @@ class PersonaFactory:
                         provider=item.provider or str(getattr(self.backend, "provider", "")),
                     )
                 )
+            if budget_exhausted:
+                self.progress("search:budget_exhausted")
+                break
 
         quality = quality_for(ledger)  # refusal occurs before any artifact write
         generated_date = self.clock().isoformat()

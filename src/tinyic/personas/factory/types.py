@@ -149,9 +149,12 @@ class SearchRequest:
 class SearchResponse:
     evidence: tuple[Evidence, ...]
     usage: CallUsage | None = None
+    budget_exhausted: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "evidence", tuple(self.evidence))
+        if not isinstance(self.budget_exhausted, bool):
+            raise TypeError("budget_exhausted must be a boolean")
 
 
 @dataclass(frozen=True)
