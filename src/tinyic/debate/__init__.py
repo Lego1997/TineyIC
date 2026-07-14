@@ -341,6 +341,13 @@ _MEMO_SECTION_KEYS = (
 )
 
 
+def _check_run_stop(phase_gate) -> None:
+    """Honor a ``RunControl`` stop while remaining inert for legacy gates."""
+    check = getattr(phase_gate, "check_stop", None)
+    if callable(check):
+        check()
+
+
 def _emit_synthesis(
     event_log: EventLog,
     *,
@@ -348,6 +355,7 @@ def _emit_synthesis(
     data_package,
     moderator,
     committee,
+    phase_gate=None,
 ) -> None:
     """Run FR-4.5 synthesis through the aggregator and emit its artifacts.
 
@@ -366,18 +374,35 @@ def _emit_synthesis(
     aggregator_client = committee.aggregator
     synthesis_before = snapshot_cost_counters(aggregator_client)
     cached_before = _client_cached_tokens(aggregator_client)
-    with _activate_binding(aggregator_client):
-        memo = generate_memo(result, data_package, theses=theses)
-        disagreement_analysis = extract_disagreements(result, theses=theses)
-    synthesis_after = snapshot_cost_counters(aggregator_client)
-    cached_after = _client_cached_tokens(aggregator_client)
-    _emit_aggregate_usage(
-        event_log,
-        purpose="memo",
-        usage_delta=diff_cost_counters(synthesis_after, synthesis_before),
-        model_ref=committee.aggregator_binding.model_ref,
-        cached_tokens=max(0, cached_after - cached_before),
-    )
+    checkpoint = getattr(phase_gate, "check_stop", None)
+    if not callable(checkpoint):
+        checkpoint = None
+    _check_run_stop(phase_gate)
+    try:
+        with _activate_binding(aggregator_client):
+            memo = generate_memo(
+                result,
+                data_package,
+                theses=theses,
+                checkpoint=checkpoint,
+            )
+            disagreement_analysis = extract_disagreements(
+                result,
+                theses=theses,
+                checkpoint=checkpoint,
+            )
+    finally:
+        # A stop accepted during a paid provider call must not erase its usage.
+        synthesis_after = snapshot_cost_counters(aggregator_client)
+        cached_after = _client_cached_tokens(aggregator_client)
+        _emit_aggregate_usage(
+            event_log,
+            purpose="memo",
+            usage_delta=diff_cost_counters(synthesis_after, synthesis_before),
+            model_ref=committee.aggregator_binding.model_ref,
+            cached_tokens=max(0, cached_after - cached_before),
+        )
+    _check_run_stop(phase_gate)
 
     result.memo = memo
     result.disagreement_analysis = disagreement_analysis
@@ -435,6 +460,7 @@ def run_debate(
     model: str | None = None,
     thinking: str | None = None,
     da: str | None = None,
+    deep_research: bool = True,
     committee=None,
     config_path=None,
     credentials=None,
@@ -465,6 +491,8 @@ def run_debate(
         da: Devil's-advocate override (``--da``), a persona display or registry
             name that pins the cross-exam devil's advocate; ``None`` uses the
             moderator's persisted rotation (FR-4.3).
+        deep_research: Whether data-package construction may run its optional
+            web-research synthesis. ``False`` preserves ``--no-research``.
         committee: Pre-resolved ``tinyic.models.Committee`` (programmatic/tests);
             takes precedence over ``preset``/``model``/``thinking``.
         config_path: Location of ``tinyic.toml`` (defaults to cwd / env).
@@ -517,6 +545,7 @@ def run_debate(
     run_started_at = None
     stage = "setup"
     research_usage: dict = {}
+    research_usage_emitted = False
 
     try:
         if debate_session is None:
@@ -580,12 +609,23 @@ def run_debate(
 
         if data_package is None:
             stage = "data"
+            _check_run_stop(phase_gate)
             research_before = snapshot_cost_counters(resolved_client)
-            data_package = _build_data_package(ticker)
-            research_after = snapshot_cost_counters(resolved_client)
-            research_usage = diff_cost_counters(
-                research_after, research_before
-            )
+            data_checkpoint = getattr(phase_gate, "check_stop", None)
+            data_kwargs = {}
+            if not deep_research:
+                data_kwargs["deep_research"] = False
+            if callable(data_checkpoint):
+                data_kwargs["checkpoint"] = data_checkpoint
+            try:
+                data_package = _build_data_package(ticker, **data_kwargs)
+            finally:
+                # Preserve usage from source calls completed before a stop or
+                # failure. The exception path emits this after debate_started.
+                research_after = snapshot_cost_counters(resolved_client)
+                research_usage = diff_cost_counters(
+                    research_after, research_before
+                )
 
         run_started_at = active_event_log.now()
         active_event_log.emit(
@@ -607,6 +647,10 @@ def run_debate(
             purpose="research",
             usage_delta=research_usage,
         )
+        research_usage_emitted = True
+        # Defer the post-research check until after its cost-bearing work and
+        # usage are durably represented in the event stream.
+        _check_run_stop(phase_gate)
 
         stage = "debate"
         orchestrator = DebateOrchestrator(
@@ -623,8 +667,16 @@ def run_debate(
         orchestrator.message_queue = message_queue
         orchestrator.phase_gate = phase_gate
         orchestrator.run_debate()
+        _check_run_stop(phase_gate)
 
         stage = "extraction"
+        checkpoint = getattr(phase_gate, "check_stop", None)
+        if not callable(checkpoint):
+            checkpoint = None
+        extraction_kwargs = (
+            {"checkpoint": checkpoint} if checkpoint is not None else {}
+        )
+        _check_run_stop(phase_gate)
         if resolved_committee is not None:
             # Vote extraction is aggregation work: route it through the
             # aggregator binding and capture its native per-call usage.
@@ -653,36 +705,42 @@ def run_debate(
             aggregator_client.on_usage_window = emit_usage_window
             try:
                 with _activate_binding(aggregator_client):
-                    votes = extract_votes(orchestrator)
+                    votes = extract_votes(
+                        orchestrator,
+                        **extraction_kwargs,
+                    )
             finally:
                 aggregator_client.on_usage_window = previous_window_sink
-            extraction_after = snapshot_cost_counters(aggregator_client)
-            cached_after = _client_cached_tokens(aggregator_client)
-            extraction_usage = diff_cost_counters(
-                extraction_after, extraction_before
-            )
-            _emit_aggregate_usage(
-                active_event_log,
-                purpose="extraction",
-                usage_delta=extraction_usage,
-                model_ref=resolved_committee.aggregator_binding.model_ref,
-                cached_tokens=max(0, cached_after - cached_before),
-                billable_usage_delta=_billable_usage_since(
-                    aggregator_client, usage_cursor
-                ),
-            )
+                extraction_after = snapshot_cost_counters(aggregator_client)
+                cached_after = _client_cached_tokens(aggregator_client)
+                extraction_usage = diff_cost_counters(
+                    extraction_after, extraction_before
+                )
+                _emit_aggregate_usage(
+                    active_event_log,
+                    purpose="extraction",
+                    usage_delta=extraction_usage,
+                    model_ref=resolved_committee.aggregator_binding.model_ref,
+                    cached_tokens=max(0, cached_after - cached_before),
+                    billable_usage_delta=_billable_usage_since(
+                        aggregator_client, usage_cursor
+                    ),
+                )
         else:
             extraction_before = snapshot_cost_counters(resolved_client)
-            votes = extract_votes(orchestrator)
-            extraction_after = snapshot_cost_counters(resolved_client)
-            extraction_usage = diff_cost_counters(
-                extraction_after, extraction_before
-            )
-            _emit_aggregate_usage(
-                active_event_log,
-                purpose="extraction",
-                usage_delta=extraction_usage,
-            )
+            try:
+                votes = extract_votes(orchestrator, **extraction_kwargs)
+            finally:
+                extraction_after = snapshot_cost_counters(resolved_client)
+                extraction_usage = diff_cost_counters(
+                    extraction_after, extraction_before
+                )
+                _emit_aggregate_usage(
+                    active_event_log,
+                    purpose="extraction",
+                    usage_delta=extraction_usage,
+                )
+        _check_run_stop(phase_gate)
 
         stage = "finalization"
         scorecard = build_scorecard(votes, ticker, data_package.company_name)
@@ -761,6 +819,7 @@ def run_debate(
                 data_package=data_package,
                 moderator=moderator,
                 committee=resolved_committee,
+                phase_gate=phase_gate,
             )
 
         canonical_by_value = {
@@ -828,6 +887,13 @@ def run_debate(
                             ),
                         ),
                     )
+                if not research_usage_emitted:
+                    _emit_aggregate_usage(
+                        active_event_log,
+                        purpose="research",
+                        usage_delta=research_usage,
+                    )
+                    research_usage_emitted = True
                 stopped_by_user = isinstance(exc, DebateStopRequested)
                 active_event_log.emit(
                     "debate_error",

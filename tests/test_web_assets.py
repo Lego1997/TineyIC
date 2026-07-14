@@ -188,6 +188,24 @@ def test_sse_full_replay_and_resume_contract_is_visible(javascript: str) -> None
     assert "state.meta.seqHigh" in javascript
 
 
+def test_unexpected_live_stream_close_reconciles_worker_failure(
+    javascript: str,
+) -> None:
+    close_handler = javascript[
+        javascript.index("function reconcileUnexpectedClose") : javascript.index(
+            "async function loadMeta"
+        )
+    ]
+    assert "await loadMeta()" in close_handler
+    assert 'state.meta.status === "error"' in close_handler
+    assert 'setRunState("error")' in close_handler
+    assert 'dom.errorTitle.textContent = "Run ended unexpectedly"' in close_handler
+    assert "without a terminal record" in close_handler
+    assert "dom.truncatedBanner.hidden = false" in close_handler
+    assert "void reconcileUnexpectedClose()" in javascript
+    assert "state.meta.status = normalizedStatus" in javascript
+
+
 def test_markdown_is_escape_first_and_never_assigns_model_html(
     javascript: str,
 ) -> None:

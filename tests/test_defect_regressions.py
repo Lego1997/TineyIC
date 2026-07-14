@@ -189,9 +189,7 @@ def test_b2_null_vote_does_not_discard_valid_confidence_or_reasoning() -> None:
     }
 
     with patch("tinyic.debate.extraction.ResultsExtractor") as extractor_cls:
-        extractor_cls.return_value.extract_results_from_agents.return_value = [
-            raw_result
-        ]
+        extractor_cls.return_value.extract_results_from_agent.return_value = raw_result
         votes = extract_votes(orchestrator)
 
     assert len(votes) == 1
@@ -244,7 +242,7 @@ def test_b3_only_the_failed_agent_receives_an_extraction_fallback() -> None:
     ]
 
     with patch("tinyic.debate.extraction.ResultsExtractor") as extractor_cls:
-        extractor_cls.return_value.extract_results_from_agents.return_value = raw_results
+        extractor_cls.return_value.extract_results_from_agent.side_effect = raw_results
         votes = extract_votes(orchestrator)
 
     assert [vote.vote for vote in votes] == [
@@ -269,8 +267,10 @@ def test_b3_short_bulk_result_still_yields_one_vote_per_agent() -> None:
     )
 
     with patch("tinyic.debate.extraction.ResultsExtractor") as extractor_cls:
-        extractor_cls.return_value.extract_results_from_agents.return_value = [
-            {"vote": "BUY", "confidence": "HIGH", "reasoning": ["agent 1"]}
+        extractor_cls.return_value.extract_results_from_agent.side_effect = [
+            {"vote": "BUY", "confidence": "HIGH", "reasoning": ["agent 1"]},
+            None,
+            None,
         ]
         votes = extract_votes(orchestrator)
 

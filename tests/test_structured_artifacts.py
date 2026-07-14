@@ -442,7 +442,7 @@ class TestVoteExtractionSource:
 
     @patch("tinyic.debate.extraction.ResultsExtractor")
     def test_absent_verdicts_fall_back_to_llm_extraction(self, MockExtractor):
-        MockExtractor.return_value.extract_results_from_agents.return_value = [
+        MockExtractor.return_value.extract_results_from_agent.side_effect = [
             {"vote": "BUY", "confidence": "HIGH"},
             {"vote": "HOLD", "confidence": "MEDIUM"},
         ]
@@ -466,9 +466,10 @@ class TestVoteExtractionSource:
         mock_instance = MockExtractor.return_value
         # Only one persona (B) lacks a structured verdict, so the extractor is
         # asked for exactly one result.
-        mock_instance.extract_results_from_agents.return_value = [
-            {"vote": "SELL", "confidence": "LOW"}
-        ]
+        mock_instance.extract_results_from_agent.return_value = {
+            "vote": "SELL",
+            "confidence": "LOW",
+        }
         personas = [_mock_persona("A", ""), _mock_persona("B", "")]
         orch = DebateOrchestrator(
             name="ev_mixed",
@@ -487,15 +488,12 @@ class TestVoteExtractionSource:
         assert votes[1].vote == VoteChoice.SELL
 
         # The LLM extractor saw only the persona lacking a structured verdict.
-        call = mock_instance.extract_results_from_agents.call_args
-        agents_arg = call.kwargs.get("agents", None)
-        if agents_arg is None:
-            agents_arg = call.args[0]
-        assert [agent.name for agent in agents_arg] == ["B"]
+        call = mock_instance.extract_results_from_agent.call_args
+        assert call.args[0].name == "B"
 
     @patch("tinyic.debate.extraction.ResultsExtractor")
     def test_llm_failure_still_reports_extracted_source(self, MockExtractor):
-        MockExtractor.return_value.extract_results_from_agents.side_effect = (
+        MockExtractor.return_value.extract_results_from_agent.side_effect = (
             RuntimeError("provider down")
         )
         personas = [_mock_persona("A", ""), _mock_persona("B", "")]

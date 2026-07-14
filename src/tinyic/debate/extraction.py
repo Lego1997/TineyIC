@@ -1,9 +1,11 @@
 """Vote extraction and scorecard building from debate results."""
 
 import logging
+from collections.abc import Callable
 
 from tinytroupe.extraction import ResultsExtractor
 
+from .control import DebateStopRequested
 from .models import Confidence, Scorecard, Vote, VoteChoice
 from .structured import StructuredVerdict
 
@@ -62,7 +64,17 @@ def _fallback_vote(investor: str) -> Vote:
     )
 
 
-def _extract_votes_via_llm(orchestrator, agents: list) -> list[Vote]:
+def _run_checkpoint(checkpoint: Callable[[], None] | None) -> None:
+    if checkpoint is not None:
+        checkpoint()
+
+
+def _extract_votes_via_llm(
+    orchestrator,
+    agents: list,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+) -> list[Vote]:
     """Extract ``source="extracted"`` votes for ``agents`` via ResultsExtractor.
 
     Sends each agent's interaction history to the LLM for structured extraction
@@ -92,22 +104,25 @@ def _extract_votes_via_llm(orchestrator, agents: list) -> list[Vote]:
         },
     )
 
-    try:
-        results = extractor.extract_results_from_agents(
-            agents=agents,
-            verbose=False,
-        )
-    except Exception as e:
-        logger.warning("Extraction failed for all agents: %s", e)
-        return [_fallback_vote(agent.name) for agent in agents]
-
-    # The vendored extractor is expected to return one slot per agent, but
-    # preserve committee cardinality if a provider/client regression returns
-    # a short iterable. Extra results have no owning persona and are ignored.
-    results = list(results or [])
     votes: list[Vote] = []
-    for index, agent in enumerate(agents):
-        raw_result = results[index] if index < len(results) else None
+    for agent in agents:
+        # Call the extractor's single-agent seam directly so the app-owned
+        # checkpoint brackets every provider request. The vendored batch helper
+        # catches broad Exceptions internally and offers no between-agent hook.
+        _run_checkpoint(checkpoint)
+        try:
+            raw_result = extractor.extract_results_from_agent(
+                agent,
+                verbose=False,
+            )
+        except DebateStopRequested:
+            raise
+        except Exception as e:  # noqa: BLE001 - preserve per-agent fallback
+            logger.warning("Extraction failed for %s: %s", agent.name, e)
+            raw_result = None
+        finally:
+            _run_checkpoint(checkpoint)
+
         if raw_result is None:
             votes.append(_fallback_vote(agent.name))
             continue
@@ -124,6 +139,8 @@ def _extract_votes_via_llm(orchestrator, agents: list) -> list[Vote]:
                     source="extracted",
                 )
             )
+        except DebateStopRequested:
+            raise
         except Exception as e:
             logger.warning("Failed to parse vote for %s: %s", agent.name, e)
             votes.append(_fallback_vote(agent.name))
@@ -131,7 +148,11 @@ def _extract_votes_via_llm(orchestrator, agents: list) -> list[Vote]:
     return votes
 
 
-def extract_votes(orchestrator) -> list[Vote]:
+def extract_votes(
+    orchestrator,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+) -> list[Vote]:
     """Extract each agent's final vote, structured records first (FR-4.4).
 
     Vote extraction consumes the moderator's recorded verdict blocks first: any
@@ -153,7 +174,13 @@ def extract_votes(orchestrator) -> list[Vote]:
     # Personas lacking a structured verdict fall back to LLM extraction; run it
     # once for just that subset (no call at all when every verdict was recorded).
     llm_agents = [agent for agent in agents if recorded.get(agent.name) is None]
-    llm_votes = iter(_extract_votes_via_llm(orchestrator, llm_agents))
+    llm_votes = iter(
+        _extract_votes_via_llm(
+            orchestrator,
+            llm_agents,
+            checkpoint=checkpoint,
+        )
+    )
 
     votes: list[Vote] = []
     for agent in agents:

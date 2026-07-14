@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import io
 import json
+import socket
 import threading
 
 import pytest
 
 import tinyic.debate as debate_module
+import tinyic.headless as headless_module
 from tinyic.debate.steering import SteeringInbox
 from tinyic.events import EventEnvelope, EventLog, make_debate_id, read_event_log
 from tinyic.headless import PersonaSelectionError, resolve_personas, run_debate_command
@@ -619,6 +621,40 @@ def test_stream_log_stops_when_worker_finishes_without_a_terminal_event(tmp_path
     assert json.loads(lines[0])["type"] == "debate_started"
 
 
+def test_worker_forwards_no_research_to_debate_pipeline(tmp_path, monkeypatch):
+    from tinyic.headless import _run_worker
+
+    captured = {}
+
+    def fake_run_debate(_ticker, _personas, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(debate_module, "run_debate", fake_run_debate)
+    log = EventLog("aapl-20260714-nors", path=tmp_path / "run.jsonl")
+    done = threading.Event()
+    _run_worker(
+        ticker="AAPL",
+        persona_names=["a", "b"],
+        log=log,
+        inbox=object(),
+        preset=None,
+        model=None,
+        thinking=None,
+        da=None,
+        no_research=True,
+        committee=None,
+        data_package=None,
+        transport_factory=None,
+        credentials=None,
+        config_path=None,
+        phase_gate=None,
+        result_holder={},
+        done=done,
+    )
+    assert done.is_set()
+    assert captured["deep_research"] is False
+
+
 def test_web_path_wires_engine_controls_and_finalizes(binding_mocks, monkeypatch):
     # Exercise the default web branch with the server lifecycle stubbed. The
     # debate worker remains real and consumes the same JSONL log as production.
@@ -668,7 +704,80 @@ def test_web_path_wires_engine_controls_and_finalizes(binding_mocks, monkeypatch
     assert captured.get("finished") is True
     assert isinstance(captured["inbox"], SteeringInbox)
     assert isinstance(captured["control"], RunControl)
+    assert captured["disconnect_timeout"] is None
     assert captured["shutdown_timeout"] == 1.0
+
+
+def test_web_path_reports_occupied_port_before_starting_worker():
+    err = io.StringIO()
+    with socket.create_server(("127.0.0.1", 0)) as occupied:
+        port = occupied.getsockname()[1]
+        code = run_debate_command(
+            "AAPL",
+            committee=object(),
+            interactive=True,
+            port=port,
+            no_open=True,
+            no_wait=True,
+            out=io.StringIO(),
+            err=err,
+        )
+    assert code == 3
+    diagnostic = err.getvalue()
+    assert f"127.0.0.1:{port}" in diagnostic
+    assert "could not bind" in diagnostic
+    assert "Traceback" not in diagnostic
+
+
+def test_web_sigint_does_not_enter_no_wait_attach_or_drain(monkeypatch):
+    from tinyic.web import WebFace
+
+    calls: list[str] = []
+
+    class StubFace:
+        def start(self):
+            calls.append("start")
+
+        def mark_run_finished(self):
+            calls.append("finished")
+
+        def wait_for_sse_disconnect(self, timeout=None):
+            calls.append("disconnect")
+
+        def wait_for_sse_cycle(self, **_kwargs):
+            calls.append("cycle")
+
+        def shutdown(self, *, timeout=None):
+            calls.append("shutdown")
+
+    monkeypatch.setattr(
+        WebFace,
+        "live",
+        staticmethod(lambda _log, **_kwargs: StubFace()),
+    )
+
+    def finish_worker(**kwargs):
+        kwargs["done"].set()
+
+    def interrupt_stream(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(headless_module, "_run_worker", finish_worker)
+    monkeypatch.setattr(headless_module, "_stream_log", interrupt_stream)
+
+    assert (
+        run_debate_command(
+            "AAPL",
+            committee=object(),
+            interactive=True,
+            no_wait=True,
+            no_open=False,
+            out=io.StringIO(),
+            err=io.StringIO(),
+        )
+        == 3
+    )
+    assert calls == ["start", "finished", "shutdown"]
 
 
 def test_assemble_result_reports_truncated_log_as_incomplete(tmp_path):

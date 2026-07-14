@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
+import tinyic.data.pipeline as pipeline_module
 from tinyic.data.models import (
     DataPackage,
     FinancialData,
@@ -26,6 +27,7 @@ from tinyic.data.news import fetch_news
 from tinyic.data.filings import fetch_filings
 from tinyic.data.social import fetch_social_sentiment
 from tinyic.data.pipeline import build_data_package
+from tinyic.debate.control import DebateStopRequested, RunControl
 
 
 # ---------------------------------------------------------------------------
@@ -809,6 +811,90 @@ class TestBuildDataPackage:
 
         with pytest.raises(ValueError, match="Invalid ticker"):
             build_data_package("XYZNOTREAL")
+
+    def test_stop_after_source_prevents_all_later_network_calls(
+        self, monkeypatch
+    ):
+        control = RunControl()
+        calls: list[str] = []
+
+        def record(name, value=None, *, stop=False):
+            def operation(*_args):
+                calls.append(name)
+                if stop:
+                    control.stop()
+                return value
+
+            return operation
+
+        monkeypatch.setattr(
+            pipeline_module,
+            "resolve_ticker",
+            record("resolve", (True, "AAPL", "Apple Inc.")),
+        )
+        monkeypatch.setattr(
+            pipeline_module,
+            "_fetch_description",
+            record("description", "Apple"),
+        )
+        monkeypatch.setattr(
+            pipeline_module,
+            "fetch_financials",
+            record("financials", None, stop=True),
+        )
+        for name in (
+            "fetch_filings",
+            "fetch_news",
+            "fetch_social_sentiment",
+            "detect_cn_market",
+            "fetch_cn_market_data",
+            "build_research_brief",
+        ):
+            monkeypatch.setattr(
+                pipeline_module,
+                name,
+                record(name),
+            )
+
+        with pytest.raises(DebateStopRequested):
+            build_data_package("AAPL", checkpoint=control.check_stop)
+        assert calls == ["resolve", "description", "financials"]
+
+    def test_stop_after_social_prevents_paid_research(self, monkeypatch):
+        control = RunControl()
+        research_called = False
+
+        monkeypatch.setattr(
+            pipeline_module,
+            "resolve_ticker",
+            lambda _ticker: (True, "AAPL", "Apple Inc."),
+        )
+        monkeypatch.setattr(pipeline_module, "_fetch_description", lambda _t: None)
+        monkeypatch.setattr(pipeline_module, "fetch_financials", lambda _t: None)
+        monkeypatch.setattr(
+            pipeline_module, "fetch_filings", lambda _t, _form: None
+        )
+        monkeypatch.setattr(pipeline_module, "fetch_news", lambda _t: None)
+
+        def stop_after_social(_ticker, _company):
+            control.stop()
+            return None
+
+        def research(*_args):
+            nonlocal research_called
+            research_called = True
+
+        monkeypatch.setattr(
+            pipeline_module,
+            "fetch_social_sentiment",
+            stop_after_social,
+        )
+        monkeypatch.setattr(pipeline_module, "detect_cn_market", lambda _t: None)
+        monkeypatch.setattr(pipeline_module, "build_research_brief", research)
+
+        with pytest.raises(DebateStopRequested):
+            build_data_package("AAPL", checkpoint=control.check_stop)
+        assert research_called is False
 
     @patch("tinyic.data.pipeline.build_research_brief", return_value=None)
     @patch("tinyic.data.pipeline.fetch_social_sentiment")

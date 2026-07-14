@@ -264,7 +264,7 @@ def _legacy_act(counter: _UsageCounter):
     return act
 
 
-def _mock_votes(orchestrator) -> list[Vote]:
+def _mock_votes(orchestrator, **_kwargs) -> list[Vote]:
     """Deterministic votes keyed off committee order (adapter-independent)."""
     choices = [VoteChoice.BUY, VoteChoice.BUY, VoteChoice.HOLD]
     return [

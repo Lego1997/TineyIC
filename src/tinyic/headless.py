@@ -67,6 +67,10 @@ DEFAULT_PERSONAS = [
 #: (data fetch can be slow in production; instant with an injected data package).
 _START_TIMEOUT_S = 180.0
 
+# Give an auto-opened browser a bounded chance to attach. Once a real client is
+# present, ``--no-wait`` drains it without a second deadline.
+_BROWSER_ATTACH_TIMEOUT_S = 5.0
+
 
 class PersonaSelectionError(ValueError):
     """A ``--personas`` value naming an unknown or too-small committee."""
@@ -313,6 +317,7 @@ def _run_worker(
             model=model,
             thinking=thinking,
             da=da,
+            deep_research=not no_research,
             committee=committee,
             transport_factory=transport_factory,
             credentials=credentials,
@@ -685,7 +690,11 @@ def _run_web(
     )
     interrupted = False
     try:
-        face.start()  # bind before the worker can emit debate_started
+        try:
+            face.start()  # bind before the worker can emit debate_started
+        except OSError as exc:
+            _report_web_bind_error(err, port, exc)
+            return 3
         worker.start()
         try:
             _stream_log(log.path, None, err, worker_done, poll_interval=0.1)
@@ -708,8 +717,8 @@ def _run_web(
                     pass
             except KeyboardInterrupt:
                 pass
-        elif no_wait:
-            face.wait_for_sse_disconnect(timeout=1.0)
+        elif no_wait and not interrupted:
+            _wait_for_no_wait_viewer(face, no_open=no_open)
     finally:
         face.shutdown(timeout=1.0)
 
@@ -754,9 +763,13 @@ def run_replay_command(
         stderr=err,
     )
     try:
-        face.start()
+        try:
+            face.start()
+        except OSError as exc:
+            _report_web_bind_error(err, port, exc)
+            return 3
         if no_wait:
-            face.wait_for_sse_disconnect(timeout=1.0)
+            _wait_for_no_wait_viewer(face, no_open=no_open)
         else:
             _progress(err, f"replay viewer at {face.base_url}, Ctrl-C to exit")
             try:
@@ -767,3 +780,31 @@ def run_replay_command(
     finally:
         face.shutdown(timeout=1.0)
     return 0
+
+
+def _report_web_bind_error(err: TextIO, port: int, exc: OSError) -> None:
+    """Render a bind failure as a concise setup error, without a traceback."""
+    requested = str(port) if port else "auto"
+    reason = exc.strerror or str(exc) or type(exc).__name__
+    _progress(
+        err,
+        f"tinyic: web viewer could not bind 127.0.0.1:{requested}: {reason}",
+    )
+
+
+def _wait_for_no_wait_viewer(face, *, no_open: bool) -> None:
+    """Drain SSE clients under the bounded attach semantics of ``--no-wait``."""
+    try:
+        if no_open:
+            # Automation explicitly disabled browser launch. Drain only a
+            # client that is active right now; zero clients returns at once.
+            face.wait_for_sse_disconnect(timeout=None)
+        else:
+            # Browser launch is asynchronous: allow it time to attach, then do
+            # not cut off a genuine client merely because it drains slowly.
+            face.wait_for_sse_cycle(
+                connect_timeout=_BROWSER_ATTACH_TIMEOUT_S,
+                disconnect_timeout=None,
+            )
+    except KeyboardInterrupt:
+        pass

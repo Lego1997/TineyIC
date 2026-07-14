@@ -2,6 +2,7 @@
 
 import logging
 import os
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -21,6 +22,27 @@ from .research import build_research_brief
 logger = logging.getLogger(__name__)
 
 
+def _run_checkpoint(checkpoint: Callable[[], None] | None) -> None:
+    if checkpoint is not None:
+        checkpoint()
+
+
+def _checked_source_call(
+    checkpoint: Callable[[], None] | None,
+    operation,
+    /,
+    *args,
+):
+    """Bracket one sequential source call with the optional stop checkpoint."""
+    _run_checkpoint(checkpoint)
+    try:
+        return operation(*args)
+    finally:
+        # Deliberately outside any graceful-degradation catch in a source: a
+        # DebateStopRequested raised here must prevent the next network call.
+        _run_checkpoint(checkpoint)
+
+
 def _fetch_description(ticker: str) -> Optional[str]:
     """Extract company business description from yfinance, truncated to 500 chars."""
     try:
@@ -32,7 +54,12 @@ def _fetch_description(ticker: str) -> Optional[str]:
         return None
 
 
-def build_data_package(ticker: str, deep_research: bool = True) -> DataPackage:
+def build_data_package(
+    ticker: str,
+    deep_research: bool = True,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+) -> DataPackage:
     """Build complete DataPackage for a stock ticker.
 
     Fetches data from all available sources (yfinance, edgartools, xAI).
@@ -43,6 +70,8 @@ def build_data_package(ticker: str, deep_research: bool = True) -> DataPackage:
         ticker: Stock ticker symbol (e.g., "AAPL").
         deep_research: If True (default), run web search + LLM synthesis
             to produce a ResearchBrief. Set False to skip (v1 behavior).
+        checkpoint: Optional callback invoked before and after every sequential
+            source call. It may raise to stop before subsequent network work.
 
     Returns:
         DataPackage with all available data.
@@ -53,36 +82,67 @@ def build_data_package(ticker: str, deep_research: bool = True) -> DataPackage:
     warnings: list[str] = []
 
     # Step 1: Validate ticker (DATA-01)
-    is_valid, resolved_ticker, company_name = resolve_ticker(ticker)
+    is_valid, resolved_ticker, company_name = _checked_source_call(
+        checkpoint,
+        resolve_ticker,
+        ticker,
+    )
     if not is_valid:
         raise ValueError(f"Invalid ticker: {ticker}")
 
     logger.info("Building data package for %s (%s)", resolved_ticker, company_name)
 
     # Step 2: Fetch company description
-    description = _fetch_description(resolved_ticker)
+    description = _checked_source_call(
+        checkpoint,
+        _fetch_description,
+        resolved_ticker,
+    )
 
     # Step 3: Fetch financial fundamentals (DATA-02)
-    financials = fetch_financials(resolved_ticker)
+    financials = _checked_source_call(
+        checkpoint,
+        fetch_financials,
+        resolved_ticker,
+    )
     if financials is None:
         warnings.append("Financial fundamentals unavailable")
 
     # Step 4: Fetch SEC filings (DATA-03)
-    filing_10k = fetch_filings(resolved_ticker, "10-K")
+    filing_10k = _checked_source_call(
+        checkpoint,
+        fetch_filings,
+        resolved_ticker,
+        "10-K",
+    )
     if filing_10k is None:
         warnings.append("10-K filing unavailable")
 
-    filing_10q = fetch_filings(resolved_ticker, "10-Q")
+    filing_10q = _checked_source_call(
+        checkpoint,
+        fetch_filings,
+        resolved_ticker,
+        "10-Q",
+    )
     if filing_10q is None:
         warnings.append("10-Q filing unavailable")
 
     # Step 5: Fetch news (DATA-04)
-    news = fetch_news(resolved_ticker)
+    news = _checked_source_call(
+        checkpoint,
+        fetch_news,
+        resolved_ticker,
+    )
     if news is None:
         warnings.append("No recent news found")
 
     # Step 6: Fetch social sentiment (DATA-05)
-    social = fetch_social_sentiment(resolved_ticker, company_name)
+    social = _checked_source_call(
+        checkpoint,
+        fetch_social_sentiment,
+        resolved_ticker,
+        company_name,
+    )
     if social is None:
         if not os.getenv("XAI_API_KEY"):
             warnings.append(
@@ -93,8 +153,18 @@ def build_data_package(ticker: str, deep_research: bool = True) -> DataPackage:
 
     # Step 7: China market data (A-share / HK tickers only; optional extra)
     cn_market = None
-    if detect_cn_market(resolved_ticker) is not None:
-        cn_market = fetch_cn_market_data(resolved_ticker, company_name)
+    market = _checked_source_call(
+        checkpoint,
+        detect_cn_market,
+        resolved_ticker,
+    )
+    if market is not None:
+        cn_market = _checked_source_call(
+            checkpoint,
+            fetch_cn_market_data,
+            resolved_ticker,
+            company_name,
+        )
         if cn_market is None:
             if cn_market_dependency_missing():
                 warnings.append(
@@ -113,7 +183,13 @@ def build_data_package(ticker: str, deep_research: bool = True) -> DataPackage:
     # Step 8: Deep research (DATA-06) -- optional, default enabled
     research_brief = None
     if deep_research:
-        research_brief = build_research_brief(resolved_ticker, company_name, description)
+        research_brief = _checked_source_call(
+            checkpoint,
+            build_research_brief,
+            resolved_ticker,
+            company_name,
+            description,
+        )
         if research_brief is None:
             if not os.getenv("OPENAI_API_KEY"):
                 warnings.append(

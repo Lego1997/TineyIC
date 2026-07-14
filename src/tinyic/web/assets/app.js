@@ -134,6 +134,7 @@
     firstTimestamp: null,
     lastTimestamp: null,
     terminalSeen: false,
+    reconcilingClose: false,
     currentPhase: "",
     currentTurnId: "",
     mode: "steer",
@@ -1131,10 +1132,43 @@
       }
       if (eventSource.readyState === EventSource.CLOSED) {
         setConnection("closed", "Stream closed");
+        void reconcileUnexpectedClose();
       } else {
         setConnection("connecting", "Reconnecting");
       }
     };
+  }
+
+  async function reconcileUnexpectedClose() {
+    if (state.terminalSeen || state.reconcilingClose) {
+      return;
+    }
+    state.reconcilingClose = true;
+    try {
+      // A hard worker failure can seal SSE without a terminal envelope. Meta is
+      // the authoritative lifecycle fallback because mark_run_finished() makes
+      // that state visible even when the JSONL writer stopped mid-line.
+      await loadMeta();
+      if (!state.terminalSeen && state.meta.status === "error") {
+        dom.errorBanner.hidden = false;
+        dom.errorTitle.textContent = "Run ended unexpectedly";
+        dom.errorMessage.textContent = "The event log ended without a terminal record. The recorded result is incomplete.";
+        dom.truncatedBanner.hidden = false;
+        dom.transcriptStatus.textContent = "Live run log ends mid-run";
+        setRunState("error");
+        setConnection("error", "Incomplete run");
+      } else if (!state.terminalSeen && state.meta.status === "completed") {
+        setRunState("completed");
+        setConnection("closed", "Complete");
+      }
+    } catch (_error) {
+      // The process may already be exiting. A closed transport is honest, and
+      // no state-changing control should remain enabled without an engine.
+      setRunState("error");
+      setConnection("error", "Viewer disconnected");
+    } finally {
+      state.reconcilingClose = false;
+    }
   }
 
   async function loadMeta() {
@@ -1151,7 +1185,11 @@
     if (!isRecord(meta)) {
       throw new Error("Metadata response was not an object");
     }
-    state.meta.replay = Boolean(meta.replay) || meta.status === "replay";
+    const normalizedStatus = ["live", "completed", "error", "replay"].includes(meta.status)
+      ? meta.status
+      : "connecting";
+    state.meta.status = normalizedStatus;
+    state.meta.replay = Boolean(meta.replay) || normalizedStatus === "replay";
     state.meta.seqHigh = Number.isInteger(meta.seq_high) ? meta.seq_high : 0;
     state.paused = Boolean(meta.paused);
     dom.pauseButton.textContent = state.paused ? "Resume" : "Pause";
@@ -1160,8 +1198,8 @@
     }
     if (state.meta.replay) {
       setRunState("replay");
-    } else if (["live", "completed", "error"].includes(meta.status)) {
-      setRunState(meta.status);
+    } else if (["live", "completed", "error"].includes(normalizedStatus)) {
+      setRunState(normalizedStatus);
     }
   }
 

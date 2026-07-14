@@ -281,7 +281,7 @@ class TestVoteExtraction:
     def test_extract_votes_success(self, MockExtractor):
         """extract_votes returns parsed Vote objects from extraction results."""
         mock_extractor = MockExtractor.return_value
-        mock_extractor.extract_results_from_agents.return_value = [
+        mock_extractor.extract_results_from_agent.side_effect = [
             {
                 "vote": "BUY",
                 "confidence": "HIGH",
@@ -322,7 +322,7 @@ class TestVoteExtraction:
     def test_extract_votes_fuzzy_vote(self, MockExtractor):
         """Fuzzy vote matching: 'STRONG BUY' -> BUY."""
         mock_extractor = MockExtractor.return_value
-        mock_extractor.extract_results_from_agents.return_value = [
+        mock_extractor.extract_results_from_agent.side_effect = [
             {"vote": "STRONG BUY", "confidence": "HIGH"},
             {"vote": "CONDITIONAL SELL", "confidence": "MEDIUM"},
         ]
@@ -341,7 +341,7 @@ class TestVoteExtraction:
     def test_extract_votes_extraction_failure(self, MockExtractor):
         """When extraction raises, fallback HOLD/LOW votes are returned."""
         mock_extractor = MockExtractor.return_value
-        mock_extractor.extract_results_from_agents.side_effect = Exception("API error")
+        mock_extractor.extract_results_from_agent.side_effect = Exception("API error")
 
         dp = make_mock_data_package()
         personas = [make_mock_persona("Alpha"), make_mock_persona("Beta")]
@@ -359,7 +359,7 @@ class TestVoteExtraction:
     def test_extract_votes_missing_fields(self, MockExtractor):
         """Missing fields get sensible defaults (confidence=MEDIUM, reasoning=[])."""
         mock_extractor = MockExtractor.return_value
-        mock_extractor.extract_results_from_agents.return_value = [
+        mock_extractor.extract_results_from_agent.side_effect = [
             {"vote": "BUY"},
             {"vote": "SELL"},
         ]
@@ -496,11 +496,15 @@ class TestRunDebate:
         mock_scorecard.return_value = mock_sc
 
         # Execute
-        result = run_debate("AAPL", ["warren_buffett", "benjamin_graham"])
+        result = run_debate(
+            "AAPL",
+            ["warren_buffett", "benjamin_graham"],
+            deep_research=False,
+        )
 
         # Verify all components were called
         assert mock_load.call_count == 2
-        mock_build_dp.assert_called_once_with("AAPL")
+        mock_build_dp.assert_called_once_with("AAPL", deep_research=False)
         mock_orch_cls.assert_called_once()
         mock_orch.run_debate.assert_called_once()
         mock_extract.assert_called_once_with(mock_orch)

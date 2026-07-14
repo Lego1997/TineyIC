@@ -67,6 +67,80 @@ class _LogSnapshot:
         return max((record.seq for record in self.records), default=0)
 
 
+def _decode_log_record(raw_bytes: bytes) -> _LogRecord | None:
+    """Parse one complete JSONL record without repairing or re-serializing it."""
+    if not raw_bytes.strip():
+        return None
+    try:
+        raw = raw_bytes.rstrip(b"\r").decode("utf-8")
+        envelope = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    seq = envelope.get("seq")
+    event_type = envelope.get("type")
+    if (
+        not isinstance(seq, int)
+        or isinstance(seq, bool)
+        or not isinstance(event_type, str)
+        or not event_type
+    ):
+        return None
+    return _LogRecord(seq, event_type, raw, envelope)
+
+
+class _IncrementalLogFollower:
+    """Per-SSE byte-offset follower that yields only complete UTF-8 lines.
+
+    The trailing byte buffer deliberately spans polls.  A poll can therefore
+    stop in the middle of either a JSON line or a multi-byte UTF-8 character
+    without losing or prematurely decoding data.  Only bytes appended since
+    the previous poll are read; full-file snapshots remain reserved for the
+    metadata and export endpoints.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.offset = 0
+        self.pending = b""
+        self.seq_high = 0
+        self.terminal_type: str | None = None
+
+    def read_available(self) -> list[_LogRecord]:
+        try:
+            with self.path.open("rb") as handle:
+                handle.seek(0, 2)
+                size = handle.tell()
+                if size < self.offset:
+                    # Defensive support for a truncated/replaced path.  The
+                    # handler's sequence cursor suppresses already-sent events.
+                    self.offset = 0
+                    self.pending = b""
+                    self.seq_high = 0
+                    self.terminal_type = None
+                handle.seek(self.offset)
+                chunk = handle.read()
+                self.offset = handle.tell()
+        except (FileNotFoundError, IsADirectoryError, OSError):
+            return []
+
+        if chunk:
+            self.pending += chunk
+        records: list[_LogRecord] = []
+        while b"\n" in self.pending:
+            raw_bytes, self.pending = self.pending.split(b"\n", 1)
+            record = _decode_log_record(raw_bytes)
+            if record is None:
+                continue
+            records.append(record)
+            self.seq_high = max(self.seq_high, record.seq)
+            self.terminal_type = (
+                record.type if record.type in _TERMINAL_TYPES else None
+            )
+        return records
+
+
 class _TinyICHTTPServer(ThreadingHTTPServer):
     """Thread-per-request server carrying a reference to its owning face."""
 
@@ -149,6 +223,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
             return
         if self.web.is_replay:
             self._problem(HTTPStatus.CONFLICT, "replay_read_only")
+            return
+        if self.web.run_finished():
+            self._problem(HTTPStatus.CONFLICT, "run_finished")
             return
         if path == "/api/steering":
             self._post_steering(body)
@@ -269,9 +346,11 @@ class _RequestHandler(BaseHTTPRequestHandler):
         resume_seq = self._resume_seq(query)
         if resume_seq is None:
             return
-        initial = self.web.snapshot()
-        pending = [record for record in initial.records if record.seq > resume_seq]
-        if self.web.snapshot_is_sealed(initial) and not pending:
+        follower = _IncrementalLogFollower(self.web.log_path)
+        pending = [
+            record for record in follower.read_available() if record.seq > resume_seq
+        ]
+        if self.web.log_is_sealed(follower.terminal_type) and not pending:
             self._send_bytes(HTTPStatus.NO_CONTENT, b"", content_type=None)
             return
 
@@ -288,10 +367,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
                 return
             last_write = time.monotonic()
             while not self.web.closing:
-                snapshot = self.web.snapshot()
-                for record in snapshot.records:
-                    if record.seq <= cursor:
-                        continue
+                for record in pending:
                     frame = f"id:{record.seq}\ndata:{record.raw}\n\n".encode("utf-8")
                     if not self._write_sse(frame):
                         return
@@ -300,7 +376,19 @@ class _RequestHandler(BaseHTTPRequestHandler):
                     if record.type in _TERMINAL_TYPES:
                         return
 
-                if self.web.snapshot_is_sealed(snapshot) and cursor >= snapshot.seq_high:
+                if self.web.log_is_sealed(follower.terminal_type):
+                    # ``run_done`` can become true after the previous tail
+                    # read but before this sealed-state check.  The worker
+                    # flushes its log before setting that event, so one final
+                    # read *after* observing the seal closes the race without
+                    # reverting to whole-file snapshots.
+                    pending = [
+                        record
+                        for record in follower.read_available()
+                        if record.seq > cursor
+                    ]
+                    if pending:
+                        continue
                     return
 
                 now = time.monotonic()
@@ -313,6 +401,11 @@ class _RequestHandler(BaseHTTPRequestHandler):
                     max(0.001, self.web.heartbeat_interval - (time.monotonic() - last_write)),
                 )
                 self.web.wait_for_change(wait_for)
+                pending = [
+                    record
+                    for record in follower.read_available()
+                    if record.seq > cursor
+                ]
         finally:
             self.web._sse_disconnected()
 
@@ -559,6 +652,7 @@ class WebServer:
         self._lifecycle_lock = threading.RLock()
         self._sse_condition = threading.Condition()
         self._active_sse = 0
+        self._sse_connections_seen = 0
 
     # -- public lifecycle ------------------------------------------------ #
 
@@ -641,6 +735,51 @@ class WebServer:
                 self._sse_condition.wait(remaining)
             return True
 
+    def wait_for_sse_cycle(
+        self,
+        *,
+        connect_timeout: float | None = None,
+        disconnect_timeout: float | None = None,
+    ) -> bool:
+        """Wait for at least one SSE connection and then for all to disconnect.
+
+        A replay stream can connect and finish before the CLI begins waiting,
+        so the monotonic connection counter is as important as ``active_sse``.
+        The two timeouts are intentionally independent: callers can bound the
+        browser's initial attach window without imposing a deadline on a real
+        client that remains connected while it consumes the final stream.
+        """
+        connect_deadline = (
+            None
+            if connect_timeout is None
+            else time.monotonic() + connect_timeout
+        )
+        with self._sse_condition:
+            while self._sse_connections_seen == 0:
+                remaining = (
+                    None
+                    if connect_deadline is None
+                    else connect_deadline - time.monotonic()
+                )
+                if remaining is not None and remaining <= 0:
+                    return False
+                self._sse_condition.wait(remaining)
+            disconnect_deadline = (
+                None
+                if disconnect_timeout is None
+                else time.monotonic() + disconnect_timeout
+            )
+            while self._active_sse:
+                remaining = (
+                    None
+                    if disconnect_deadline is None
+                    else disconnect_deadline - time.monotonic()
+                )
+                if remaining is not None and remaining <= 0:
+                    return False
+                self._sse_condition.wait(remaining)
+            return True
+
     def __enter__(self) -> "WebServer":
         return self.start()
 
@@ -715,30 +854,22 @@ class WebServer:
             pieces.pop()  # concurrent writer's partial trailing line
         records: list[_LogRecord] = []
         for raw_bytes in pieces:
-            if not raw_bytes.strip():
-                continue
-            try:
-                raw = raw_bytes.decode("utf-8")
-                envelope = json.loads(raw)
-            except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
-                continue
-            if not isinstance(envelope, dict):
-                continue
-            seq = envelope.get("seq")
-            event_type = envelope.get("type")
-            if (
-                not isinstance(seq, int)
-                or isinstance(seq, bool)
-                or not isinstance(event_type, str)
-                or not event_type
-            ):
-                continue
-            records.append(_LogRecord(seq, event_type, raw, envelope))
+            record = _decode_log_record(raw_bytes)
+            if record is not None:
+                records.append(record)
         terminal = records[-1].type if records and records[-1].type in _TERMINAL_TYPES else None
         return _LogSnapshot(tuple(records), terminal)
 
+    def log_is_sealed(self, terminal_type: str | None) -> bool:
+        """Return whether no further complete stream records can arrive."""
+        return bool(terminal_type) or self.is_replay or self._run_done.is_set()
+
     def snapshot_is_sealed(self, snapshot: _LogSnapshot) -> bool:
-        return bool(snapshot.terminal_type) or self.is_replay or self._run_done.is_set()
+        return self.log_is_sealed(snapshot.terminal_type)
+
+    def run_finished(self) -> bool:
+        """Return whether a live run can no longer accept mutations."""
+        return self.snapshot_is_sealed(self.snapshot())
 
     def meta(self) -> dict[str, object]:
         snapshot = self.snapshot()
@@ -824,6 +955,7 @@ class WebServer:
     def _sse_connected(self) -> None:
         with self._sse_condition:
             self._active_sse += 1
+            self._sse_connections_seen += 1
             self._sse_condition.notify_all()
 
     def _sse_disconnected(self) -> None:

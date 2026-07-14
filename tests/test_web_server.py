@@ -6,6 +6,7 @@ import http.client
 import io
 import json
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -236,6 +237,137 @@ def test_sse_heartbeat_and_live_run_finish_seam(tmp_path, servers):
     response.read()
     connection.close()
     assert server.wait_for_sse_disconnect(timeout=2)
+    status, _, body = _request(
+        server, "GET", "/api/meta", headers=_auth(server)
+    )
+    assert status == 200
+    assert json.loads(body)["status"] == "error"
+
+
+def test_sse_drains_terminal_appended_as_run_becomes_done(tmp_path, servers):
+    path = tmp_path / "run.jsonl"
+    _write_log(path, [_event(1, "debate_started", ticker="AAPL")])
+    terminal = _event(
+        2,
+        "debate_completed",
+        phases_completed=[],
+        duration_s=1,
+    )
+
+    class SealBetweenTailReadAndCheck:
+        def __init__(self) -> None:
+            self.checks = 0
+
+        def is_set(self) -> bool:
+            self.checks += 1
+            if self.checks == 2:
+                with path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(terminal, separators=(",", ":")) + "\n")
+                    handle.flush()
+                return True
+            return self.checks > 2
+
+    server = servers(path, run_done=SealBetweenTailReadAndCheck())
+    status, _, body = _request(
+        server, "GET", "/events?from_seq=0", headers=_auth(server)
+    )
+
+    assert status == 200
+    assert b"id:1\n" in body
+    assert b"id:2\n" in body
+    payloads = [
+        json.loads(line.removeprefix(b"data:"))
+        for line in body.splitlines()
+        if line.startswith(b"data:")
+    ]
+    assert payloads[-1] == terminal
+
+
+def test_sse_incremental_tail_preserves_partial_utf8_and_resume(
+    tmp_path, servers
+):
+    path = tmp_path / "run.jsonl"
+    first = json.dumps(
+        _event(1, "debate_started", ticker="AAPL"),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    second = json.dumps(
+        _event(2, "talk_delta", turn_id="t1", text="margin…safety"),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    terminal = json.dumps(
+        _event(3, "debate_completed", phases_completed=[], duration_s=1),
+        separators=(",", ":"),
+    ).encode("utf-8")
+    ellipsis = "…".encode("utf-8")
+    cut = second.index(ellipsis) + 2  # stop inside the three-byte character
+    path.write_bytes(first + b"\n" + second[:cut])
+    server = servers(path)
+
+    # Streaming must use its per-connection follower, not the whole-file
+    # snapshot used by /api/meta and exports.
+    server.snapshot = lambda: (_ for _ in ()).throw(
+        AssertionError("SSE unexpectedly read a whole-file snapshot")
+    )
+    connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=3)
+    connection.request("GET", "/events?from_seq=0", headers=_auth(server))
+    response = connection.getresponse()
+    assert response.status == 200
+    first_frame = b"".join(response.readline() for _ in range(5)).decode("utf-8")
+    assert "retry: 1500" in first_frame
+    assert "id:1\n" in first_frame
+    assert "id:2\n" not in first_frame
+
+    with path.open("ab") as handle:
+        handle.write(second[cut:] + b"\n" + terminal + b"\n")
+        handle.flush()
+    remainder = response.read().decode("utf-8")
+    connection.close()
+    assert "id:2\n" in remainder and "id:3\n" in remainder
+    payloads = [
+        json.loads(line.removeprefix("data:"))
+        for line in remainder.splitlines()
+        if line.startswith("data:")
+    ]
+    assert payloads[0]["payload"]["text"] == "margin…safety"
+
+    # The completed stream remains resumable by sequence without re-sending 1.
+    status, _, body = _request(
+        server,
+        "GET",
+        "/events?from_seq=0",
+        headers={**_auth(server), "Last-Event-ID": "1"},
+    )
+    assert status == 200
+    assert b"id:1\n" not in body
+    assert b"id:2\n" in body and b"id:3\n" in body
+
+
+def test_wait_for_sse_cycle_is_bounded_and_remembers_fast_replay(
+    tmp_path, servers
+):
+    path = tmp_path / "run.jsonl"
+    _write_log(
+        path,
+        [
+            _event(1, "debate_started", ticker="AAPL"),
+            _event(2, "debate_completed", phases_completed=[], duration_s=1),
+        ],
+    )
+    server = servers(path, replay=True)
+
+    started = time.monotonic()
+    assert server.wait_for_sse_cycle(connect_timeout=0.03) is False
+    assert time.monotonic() - started < 0.5
+
+    assert _request(
+        server, "GET", "/events?from_seq=0", headers=_auth(server)
+    )[0] == 200
+    # The request has already connected and disconnected. The monotonic
+    # connection counter keeps that fast cycle observable to the CLI.
+    assert server.wait_for_sse_cycle(connect_timeout=0.03) is True
 
 
 class FakeInbox:
@@ -297,8 +429,42 @@ def test_replay_rejects_state_changes(tmp_path, servers):
     path = tmp_path / "run.jsonl"
     _write_log(path, [])
     server = servers(path, replay=True)
-    assert _post_json(server, "/api/steering", {"type": "steer", "text": "x"})[0] == 409
-    assert _post_json(server, "/api/control", {"type": "pause"})[0] == 409
+    status, _, body = _post_json(
+        server, "/api/steering", {"type": "steer", "text": "x"}
+    )
+    assert status == 409
+    assert json.loads(body) == {"error": "replay_read_only"}
+    status, _, body = _post_json(server, "/api/control", {"type": "pause"})
+    assert status == 409
+    assert json.loads(body) == {"error": "replay_read_only"}
+
+
+@pytest.mark.parametrize("finish_mode", ["terminal", "run_done"])
+def test_finished_live_run_rejects_steering_and_control(
+    tmp_path, servers, finish_mode
+):
+    path = tmp_path / "run.jsonl"
+    events = [_event(1, "debate_started", ticker="AAPL")]
+    if finish_mode == "terminal":
+        events.append(
+            _event(2, "debate_completed", phases_completed=[], duration_s=1)
+        )
+    _write_log(path, events)
+    inbox = FakeInbox()
+    control = FakeControl()
+    server = servers(path, inbox=inbox, control=control)
+    if finish_mode == "run_done":
+        server.mark_run_finished()
+
+    for endpoint, payload in (
+        ("/api/steering", {"type": "steer", "text": "too late"}),
+        ("/api/control", {"type": "pause"}),
+    ):
+        status, _, body = _post_json(server, endpoint, payload)
+        assert status == 409
+        assert json.loads(body) == {"error": "run_finished"}
+    assert inbox.calls == []
+    assert control.calls == []
 
 
 def test_meta_and_exports_use_current_log_verbatim(tmp_path, servers):

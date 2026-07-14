@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import socket
 
 import pytest
 
@@ -99,8 +100,67 @@ def test_replay_runner_starts_read_only_face_and_honors_no_wait(
     assert called["open_browser"] is False
     assert called["browser_opener"] is opener
     assert called["started"] is True
-    assert called["disconnect_timeout"] == 1.0
+    assert called["disconnect_timeout"] is None
     assert called["shutdown_timeout"] == 1.0
+
+
+def test_replay_auto_open_waits_for_attach_then_unbounded_drain(
+    tmp_path, monkeypatch
+):
+    log = tmp_path / "run.jsonl"
+    log.write_text("", encoding="utf-8")
+    called = {}
+
+    class StubFace:
+        base_url = "http://127.0.0.1:4567"
+
+        def start(self):
+            called["started"] = True
+
+        def wait_for_sse_cycle(self, **kwargs):
+            called["cycle"] = kwargs
+            return True
+
+        def shutdown(self, *, timeout=None):
+            called["shutdown_timeout"] = timeout
+
+    monkeypatch.setattr(
+        WebFace,
+        "replay",
+        staticmethod(lambda _path, **_kwargs: StubFace()),
+    )
+    assert (
+        headless.run_replay_command(
+            str(log), no_wait=True, err=io.StringIO()
+        )
+        == 0
+    )
+    assert called["cycle"] == {
+        "connect_timeout": 5.0,
+        "disconnect_timeout": None,
+    }
+
+
+def test_replay_runner_reports_occupied_port_without_traceback(tmp_path):
+    log = tmp_path / "run.jsonl"
+    log.write_text("", encoding="utf-8")
+    err = io.StringIO()
+    with socket.create_server(("127.0.0.1", 0)) as occupied:
+        port = occupied.getsockname()[1]
+        assert (
+            headless.run_replay_command(
+                str(log),
+                port=port,
+                no_open=True,
+                no_wait=True,
+                err=err,
+            )
+            == 3
+        )
+    diagnostic = err.getvalue()
+    assert f"127.0.0.1:{port}" in diagnostic
+    assert "could not bind" in diagnostic
+    assert "Traceback" not in diagnostic
 
 
 def test_replay_runner_reports_missing_run_without_starting_server(tmp_path):
