@@ -145,6 +145,12 @@ class GrokResearchBackend(_ResponsesResearchBackend):
                     # count.  Preserve an explicit zero rather than inferring a
                     # charge from attempted output rows or returned citations.
                     return max(0, raw_count)
+            total = usage.get("num_server_side_tools_used")
+            if isinstance(total, int) and not isinstance(total, bool):
+                # Web search is the only enabled server-side tool in this
+                # request, so xAI's documented successful-tool total is also
+                # an exact billable web-search count.
+                return max(0, total)
 
         # Preserve compatibility with the pre-release response shape used by
         # older xAI clients, while preferring the documented usage nesting.

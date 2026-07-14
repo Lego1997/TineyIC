@@ -325,6 +325,31 @@ def test_grok_preserves_authoritative_zero_successful_searches() -> None:
     assert result.budget_exhausted is False
 
 
+def test_grok_uses_authoritative_success_total_when_details_are_absent() -> None:
+    wire = {
+        "output": [
+            {"type": "web_search_call", "status": "completed"},
+            {"type": "web_search_call", "status": "failed"},
+        ],
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "num_server_side_tools_used": 1,
+        },
+    }
+    http = ScriptedTransport(wire)
+    backend = GrokResearchBackend(
+        ModelBinding("grok/grok-4.5"), credentials(), http=http
+    )
+
+    result = backend.search(request(remaining_searches=1))
+
+    assert result.usage is not None
+    assert result.usage.search_calls == 1
+    assert result.usage.cost_usd == pytest.approx(0.00505)
+    assert result.budget_exhausted is True
+
+
 def test_grok_falls_back_to_successful_output_rows_when_usage_count_absent() -> None:
     wire = {
         "output": [
