@@ -403,6 +403,7 @@
     ]) {
       control.disabled = !enabled;
     }
+    dom.nextPhaseButton.disabled = !enabled || !state.paused;
     if (enabled && state.mode === "queue") {
       dom.steeringTarget.disabled = true;
     }
@@ -1151,6 +1152,8 @@
     }
     state.meta.replay = Boolean(meta.replay) || meta.status === "replay";
     state.meta.seqHigh = Number.isInteger(meta.seq_high) ? meta.seq_high : 0;
+    state.paused = Boolean(meta.paused);
+    dom.pauseButton.textContent = state.paused ? "Resume" : "Pause";
     if (meta.ticker) {
       dom.ticker.textContent = asString(meta.ticker, "—");
     }
@@ -1180,11 +1183,6 @@
       credentials: "same-origin",
       body: JSON.stringify(payload),
     });
-    if (response.status === 409) {
-      state.meta.replay = true;
-      setRunState("replay");
-      throw new Error("Controls are unavailable in replay mode");
-    }
     if (!response.ok) {
       let detail = "";
       try {
@@ -1192,6 +1190,11 @@
         detail = isRecord(responseBody) ? asString(responseBody.error || responseBody.message) : "";
       } catch (_error) {
         detail = "";
+      }
+      if (response.status === 409 && detail === "replay_read_only") {
+        state.meta.replay = true;
+        setRunState("replay");
+        throw new Error("Controls are unavailable in replay mode");
       }
       throw new Error(detail || `Request rejected (${response.status})`);
     }
@@ -1292,6 +1295,8 @@
         dom.pauseButton.textContent = state.paused ? "Resume" : "Pause";
       }
       dom.pauseButton.disabled = !controlsShouldBeEnabled(state.meta.status);
+      dom.nextPhaseButton.disabled =
+        !controlsShouldBeEnabled(state.meta.status) || !state.paused;
     });
 
     dom.nextPhaseButton.addEventListener("click", () => {

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from tinyic.debate.control import RunControl
 from tinyic.report import render_html, render_markdown
 from tinyic.tui.events import read_events
 from tinyic.web.security import CSP_POLICY, SecurityPolicy, is_json_content_type
@@ -331,6 +332,15 @@ def test_meta_and_exports_use_current_log_verbatim(tmp_path, servers):
     )
     assert status == 200
     assert body.decode("utf-8") == render_markdown(parsed)
+
+
+def test_live_meta_reports_initial_phase_pause(tmp_path, servers):
+    path = tmp_path / "run.jsonl"
+    _write_log(path, [])
+    server = servers(path, control=RunControl(paused=True))
+    status, _, body = _request(server, "GET", "/api/meta", headers=_auth(server))
+    assert status == 200
+    assert json.loads(body)["paused"] is True
 
 
 def test_browser_open_is_injected_and_server_is_loopback_only(tmp_path):

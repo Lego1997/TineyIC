@@ -763,13 +763,20 @@ class WebServer:
             status = "error"
         else:
             status = "live"
-        return {
+        meta: dict[str, object] = {
             "run_id": run_id,
             "ticker": ticker,
             "status": status,
             "seq_high": snapshot.seq_high,
             "replay": self.is_replay,
         }
+        snapshot_control = getattr(self.control, "snapshot", None)
+        if callable(snapshot_control):
+            try:
+                meta["paused"] = bool(snapshot_control().paused)
+            except Exception:
+                pass
+        return meta
 
     def load_asset(self, name: str) -> tuple[bytes, str] | None:
         loader = self._asset_loader
