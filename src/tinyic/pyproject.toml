@@ -34,10 +34,11 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["tinyic", "tinyic.auth", "tinyic.personas", "tinyic.data", "tinyic.debate", "tinyic.models", "tinyic.models.adapters", "tinyic.tui"]
+packages = ["tinyic", "tinyic.auth", "tinyic.personas", "tinyic.data", "tinyic.debate", "tinyic.models", "tinyic.models.adapters", "tinyic.tui", "tinyic.web"]
 
 [tool.setuptools.package-dir]
 tinyic = "."
 
 [tool.setuptools.package-data]
 "tinyic.personas" = ["configs/*.agent.json"]
+"tinyic.web" = ["assets/*.html", "assets/*.js", "assets/*.css"]

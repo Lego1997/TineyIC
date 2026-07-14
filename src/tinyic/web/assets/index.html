@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>TinyIC Town Hall</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body data-run-state="connecting" data-thinking="hidden">
+  <a class="skip-link" href="#transcript">Skip to debate transcript</a>
+
+  <header class="masthead">
+    <div class="masthead__brand">
+      <p class="eyebrow">TinyIC · Investment committee</p>
+      <div class="status-group" aria-live="polite">
+        <span id="replay-chip" class="state-chip state-chip--replay" hidden>Replay</span>
+        <span id="run-state" class="state-chip">Connecting</span>
+        <span id="connection-state" class="connection-state" data-connection="connecting">
+          <span class="connection-dot" aria-hidden="true"></span>
+          <span id="connection-label">Connecting</span>
+        </span>
+      </div>
+    </div>
+
+    <div class="ticker-strip">
+      <div class="ticker-lockup">
+        <h1 id="ticker">—</h1>
+        <p id="company-name">Waiting for the debate record</p>
+      </div>
+      <dl class="run-facts">
+        <div>
+          <dt>Phase</dt>
+          <dd id="phase-chip">Pending</dd>
+        </div>
+        <div>
+          <dt>Elapsed</dt>
+          <dd id="elapsed">00:00</dd>
+        </div>
+        <div>
+          <dt>Sequence</dt>
+          <dd id="sequence">0</dd>
+        </div>
+      </dl>
+      <nav class="masthead-actions" aria-label="Debate actions">
+        <button id="thinking-toggle" class="button button--quiet" type="button" aria-pressed="false">
+          Show reasoning
+        </button>
+        <a id="export-html" class="button button--quiet export-action" href="/api/result?fmt=html">Export HTML</a>
+        <a id="export-md" class="button button--quiet export-action" href="/api/result?fmt=md">Export MD</a>
+        <button id="stop-button" class="button button--danger control-action" type="button">Stop</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="town-hall-shell">
+    <article class="debate-column" aria-labelledby="transcript-title">
+      <section id="error-banner" class="notice notice--error" role="alert" hidden>
+        <p class="notice__label">Debate error</p>
+        <h2 id="error-title">The debate stopped</h2>
+        <p id="error-message"></p>
+      </section>
+
+      <section id="truncated-banner" class="notice notice--warning" role="status" hidden>
+        <p class="notice__label">Incomplete record</p>
+        <h2>Log ends mid-run</h2>
+        <p>This replay contains everything recorded, but it has no terminal event. The final verdict may be missing.</p>
+      </section>
+
+      <section id="verdict-summary" class="verdict-summary" aria-labelledby="verdict-title" hidden>
+        <p class="eyebrow">Committee conclusion</p>
+        <div class="verdict-summary__line">
+          <h2 id="verdict-title">Verdict pending</h2>
+          <p id="verdict-counts">Votes are still being assembled.</p>
+        </div>
+        <div id="verdict-copy" class="markdown verdict-summary__copy"></div>
+      </section>
+
+      <section id="data-package" class="data-package" aria-labelledby="data-package-title" hidden>
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Research brief</p>
+            <h2 id="data-package-title">Data package</h2>
+          </div>
+          <span id="data-source-count" class="count-chip"></span>
+        </div>
+        <div id="financials-summary" class="markdown data-package__summary"></div>
+        <ul id="data-sources" class="source-list"></ul>
+      </section>
+
+      <div class="transcript-heading">
+        <div>
+          <p class="eyebrow">Recorded proceedings</p>
+          <h2 id="transcript-title">Town Hall</h2>
+        </div>
+        <p id="transcript-status" class="transcript-status" aria-live="polite">Waiting for the first event…</p>
+      </div>
+
+      <div id="transcript" class="transcript">
+        <div id="transcript-empty" class="empty-state">
+          <p class="empty-state__mark" aria-hidden="true">TIC</p>
+          <p>The committee record will appear here as it is written.</p>
+        </div>
+      </div>
+    </article>
+
+    <aside class="right-rail" aria-label="Committee details and debate artifacts">
+      <section class="rail-section" aria-labelledby="committee-title">
+        <div class="rail-heading">
+          <h2 id="committee-title">Committee</h2>
+          <span id="committee-count" class="count-chip">0</span>
+        </div>
+        <ol id="committee-roster" class="committee-roster">
+          <li id="committee-empty" class="rail-empty">Roster pending</li>
+        </ol>
+      </section>
+
+      <section id="scorecard-panel" class="rail-section" aria-labelledby="scorecard-title" hidden>
+        <div class="rail-heading">
+          <h2 id="scorecard-title">Scorecard</h2>
+          <span id="scorecard-consensus" class="count-chip">Live</span>
+        </div>
+        <div class="table-scroll">
+          <table class="scorecard-table">
+            <thead>
+              <tr>
+                <th scope="col">Member</th>
+                <th scope="col">Vote</th>
+                <th scope="col">Conviction</th>
+              </tr>
+            </thead>
+            <tbody id="scorecard-body"></tbody>
+          </table>
+        </div>
+        <p id="scorecard-split" class="scorecard-split"></p>
+      </section>
+
+      <section id="memo-panel" class="rail-section" aria-labelledby="memo-title" hidden>
+        <div class="rail-heading">
+          <h2 id="memo-title">Investment memo</h2>
+          <span id="memo-count" class="count-chip">0/5</span>
+        </div>
+        <div id="memo-sections" class="memo-sections"></div>
+      </section>
+
+      <section id="disagreement-panel" class="rail-section" aria-labelledby="disagreement-title" hidden>
+        <div class="rail-heading">
+          <h2 id="disagreement-title">Dissent &amp; pressure</h2>
+          <span id="disagreement-count" class="count-chip">0</span>
+        </div>
+        <div id="disagreements" class="disagreements"></div>
+      </section>
+
+      <section id="steering-panel" class="rail-section" aria-labelledby="steering-title" hidden>
+        <div class="rail-heading">
+          <h2 id="steering-title">Steering history</h2>
+          <span id="steering-count" class="count-chip">0</span>
+        </div>
+        <ol id="steering-history" class="steering-history"></ol>
+      </section>
+    </aside>
+  </main>
+
+  <section id="composer" class="composer" aria-labelledby="composer-title">
+    <div class="composer__inner">
+      <div class="composer__heading">
+        <div>
+          <p class="eyebrow">Intervention desk</p>
+          <h2 id="composer-title">Steer the committee</h2>
+        </div>
+        <div class="control-cluster" aria-label="Debate controls">
+          <button id="pause-button" class="button button--quiet control-action" type="button">Pause</button>
+          <button id="next-phase-button" class="button button--quiet control-action" type="button">Next phase</button>
+          <button id="interrupt-button" class="button button--danger control-action" type="button">Interrupt</button>
+        </div>
+      </div>
+
+      <form id="steering-form" class="steering-form">
+        <div class="mode-toggle" role="group" aria-label="Delivery timing">
+          <button id="steer-mode" class="mode-toggle__button" type="button" aria-pressed="true">Next turn</button>
+          <button id="queue-mode" class="mode-toggle__button" type="button" aria-pressed="false">Next phase</button>
+        </div>
+        <label class="field field--target" for="steering-target">
+          <span>Target</span>
+          <select id="steering-target" name="target">
+            <option value="">Committee</option>
+          </select>
+        </label>
+        <label class="field field--message" for="steering-text">
+          <span class="sr-only">Steering message</span>
+          <textarea id="steering-text" name="text" rows="2" maxlength="4000" placeholder="Ask for a sharper risk case or a valuation anchor…" required></textarea>
+        </label>
+        <button id="send-button" class="button button--primary" type="submit">Send</button>
+      </form>
+      <p id="composer-help" class="composer__help">Enter sends · Shift+Enter adds a line</p>
+    </div>
+  </section>
+
+  <button id="jump-live" class="jump-live" type="button" hidden>Jump to live ↓</button>
+
+  <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title">
+    <form method="dialog">
+      <p class="eyebrow">Please confirm</p>
+      <h2 id="confirm-title">Confirm action</h2>
+      <p id="confirm-message"></p>
+      <div class="dialog-actions">
+        <button id="confirm-cancel" class="button button--quiet" value="cancel">Cancel</button>
+        <button id="confirm-accept" class="button button--danger" value="confirm">Confirm</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
