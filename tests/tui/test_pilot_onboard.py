@@ -178,7 +178,7 @@ async def test_a_detect_renders_lane_status_and_tinyic_diagnostics(tmp_path):
         body = app.render_body().plain
 
         # Per-provider headers and per-lane rows (mark + reason code) are drawn.
-        assert "Detected access" in body
+        assert "Providers" in body
         for label in ("OpenAI", "Anthropic", "Google", "Ollama (local)"):
             assert label in body, f"missing provider header {label!r}"
         assert "missing_credential" in body      # openai api_key (required, ✗)
@@ -195,8 +195,8 @@ async def test_a_detect_renders_lane_status_and_tinyic_diagnostics(tmp_path):
             "probe_failed",
         ]
 
-        # The overview offers the single "begin" action.
-        assert "Begin setup" in body
+        # The hub offers per-provider rows plus the closing finish row.
+        assert "Finish & review" in body
 
 
 # --------------------------------------------------------------------------- #
@@ -230,10 +230,8 @@ async def test_b_anthropic_branch_shows_policy_note(tmp_path):
     app = OnboardApp(controller, threaded_verify=False)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")  # -> CHOOSE openai
-        await pilot.pause()
-        # Skip openai (row 3) and advance to the Anthropic chooser.
-        await pilot.press("3")
+        # Jump straight to the Anthropic row on the hub (row 2) and open it.
+        await pilot.press("2")
         await pilot.press("enter")
         await pilot.pause()
         assert controller.current_plan().provider == "anthropic"
@@ -251,9 +249,7 @@ async def test_b_policy_guard_off_disables_anthropic_subscription(tmp_path):
     app = OnboardApp(controller, threaded_verify=False)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")  # CHOOSE openai
-        await pilot.pause()
-        await pilot.press("3")      # skip openai
+        await pilot.press("2")      # the Anthropic row on the hub
         await pilot.press("enter")
         await pilot.pause()
         assert controller.current_plan().provider == "anthropic"
@@ -306,15 +302,14 @@ async def test_c_device_code_flow_renders_code_url_and_completes(tmp_path):
 
         # Release the fake poll -> verify + persist the secretless OAuth marker.
         release.set()
-        # The verified lane lands on the MODEL step; esc keeps the default.
+        # The verified lane lands on the MODEL step; esc keeps the default
+        # and returns to the hub.
         await _pump_until(
             pilot, lambda: controller.screen is OnboardScreen.MODEL
         )
         await pilot.press("escape")
         await _pump_until(
-            pilot,
-            lambda: controller.current_plan() is not None
-            and controller.current_plan().provider == "anthropic",
+            pilot, lambda: controller.screen is OnboardScreen.DETECT
         )
         marker = store.get("openai:chatgpt")
         assert marker is not None
@@ -357,11 +352,12 @@ async def test_c_api_key_input_is_masked_and_persists(tmp_path):
         assert profile is not None and profile.lane is AuthLane.API_KEY
         assert store.get_auth_order("openai") == ("openai:key",)
         assert controller.plans[0].outcome == "verified"
-        # The verified lane lands on the MODEL step; esc keeps the default.
+        # The verified lane lands on the MODEL step; esc keeps the default
+        # and returns to the hub.
         assert controller.screen is OnboardScreen.MODEL
         await pilot.press("escape")
         await pilot.pause()
-        assert controller.current_plan().provider == "anthropic"
+        assert controller.screen is OnboardScreen.DETECT
 
         # The secret survives nowhere the user (or a log) could read it.
         assert secret not in app.export_screenshot()
@@ -387,7 +383,8 @@ async def test_d_failed_verify_leaves_existing_untouched_and_blocks(tmp_path):
         await pilot.pause()
         await pilot.press("enter")  # CHOOSE openai (already ok -> lands on skip)
         await pilot.pause()
-        # Move up off "Keep current setup" to the API-key branch and open it.
+        # Move up off the back row, past "model", to the API-key branch.
+        await pilot.press("up")
         await pilot.press("up")
         assert controller.current_choice().id == "api_key"
         await pilot.press("enter")
@@ -433,14 +430,10 @@ async def test_e_summary_card_shows_bindings_and_storage(tmp_path):
     app = OnboardApp(controller, threaded_verify=False)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")  # begin
+        # The hub's finish row (after the four provider rows) opens the card.
+        await pilot.press("5")
+        await pilot.press("enter")
         await pilot.pause()
-        # Every provider already works, so each defaults to "Keep current setup":
-        # a straight walk through them lands on the summary card.
-        for _ in range(4):
-            assert controller.current_choice().id == "skip"
-            await pilot.press("enter")
-            await pilot.pause()
         assert controller.screen is OnboardScreen.SUMMARY
 
         body = app.render_body().plain
@@ -558,20 +551,28 @@ async def test_g_rerun_existing_working_config_is_a_noop(tmp_path):
     app = OnboardApp(controller, threaded_verify=False)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")  # begin -> first provider CHOOSE
-        await pilot.pause()
 
-        # Each already-working provider defaults to "Keep current setup".
-        for provider in ("openai", "anthropic", "google", "ollama"):
+        # Open every already-working provider from the hub; each menu defaults
+        # to the harmless back row, so enter-enter changes nothing.
+        for index, provider in enumerate(
+            ("openai", "anthropic", "google", "ollama")
+        ):
+            await pilot.press(str(index + 1))
+            await pilot.press("enter")
+            await pilot.pause()
             assert controller.current_plan().provider == provider
             choice = controller.current_choice()
             assert choice.id == "skip"
-            assert choice.label == "Keep current setup"
+            assert choice.label == "← Back — leave unchanged"
             await pilot.press("enter")
             await pilot.pause()
+            assert controller.screen is OnboardScreen.DETECT
 
+        await pilot.press("5")      # Finish & review
+        await pilot.press("enter")
+        await pilot.pause()
         assert controller.screen is OnboardScreen.SUMMARY
-        assert [p.outcome for p in controller.plans] == ["kept"] * 4
+        assert [p.outcome for p in controller.plans] == [None] * 4
 
     # A no-op: verify never fired and the store is byte-for-byte unchanged.
     assert verify_calls == []

@@ -1187,7 +1187,7 @@ def _select(controller, choice_id):
 def test_wizard_offers_the_grok_subscription_branch(tmp_path):
     controller = _wizard(tmp_path, report=_grok_report(subscription_ok=True))
     controller.activate()  # DETECT -> CHOOSE (grok is the only plan)
-    assert _choice_ids(controller) == ["subscription", "api_key", "skip"]
+    assert _choice_ids(controller) == ["subscription", "api_key", "model", "skip"]
     subscription = controller.choices()[0]
     assert subscription.enabled
     assert "policy" in (subscription.note or "").casefold()

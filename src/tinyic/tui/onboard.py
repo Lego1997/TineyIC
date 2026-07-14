@@ -500,6 +500,7 @@ class OnboardController:
                 plan.outcome,
                 plan.persisted_ref,
                 plan.persisted_lane,
+                plan.chosen_model,
             )
             for plan in self.plans
         }
@@ -517,7 +518,12 @@ class OnboardController:
         for provider in self._ordered_providers(by_provider):
             plan = ProviderPlan(provider=provider, lanes=by_provider[provider])
             if provider in prior:
-                plan.outcome, plan.persisted_ref, plan.persisted_lane = prior[provider]
+                (
+                    plan.outcome,
+                    plan.persisted_ref,
+                    plan.persisted_lane,
+                    plan.chosen_model,
+                ) = prior[provider]
             plans.append(plan)
         self.plans = plans
         self.diagnostics = diagnostics
@@ -558,8 +564,26 @@ class OnboardController:
     def choices(self) -> list[Choice]:
         """The selectable rows for the current menu screen (empty on input screens)."""
         if self.screen is OnboardScreen.DETECT:
-            label = "Begin setup →" if self.plans else "No providers to configure →"
-            return [Choice("begin", label)]
+            # The hub: every provider is a selectable row (enter opens that
+            # provider's lane/model menu), plus a closing "finish" row.
+            rows = [
+                Choice(
+                    f"provider:{plan.provider}",
+                    provider_label(plan.provider),
+                    detail=(
+                        "Set up the subscription or API key, or pick the model."
+                    ),
+                )
+                for plan in self.plans
+            ]
+            rows.append(
+                Choice(
+                    "finish",
+                    "Finish & review →",
+                    detail="Review the committee bindings and leave the wizard.",
+                )
+            )
+            return rows
         if self.screen is OnboardScreen.CHOOSE:
             plan = self.current_plan()
             return self._choose_choices(plan) if plan else []
@@ -587,6 +611,7 @@ class OnboardController:
             order.append("api_key")
         if "local" in plan.lanes:
             order.append("local")
+        order.append("model")
         order.append("skip")
         return order
 
@@ -638,13 +663,24 @@ class OnboardController:
                         detail=best_for(plan.provider, "local"),
                     )
                 )
+            elif branch == "model":
+                current = self.committee_default_model()
+                choices.append(
+                    Choice(
+                        "model",
+                        "Choose the model…",
+                        detail=(
+                            "Pick this provider's model as the committee "
+                            f"default (current: {current or 'built-in'})."
+                        ),
+                    )
+                )
             else:  # skip
-                label = "Keep current setup" if plan.already_ok else "Skip this provider"
                 choices.append(
                     Choice(
                         "skip",
-                        label,
-                        detail="Leave this provider unchanged. Skipping is fine.",
+                        "← Back — leave unchanged",
+                        detail="Return to the overview without changing this provider.",
                     )
                 )
         return choices
@@ -757,7 +793,7 @@ class OnboardController:
                     ),
                 )
             )
-        current = self._committee_default_model()
+        current = self.committee_default_model()
         choices.append(
             Choice(
                 "keep_default",
@@ -791,11 +827,20 @@ class OnboardController:
         * ``("exit", None)`` — leave the wizard.
         """
         if self.screen is OnboardScreen.DETECT:
-            if not self.plans:
+            choice = self.current_choice()
+            if choice is None or choice.id == "finish":
                 self.screen = OnboardScreen.SUMMARY
                 self._build_summary()
-            else:
-                self._cursor = 0
+            elif choice.id.startswith("provider:"):
+                provider = choice.id.partition(":")[2]
+                self._cursor = next(
+                    (
+                        index
+                        for index, plan in enumerate(self.plans)
+                        if plan.provider == provider
+                    ),
+                    self._cursor,
+                )
                 self._enter_choose()
             return ("navigate", None)
         if self.screen is OnboardScreen.CHOOSE:
@@ -824,8 +869,9 @@ class OnboardController:
             return ("navigate", None)
         plan.error = None
         if choice.id == "skip":
-            plan.outcome = "kept" if plan.already_ok else "skipped"
-            self._advance()
+            self._return_to_hub()
+        elif choice.id == "model":
+            self._enter_model(plan)
         elif choice.id == "api_key":
             self.screen = OnboardScreen.CONNECT_KEY
         elif choice.id in {"subscription", "local"}:
@@ -881,7 +927,7 @@ class OnboardController:
             # exactly like a verify tail.
             return ("verify", self.refresh_model_catalog)
         if choice.id == "keep_default":
-            self._advance()
+            self._return_to_hub()
             return ("navigate", None)
         if choice.id.startswith("model:"):
             self.choose_model(choice.id.partition(":")[2])
@@ -893,17 +939,11 @@ class OnboardController:
         if screen is OnboardScreen.DETECT:
             return False
         if screen is OnboardScreen.MODEL:
-            # The lane is already verified and persisted; escaping the model
-            # pick keeps the current committee default and moves on.
-            self._advance()
+            # Escaping the model pick keeps the current committee default.
+            self._return_to_hub()
             return True
         if screen is OnboardScreen.CHOOSE:
-            if self._cursor > 0:
-                self._cursor -= 1
-                self._enter_choose()
-            else:
-                self.screen = OnboardScreen.DETECT
-                self._highlight = 0
+            self._return_to_hub()
             return True
         if screen is OnboardScreen.CONNECT_KEY:
             self.screen = OnboardScreen.CHOOSE
@@ -941,13 +981,28 @@ class OnboardController:
                     return
         self._highlight = 0
 
-    def _advance(self) -> None:
-        self._cursor += 1
-        if self._cursor >= len(self.plans):
-            self.screen = OnboardScreen.SUMMARY
-            self._build_summary()
-        else:
-            self._enter_choose()
+    def _return_to_hub(self) -> None:
+        """Land back on the DETECT hub with refreshed statuses.
+
+        The hub replaces the old linear provider walk: every completed (or
+        abandoned) per-provider action returns here, highlight kept on the
+        provider that was just open so repeat adjustments stay one keypress
+        away.
+        """
+        provider = (
+            self.plans[self._cursor].provider
+            if 0 <= self._cursor < len(self.plans)
+            else None
+        )
+        self.refresh_detection()
+        self.screen = OnboardScreen.DETECT
+        self._sub_stage = "menu"
+        self._highlight = 0
+        if provider is not None:
+            for index, plan in enumerate(self.plans):
+                if plan.provider == provider:
+                    self._highlight = index
+                    break
 
     # -- CONNECT / VERIFY: the credential-collecting actions -------------- #
 
@@ -1193,7 +1248,7 @@ class OnboardController:
             (catalog,) = self._catalog().snapshot(plan.provider, refresh=False)
         except Exception:
             # No catalog for this provider — skip the step, never block setup.
-            self._advance()
+            self._return_to_hub()
             return
         self._model_listings = tuple(catalog.listings)
         self._model_warning = None
@@ -1239,10 +1294,10 @@ class OnboardController:
             return False
         plan.chosen_model = model_ref
         plan.error = None
-        self._advance()
+        self._return_to_hub()
         return True
 
-    def _committee_default_model(self) -> str | None:
+    def committee_default_model(self) -> str | None:
         try:
             return self._load_default_preset().default.model
         except Exception:
@@ -1529,22 +1584,32 @@ class OnboardApp(App):
         dark = theme.is_dark(self)
         dim = theme.muted(dark=dark)
         warning = theme.semantic("warning", dark=dark)
+        controller = self.controller
         text = Text()
-        text.append("Detected access\n", style="bold underline")
+        text.append("Providers\n", style="bold underline")
         text.append(
-            "What already works on this machine — env keys, a Codex sign-in, a "
-            "Claude Code login, a local Ollama.\n\n",
+            "Pick a provider and press enter to set up its subscription or "
+            "API key, or to choose its model. Every change lands back here "
+            "with fresh statuses.\n\n",
             style=dim,
         )
-        if not self.controller.plans:
+        default = controller.committee_default_model()
+        text.append("Committee default model: ", style=dim)
+        text.append(f"{default or 'built-in'}\n\n", style=theme.accent(dark=dark))
+        if not controller.plans:
             text.append("No configurable providers were found.\n", style=warning)
-        for plan in self.controller.plans:
-            text.append(f"{provider_label(plan.provider)}\n", style="bold")
+        highlight = controller.highlight
+        for index, plan in enumerate(controller.plans):
+            selected = index == highlight
+            marker = "▶ " if selected else "  "
+            style = "bold reverse" if selected else "bold"
+            text.append(f"{marker}{provider_label(plan.provider)}\n", style=style)
             for lane in sorted(plan.lanes):
                 text.append_text(self._lane_line(plan.lanes[lane]))
+            text.append_text(self._model_line(plan))
             if plan.outcome == "verified":
                 text.append(
-                    "   • configured this session ✓\n",
+                    "     • configured this session ✓\n",
                     style=theme.semantic("success", dark=dark),
                 )
         if self.controller.diagnostics:
@@ -1553,8 +1618,37 @@ class OnboardApp(App):
                 text.append(
                     f"   ⚠ {diag.reason_code} — {diag.message}\n", style=warning
                 )
+        finish_selected = highlight >= len(controller.plans)
+        marker = "▶ " if finish_selected else "  "
+        text.append(
+            f"\n{marker}Finish & review →\n",
+            style="bold reverse" if finish_selected else "bold",
+        )
+        return text
+
+    def _model_line(self, plan: ProviderPlan) -> Text:
+        """One dim per-provider row naming the model its lanes would serve."""
+        dark = theme.is_dark(self)
+        model_ref = plan.chosen_model or next(
+            (
+                plan.lanes[lane].model_ref
+                for lane in sorted(plan.lanes)
+                if plan.lanes[lane].model_ref
+            ),
+            None,
+        )
+        text = Text()
+        if not model_ref:
+            return text
+        text.append("   · ", style=theme.muted(dark=dark))
+        text.append(f"{'model':<13}", style=theme.accent(dark=dark))
+        text.append(model_ref, style=theme.muted(dark=dark))
+        if plan.chosen_model:
+            text.append(
+                "  (picked this session ✓)",
+                style=theme.semantic("success", dark=dark),
+            )
         text.append("\n")
-        text.append_text(self._menu_lines())
         return text
 
     def _lane_line(self, lane: LaneStatus) -> Text:
@@ -1793,7 +1887,7 @@ class OnboardApp(App):
             return text
         text.append("↑↓ move", style="bold")
         if screen is OnboardScreen.DETECT:
-            text.append("  ·  enter begin · d theme · q quit", style=dim)
+            text.append("  ·  enter configure · d theme · q quit", style=dim)
         elif screen is OnboardScreen.MODEL:
             text.append(
                 "  ·  enter choose · esc keep current · d theme · q quit",

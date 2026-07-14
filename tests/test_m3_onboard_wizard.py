@@ -147,6 +147,12 @@ def _select(controller: OnboardController, choice_id: str) -> None:
     controller.select_index(_ids(controller).index(choice_id))
 
 
+def _open(controller: OnboardController, provider: str) -> None:
+    """Hub navigation: select a provider row on DETECT and enter its menu."""
+    _select(controller, f"provider:{provider}")
+    controller.activate()
+
+
 class FakeLoginSession:
     """A context-managed stand-in for ``CodexLoginSession`` (start/wait)."""
 
@@ -227,9 +233,9 @@ def test_detection_lanes_carry_status(tmp_path):
 
 def test_choose_offers_two_branches_with_best_for_copy(tmp_path):
     controller = _controller(tmp_path)
-    controller.activate()  # begin -> openai CHOOSE
+    controller.activate()  # highlighted provider row (openai) -> CHOOSE
     assert controller.screen is OnboardScreen.CHOOSE
-    assert _ids(controller) == ["subscription", "api_key", "skip"]
+    assert _ids(controller) == ["subscription", "api_key", "model", "skip"]
     sub = controller.choices()[0]
     key = controller.choices()[1]
     assert sub.label == "Use your subscription"
@@ -240,9 +246,7 @@ def test_choose_offers_two_branches_with_best_for_copy(tmp_path):
 
 def test_anthropic_subscription_shows_policy_note(tmp_path):
     controller = _controller(tmp_path)
-    controller.activate()  # openai
-    _select(controller, "skip")
-    controller.activate()  # -> anthropic CHOOSE
+    _open(controller, "anthropic")
     assert controller.current_plan().provider == "anthropic"
     sub = controller.choices()[0]
     assert sub.id == "subscription" and sub.enabled is True
@@ -252,9 +256,7 @@ def test_anthropic_subscription_shows_policy_note(tmp_path):
 
 def test_policy_guard_off_disables_anthropic_subscription(tmp_path):
     controller = _controller(tmp_path, policy_guard=False)
-    controller.activate()  # openai
-    _select(controller, "skip")
-    controller.activate()  # anthropic
+    _open(controller, "anthropic")
     sub = controller.choices()[0]
     assert sub.id == "subscription"
     assert sub.enabled is False
@@ -269,20 +271,77 @@ def test_policy_guard_off_disables_anthropic_subscription(tmp_path):
     assert controller.current_plan().error != sub.disabled_reason
 
 
-def test_skip_is_first_class(tmp_path):
+def test_skip_returns_to_hub_unchanged(tmp_path):
+    # The hub's "back" row is first-class: it leaves the provider untouched and
+    # lands back on the overview with the same provider highlighted.
     controller = _controller(tmp_path)
-    controller.activate()  # openai
+    _open(controller, "openai")
     _select(controller, "skip")
     controller.activate()
-    assert controller.plans[0].outcome == "skipped"
-    assert controller.current_plan().provider == "anthropic"
+    assert controller.screen is OnboardScreen.DETECT
+    assert controller.plans[0].outcome is None
+    assert controller.current_choice().id == "provider:openai"
+
+
+def test_hub_lists_provider_rows_and_opens_any_provider_directly(tmp_path):
+    controller = _controller(tmp_path)
+    assert _ids(controller) == [
+        "provider:openai",
+        "provider:anthropic",
+        "provider:google",
+        "provider:ollama",
+        "finish",
+    ]
+    # Any provider is reachable directly — no linear walk.
+    _open(controller, "google")
+    assert controller.screen is OnboardScreen.CHOOSE
+    assert controller.current_plan().provider == "google"
+    # Escape lands back on the hub with the same provider highlighted.
+    assert controller.back() is True
+    assert controller.screen is OnboardScreen.DETECT
+    assert controller.current_choice().id == "provider:google"
+
+
+def test_hub_model_row_opens_the_picker_without_a_lane_setup(tmp_path):
+    # The model is adjustable per provider straight from its menu, without
+    # first connecting a lane; escaping keeps the current committee default.
+    controller = _controller(tmp_path)
+    _open(controller, "openai")
+    assert "model" in _ids(controller)
+    _select(controller, "model")
+    controller.activate()
+    assert controller.screen is OnboardScreen.MODEL
+    assert controller.back() is True
+    assert controller.screen is OnboardScreen.DETECT
+    assert controller.plans[0].chosen_model is None
+
+
+def test_hub_return_refreshes_detection(tmp_path):
+    calls: list[int] = []
+    report = _default_report()
+
+    def factory():
+        calls.append(1)
+        return report
+
+    controller = OnboardController(
+        manager=_manager(_store(tmp_path)),
+        report_factory=factory,
+        verify_probe=lambda _b, _c: "ok",
+    )
+    controller.start()
+    assert len(calls) == 1
+    _open(controller, "openai")
+    _select(controller, "skip")
+    controller.activate()  # back to the hub
+    assert len(calls) == 2  # statuses were re-detected on the way back
 
 
 # --------------------------------------------------------------------------- #
 # CONNECT + VERIFY — API key
 # --------------------------------------------------------------------------- #
 
-def test_api_key_success_verifies_persists_and_advances(tmp_path):
+def test_api_key_success_verifies_persists_and_returns_to_hub(tmp_path):
     seen = []
 
     def verify(binding, candidate):
@@ -299,17 +358,20 @@ def test_api_key_success_verifies_persists_and_advances(tmp_path):
     assert controller.submit_key("sk-live-secret") is True
     # verify saw the ephemeral api-key candidate for this lane
     assert seen == [("openai", "openai:key", "api_key")]
-    # persisted through the store, first in auth_order, advanced to next provider
+    # persisted through the store, first in auth_order
     profile = store.get("openai:key")
     assert profile is not None and profile.lane is AuthLane.API_KEY
     assert store.get_auth_order("openai") == ("openai:key",)
     assert controller.plans[0].outcome == "verified"
     assert controller.plans[0].persisted_lane == "api_key"
-    # A verified lane earns the MODEL step; keeping the default advances.
+    # A verified lane earns the MODEL step; keeping the default returns to
+    # the hub with the just-configured provider still highlighted.
     assert controller.screen is OnboardScreen.MODEL
     _select(controller, "keep_default")
     controller.activate()
-    assert controller.current_plan().provider == "anthropic"
+    assert controller.screen is OnboardScreen.DETECT
+    assert controller.current_choice().id == "provider:openai"
+    assert controller.plans[0].outcome == "verified"
 
 
 def test_api_key_empty_is_rejected_without_verify(tmp_path):
@@ -402,9 +464,7 @@ def test_readthrough_persists_secretless_marker(tmp_path):
 def test_anthropic_runtime_persists_secretless_marker(tmp_path):
     store = _store(tmp_path)
     controller = _controller(tmp_path, manager=_manager(store))
-    controller.activate()  # openai
-    _select(controller, "skip")
-    controller.activate()  # anthropic CHOOSE
+    _open(controller, "anthropic")
     _select(controller, "subscription")
     controller.activate()  # CONNECT_SUB
     assert _ids(controller) == ["runtime", "back"]
@@ -420,12 +480,8 @@ def test_ollama_verify_persists_nothing(tmp_path):
     controller = _controller(
         tmp_path, manager=_manager(store), verify=lambda b, c: calls.append(c) or "ok"
     )
-    # advance to ollama by skipping openai, anthropic, google
-    controller.activate()  # begin -> openai CHOOSE
-    for provider in ("openai", "anthropic", "google"):
-        assert controller.current_plan().provider == provider
-        _select(controller, "skip")
-        controller.activate()
+    # jump straight to ollama from the hub
+    _open(controller, "ollama")
     plan = controller.current_plan()
     assert plan.provider == "ollama"
     _select(controller, "local")
@@ -436,11 +492,12 @@ def test_ollama_verify_persists_nothing(tmp_path):
     assert calls == [None]
     assert store.list(provider="ollama") == ()
     assert plan.outcome == "verified"
-    # The verified local lane still gets a MODEL step before the summary.
+    # The verified local lane still gets a MODEL step, then the hub.
     assert controller.screen is OnboardScreen.MODEL
     _select(controller, "keep_default")
     controller.activate()
-    assert controller.screen is OnboardScreen.SUMMARY
+    assert controller.screen is OnboardScreen.DETECT
+    assert controller.current_choice().id == "provider:ollama"
 
 
 # --------------------------------------------------------------------------- #
@@ -473,7 +530,8 @@ def test_device_code_login_renders_code_and_persists_oauth_on_success(tmp_path):
     assert controller.screen is OnboardScreen.MODEL
     _select(controller, "keep_default")
     controller.activate()
-    assert controller.current_plan().provider == "anthropic"
+    assert controller.screen is OnboardScreen.DETECT
+    assert controller.current_choice().id == "provider:openai"
 
 
 def test_device_code_login_failure_sets_error_and_persists_nothing(tmp_path):
@@ -549,12 +607,15 @@ def test_escape_cancels_device_wait_and_closes_session(tmp_path):
 def test_idempotent_rerun_defaults_to_keep_current(tmp_path):
     controller = _controller(tmp_path, report=_default_report(openai_key_ok=True))
     controller.activate()  # -> openai CHOOSE
-    # already working -> highlight lands on "keep current", not a reconfigure
+    # already working -> highlight lands on the harmless back row, not a
+    # reconfigure, so enter-enter on a working provider changes nothing.
     choices = controller.choices()
     assert choices[controller.highlight].id == "skip"
-    assert choices[controller.highlight].label == "Keep current setup"
-    controller.activate()  # keep
-    assert controller.plans[0].outcome == "kept"
+    assert choices[controller.highlight].label == "← Back — leave unchanged"
+    controller.activate()  # back to the hub
+    assert controller.screen is OnboardScreen.DETECT
+    assert controller.plans[0].outcome is None
+    assert controller.plans[0].already_ok is True
 
 
 # --------------------------------------------------------------------------- #
@@ -576,11 +637,9 @@ def test_summary_resolves_persona_bindings_backend_and_hint(tmp_path):
         config_path=str(config),
         report=_default_report(openai_key_ok=True),
     )
-    # skip all four providers -> SUMMARY
-    controller.activate()  # begin
-    for _ in range(4):
-        _select(controller, "skip")
-        controller.activate()
+    # the hub's finish row leads straight to the SUMMARY
+    _select(controller, "finish")
+    controller.activate()
     assert controller.screen is OnboardScreen.SUMMARY
     summary = controller.summary
     assert summary is not None
@@ -607,10 +666,8 @@ def test_summary_marks_unresolved_when_no_credential(tmp_path):
         manager=_manager(_store(tmp_path)),
         config_path=str(config),
     )
-    controller.activate()  # begin
-    for _ in range(4):
-        _select(controller, "skip")
-        controller.activate()
+    _select(controller, "finish")
+    controller.activate()
     row = controller.summary.rows[0]
     assert row.lane is None
     assert row.reason == "missing_credential"
@@ -652,9 +709,10 @@ async def test_app_mounts_and_renders_detection(tmp_path):
     async with app.run_test() as pilot:
         await pilot.pause()
         body = app.render_body().plain
-        assert "Detected access" in body
+        assert "Providers" in body
         assert "OpenAI" in body
-        # enter begins setup -> CHOOSE
+        assert "Finish & review" in body
+        # enter on the highlighted provider row -> CHOOSE
         await pilot.press("enter")
         await pilot.pause()
         assert controller.screen is OnboardScreen.CHOOSE
@@ -678,11 +736,12 @@ async def test_app_api_key_flow_persists_via_pilot(tmp_path):
         await pilot.press("enter")
         await pilot.pause()
         assert store.get("openai:key") is not None
-        # The verified lane lands on the MODEL step; esc keeps the default.
+        # The verified lane lands on the MODEL step; esc keeps the default
+        # and returns to the hub.
         assert controller.screen is OnboardScreen.MODEL
         await pilot.press("escape")
         await pilot.pause()
-        assert controller.current_plan().provider == "anthropic"
+        assert controller.screen is OnboardScreen.DETECT
 
 
 async def test_app_escape_exits_from_detect(tmp_path):

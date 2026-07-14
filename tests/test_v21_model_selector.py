@@ -763,7 +763,7 @@ def test_verified_lane_enters_model_step_with_catalog_rows(tmp_path):
     assert "context 1,050,000" in detail and "thinking" in detail
 
 
-def test_choose_model_persists_overlay_and_advances(tmp_path):
+def test_choose_model_persists_overlay_and_returns_to_hub(tmp_path):
     config = _write(
         tmp_path / "tinyic.toml",
         '[presets.default]\nmodel = "openai/gpt-5.2"\nthinking = "high"\n',
@@ -778,7 +778,7 @@ def test_choose_model_persists_overlay_and_advances(tmp_path):
     _select(controller, "model:gpt-5.6-sol")
     controller.activate()
     assert controller.plans[0].chosen_model == "openai/gpt-5.6-sol"
-    assert controller.current_plan().provider == "anthropic"
+    assert controller.screen is OnboardScreen.DETECT
     overlay = user_config_path()
     raw = tomllib.loads(overlay.read_text(encoding="utf-8"))
     assert raw["presets"]["default"]["model"] == "openai/gpt-5.6-sol"
@@ -788,7 +788,7 @@ def test_choose_model_persists_overlay_and_advances(tmp_path):
     assert load_preset(None, str(config)).default.model == "openai/gpt-5.6-sol"
 
 
-def test_escape_on_model_step_keeps_default_and_advances(tmp_path):
+def test_escape_on_model_step_keeps_default_and_returns_to_hub(tmp_path):
     controller = _controller(tmp_path, catalog=FakeCatalog())
     controller.activate()
     _select(controller, "api_key")
@@ -796,7 +796,7 @@ def test_escape_on_model_step_keeps_default_and_advances(tmp_path):
     assert controller.submit_key("sk-model-step") is True
     assert controller.screen is OnboardScreen.MODEL
     assert controller.back() is True
-    assert controller.current_plan().provider == "anthropic"
+    assert controller.screen is OnboardScreen.DETECT
     assert controller.plans[0].chosen_model is None
     assert not user_config_path().exists()
 
@@ -886,9 +886,9 @@ def test_summary_shows_default_model_and_chosen_model(tmp_path):
     assert controller.submit_key("sk-model-step") is True
     _select(controller, "model:gpt-5.6-sol")
     controller.activate()
-    while controller.screen is OnboardScreen.CHOOSE:
-        _select(controller, "skip")
-        controller.activate()
+    assert controller.screen is OnboardScreen.DETECT
+    _select(controller, "finish")
+    controller.activate()
     assert controller.screen is OnboardScreen.SUMMARY
     assert controller.summary is not None
     assert controller.summary.default_model == "openai/gpt-5.6-sol"
