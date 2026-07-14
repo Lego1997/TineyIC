@@ -232,7 +232,7 @@ def test_persona_parser_wires_all_subcommands_and_provider_aware_default():
             "research",
             "Ada Value",
             "--model",
-            "google/gemini-3.5-flash",
+            "google/gemini-2.5-flash",
             "--slug",
             "ada_sim",
             "--max-searches",
@@ -244,7 +244,7 @@ def test_persona_parser_wires_all_subcommands_and_provider_aware_default():
     assert research.command == "persona"
     assert research.persona_command == "research"
     assert research.name == "Ada Value"
-    assert research.model == "google/gemini-3.5-flash"
+    assert research.model == "google/gemini-2.5-flash"
     assert research.slug == "ada_sim"
     assert research.max_searches == 4
     assert research.yes and research.force
@@ -440,7 +440,9 @@ def test_research_explicit_model_cost_gate_progress_and_success_summary():
 
     def make_backend(binding, credentials, **kwargs):
         seen.update(binding=binding, credentials=credentials, kwargs=kwargs)
-        return FakeBackend(binding.model_ref)
+        backend = FakeBackend(binding.model_ref)
+        backend.provider = binding.provider
+        return backend
 
     out = io.StringIO()
     err = io.StringIO()
@@ -448,7 +450,7 @@ def test_research_explicit_model_cost_gate_progress_and_success_summary():
     assert (
         research_persona(
             "Ada Value",
-            model="google/gemini-3.5-flash",
+            model="google/gemini-2.5-flash",
             slug="ada_sim",
             max_searches=4,
             yes=True,
@@ -461,15 +463,55 @@ def test_research_explicit_model_cost_gate_progress_and_success_summary():
         == 0
     )
 
-    assert seen["binding"].model_ref == "google/gemini-3.5-flash"
+    assert seen["binding"].model_ref == "google/gemini-2.5-flash"
     assert seen["credentials"] is credential
     assert seen["kwargs"] == {"max_searches": 4}
     assert RecordingFactory.request.max_searches == 4
     assert RecordingFactory.backend.closed is True
-    assert "Estimated cost:" in err.getvalue()
+    assert "Estimated cost: $0.2004 list price" in err.getvalue()
     assert "tinyic persona: planning" in err.getvalue()
     assert "Created persona 'ada_sim'" in out.getvalue()
     assert "actual cost $0.1234" in out.getvalue()
+
+
+def test_public_cli_rejects_gemini_3_before_credentials_cost_or_network(
+    tmp_path, monkeypatch, capsys
+):
+    from tinyic.auth import AuthManager
+
+    class ForbiddenCredentials:
+        def candidates(self, _binding):
+            raise AssertionError("ineligible model must fail before credentials")
+
+        def __call__(self, _ref):
+            raise AssertionError("ineligible model must fail before credentials")
+
+    monkeypatch.setenv("TINYIC_PERSONAS_DIR", str(tmp_path / "personas"))
+    monkeypatch.setattr(
+        AuthManager,
+        "from_config",
+        staticmethod(lambda: ForbiddenCredentials()),
+    )
+
+    assert (
+        main(
+            [
+                "persona",
+                "research",
+                "Gemini Three Budget",
+                "--model",
+                "google/gemini-3.5-flash",
+                "--yes",
+            ]
+        )
+        == 3
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "model_not_search_budget_capable" in captured.err
+    assert "google/gemini-2.5-flash" in captured.err
+    assert "Estimated cost:" not in captured.err
 
 
 def test_research_cost_gate_prices_full_declared_search_cap():
@@ -495,6 +537,37 @@ def test_research_cost_gate_prices_full_declared_search_cap():
     )
 
     assert "12 searches + 7 synthesis/verification calls" in err.getvalue()
+    assert RecordingFactory.request.max_searches == 12
+
+
+def test_google_cost_gate_prices_only_possible_grounded_prompts():
+    def make_backend(binding, _credentials, **_kwargs):
+        backend = FakeBackend(binding.model_ref)
+        backend.provider = binding.provider
+        return backend
+
+    err = io.StringIO()
+    assert (
+        research_persona(
+            "Google Grounded Estimate",
+            model="google/gemini-2.5-flash",
+            slug="google_grounded_estimate",
+            max_searches=12,
+            yes=True,
+            force=True,
+            out=io.StringIO(),
+            err=err,
+            credentials=object(),
+            backend_maker=make_backend,
+            factory_class=RecordingFactory,
+        )
+        == 0
+    )
+
+    # The plan has six grounded requests; internal queries do not create more
+    # Gemini 2.5 billing units.
+    assert "Estimated cost: $0.2766 list price" in err.getvalue()
+    assert "6 searches + 7 synthesis/verification calls" in err.getvalue()
     assert RecordingFactory.request.max_searches == 12
 
 
@@ -577,7 +650,7 @@ def test_auto_selection_includes_recommended_fallback_for_every_provider():
     assert by_provider == {
         "openai": "openai/gpt-5.6-terra",
         "grok": "grok/grok-4.5",
-        "google": "google/gemini-3.5-flash",
+        "google": "google/gemini-2.5-flash",
         "kimi": "kimi/kimi-k2.6",
     }
     assert seen["kwargs"] == {}
@@ -611,8 +684,33 @@ def test_auto_selection_uses_available_fallback_in_fixed_provider_priority():
         == 0
     )
     assert RecordingFactory.backend.provider == "google"
-    assert RecordingFactory.backend.model_ref == "google/gemini-3.5-flash"
+    assert RecordingFactory.backend.model_ref == "google/gemini-2.5-flash"
     assert RecordingFactory.request.max_searches == 12
+
+
+def test_auto_selection_skips_configured_gemini_3_for_safe_google_fallback():
+    preset = Preset(
+        "google_debate",
+        default=BindingSpec(model="google/gemini-3.5-flash", thinking="medium"),
+    )
+    credentials = StaticCredentialProvider({"GEMINI_API_KEY": "offline-test-key"})
+
+    assert (
+        research_persona(
+            "Ada Value",
+            slug="ada_safe_google",
+            yes=True,
+            credentials=credentials,
+            preset_loader=lambda: preset,
+            factory_class=RecordingFactory,
+            out=io.StringIO(),
+            err=io.StringIO(),
+        )
+        == 0
+    )
+
+    assert RecordingFactory.backend.provider == "google"
+    assert RecordingFactory.backend.model_ref == "google/gemini-2.5-flash"
 
 
 def test_no_search_lane_returns_onboarding_guidance_and_exit_three():

@@ -41,11 +41,13 @@ PURPOSE_SEARCH = "search"
 PURPOSE_SYNTHESIS = "synthesis"
 PURPOSE_VERIFICATION = "verification"
 
-# Frozen provider tool prices from plan.md §2.2, USD per invocation.
+# Provider search prices used by persona research, USD per billable unit.
+# Gemini 2.5 Search grounding is billed per grounded model prompt rather than
+# per internal query, using Google's published worst-case $35 / 1,000 prompts.
 SEARCH_TOOL_FEES_USD: Mapping[str, float] = {
     "openai": 0.010,
     "grok": 0.005,
-    "google": 0.014,
+    "google": 0.035,
     "kimi": 0.005,
 }
 
@@ -55,6 +57,7 @@ _RESERVED_BODY_PARAMS = frozenset(
         "input",
         "messages",
         "max_tool_calls",
+        "max_turns",
         "model",
         "parallel_tool_calls",
         "stream",
@@ -71,6 +74,12 @@ class ResearchResponseError(InvalidRequestError):
     """A provider returned a successful HTTP response with unusable JSON."""
 
     reason_code = "invalid_research_response"
+
+
+class UnsupportedResearchModelError(ValueError):
+    """A provider model cannot honor persona research's run-wide budget."""
+
+    reason_code = "model_not_search_budget_capable"
 
 
 @dataclass(frozen=True)
@@ -609,6 +618,7 @@ __all__ = [
     "PURPOSE_VERIFICATION",
     "ResearchResponseError",
     "SEARCH_TOOL_FEES_USD",
+    "UnsupportedResearchModelError",
     "UsageNumbers",
     "annotation_excerpt",
     "response_text_and_annotations",

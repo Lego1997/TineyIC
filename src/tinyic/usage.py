@@ -15,9 +15,10 @@ COUNTER_FIELDS = (
 )
 
 # Static application data, intentionally not fetched during an offline run.
-# One row per provider-catalog model (tinyic.models.registry), keyed by
-# model_ref, USD per million tokens. Local Ollama models are deliberately
-# absent (free); an unknown model prices as None rather than borrowing rates.
+# One row per provider-catalog model (tinyic.models.registry), plus any
+# research-only binding that needs a preflight estimate, keyed by model_ref in
+# USD per million tokens. Local Ollama models are deliberately absent (free);
+# an unknown model prices as None rather than borrowing rates.
 MODEL_PRICES_AS_OF = "2026-07-14"
 MODEL_PRICES_USD_PER_MILLION: dict[str, dict[str, float]] = {
     # OpenAI
@@ -31,6 +32,7 @@ MODEL_PRICES_USD_PER_MILLION: dict[str, dict[str, float]] = {
     "anthropic/claude-sonnet-5": {"input": 3.00, "output": 15.00},
     "anthropic/claude-haiku-4-5": {"input": 1.00, "output": 5.00},
     # Google (list rates as of the date above)
+    "google/gemini-2.5-flash": {"input": 0.30, "output": 2.50},  # research
     "google/gemini-3.5-flash": {"input": 0.45, "output": 3.50},
     "google/gemini-3.1-pro-preview": {"input": 2.00, "output": 12.00},
     "google/gemini-3.1-flash-lite": {"input": 0.10, "output": 0.40},

@@ -135,8 +135,8 @@ class GrokResearchBackend(_ResponsesResearchBackend):
 
     @staticmethod
     def _reported_tool_calls(data: Mapping[str, Any]) -> int:
-        calls = len(response_web_search_calls(data))
         raw = data.get("server_side_tool_usage")
+        reported: list[int] = []
         if isinstance(raw, Mapping):
             for key, value in raw.items():
                 if "web_search" in str(key).casefold():
@@ -145,10 +145,15 @@ class GrokResearchBackend(_ResponsesResearchBackend):
                         if isinstance(raw_count, int) and not isinstance(
                             raw_count, bool
                         ):
-                            calls = max(calls, raw_count)
+                            reported.append(max(0, raw_count))
                     elif isinstance(value, int) and not isinstance(value, bool):
-                        calls = max(calls, value)
-        return calls
+                        reported.append(max(0, value))
+        # xAI bills successful server-side tool use. Its explicit usage count
+        # is therefore authoritative over attempted call rows in ``output``;
+        # older responses without that metric fall back to completed rows.
+        if reported:
+            return max(reported)
+        return len(response_web_search_calls(data))
 
     def search(self, request: SearchRequest) -> SearchResponse:
         body = self._body_params()
@@ -157,11 +162,13 @@ class GrokResearchBackend(_ResponsesResearchBackend):
                 "model": self.binding.model,
                 "input": search_prompt(request),
                 "tools": [{"type": "web_search"}],
-                # xAI can serialize server-side calls, but does not expose a
-                # documented per-response call ceiling equivalent to OpenAI's.
+                # Serialize server-side calls so max_turns is also an exact
+                # ceiling on the only enabled tool's billable invocations.
                 "parallel_tool_calls": False,
             }
         )
+        if request.remaining_searches is not None:
+            body["max_turns"] = request.remaining_searches
         data = self._post_json(body)
         text, annotations = response_text_and_annotations(data)
         collector = EvidenceCollector(request, self.provider)

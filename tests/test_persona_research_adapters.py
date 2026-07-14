@@ -15,6 +15,7 @@ from tinyic.models.research import (
     KimiResearchBackend,
     NoSearchCapableLaneError,
     OpenAIResearchBackend,
+    UnsupportedResearchModelError,
     make_research_backend,
     select_research_backend,
 )
@@ -246,6 +247,7 @@ def test_grok_uses_responses_and_merges_flat_and_inline_citations() -> None:
     assert sent.url == "https://api.x.ai/v1/responses"
     assert sent.body["tools"] == [{"type": "web_search"}]
     assert sent.body["parallel_tool_calls"] is False
+    assert sent.body["max_turns"] == 2
     assert "Use at most 2 provider-side search" in sent.body["input"]
     assert "tool_choice" not in sent.body
     assert [item.url for item in result.evidence] == [cited, other]
@@ -258,6 +260,37 @@ def test_grok_uses_responses_and_merges_flat_and_inline_citations() -> None:
     assert result.usage.search_calls == 2
     assert result.budget_exhausted is True
     assert result.usage.cost_usd == pytest.approx(0.01016)
+
+
+def test_grok_hard_caps_one_remaining_turn_and_trusts_billed_tool_usage() -> None:
+    wire = {
+        # Attempt rows are not billing authority when xAI supplies its
+        # successful server-side usage count.
+        "output": [
+            {"type": "web_search_call", "status": "completed"},
+            {"type": "web_search_call", "status": "failed"},
+        ],
+        "citations": ["https://example.com/cited"],
+        "server_side_tool_usage": {"web_search": 1},
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    }
+    http = ScriptedTransport(wire)
+    backend = GrokResearchBackend(
+        ModelBinding(
+            "grok/grok-4.5",
+            params={"max_turns": 99, "parallel_tool_calls": True},
+        ),
+        credentials(),
+        http=http,
+    )
+
+    result = backend.search(request(remaining_searches=1))
+
+    assert http.sent[0].body["max_turns"] == 1
+    assert http.sent[0].body["parallel_tool_calls"] is False
+    assert result.usage is not None
+    assert result.usage.search_calls == 1
+    assert result.budget_exhausted is True
 
 
 def test_gemini_interactions_google_search_uses_grounding_rows_and_annotations() -> None:
@@ -306,7 +339,7 @@ def test_gemini_interactions_google_search_uses_grounding_rows_and_annotations()
     }
     http = ScriptedTransport(wire)
     backend = GeminiResearchBackend(
-        ModelBinding("google/gemini-3.5-flash"), credentials(), http=http
+        ModelBinding("google/gemini-2.5-flash"), credentials(), http=http
     )
 
     result = backend.search(
@@ -327,10 +360,11 @@ def test_gemini_interactions_google_search_uses_grounding_rows_and_annotations()
     assert result.evidence[0].source_type == "primary"
     assert result.usage is not None
     assert result.usage.cached_tokens == 3
-    assert result.usage.search_calls == 2
-    assert result.budget_exhausted is True
-    # Two queries were reported by the one search call.
-    assert result.usage.cost_usd == pytest.approx(0.028093)
+    # Gemini 2.5 bills one grounded model prompt regardless of the number of
+    # internal Google Search queries in that prompt.
+    assert result.usage.search_calls == 1
+    assert result.budget_exhausted is False
+    assert result.usage.cost_usd == pytest.approx(0.0350645)
 
 
 def test_gemini_normalizes_legacy_grounding_metadata_without_legacy_request() -> None:
@@ -359,7 +393,7 @@ def test_gemini_normalizes_legacy_grounding_metadata_without_legacy_request() ->
     }
     http = ScriptedTransport(wire)
     backend = GeminiResearchBackend(
-        ModelBinding("google/gemini-3.5-flash"), credentials(), http=http
+        ModelBinding("google/gemini-2.5-flash"), credentials(), http=http
     )
 
     result = backend.search(request())
@@ -557,20 +591,38 @@ def test_non_search_methods_share_usage_and_json_normalization() -> None:
 
 def test_factory_supports_explicit_binding_and_google_credential_alias() -> None:
     backend = make_research_backend(
-        ModelBinding("google/gemini-3.5-flash"),
+        ModelBinding("google/gemini-2.5-flash"),
         StaticCredentialProvider({"GOOGLE_API_KEY": KEY}),
         http=ScriptedTransport(),
     )
 
     assert isinstance(backend, GeminiResearchBackend)
-    assert backend.model_ref == "google/gemini-3.5-flash"
+    assert backend.model_ref == "google/gemini-2.5-flash"
+
+
+def test_explicit_gemini_3_rejected_before_credential_or_network_access() -> None:
+    class ForbiddenCredentials:
+        def __call__(self, _ref: str) -> str:
+            raise AssertionError("ineligible models must fail before credentials")
+
+    http = ScriptedTransport()
+    with pytest.raises(UnsupportedResearchModelError) as caught:
+        make_research_backend(
+            ModelBinding("google/gemini-3.5-flash"),
+            ForbiddenCredentials(),
+            http=http,
+        )
+
+    assert caught.value.reason_code == "model_not_search_budget_capable"
+    assert "google/gemini-2.5-flash" in str(caught.value)
+    assert http.sent == []
 
 
 def test_selector_honors_openai_grok_google_kimi_priority_not_input_order() -> None:
     selected = select_research_backend(
         [
             ModelBinding("kimi/kimi-k2.6"),
-            ModelBinding("google/gemini-3.5-flash"),
+            ModelBinding("google/gemini-2.5-flash"),
             ModelBinding("grok/grok-4.5"),
         ],
         StaticCredentialProvider(
@@ -580,6 +632,21 @@ def test_selector_honors_openai_grok_google_kimi_priority_not_input_order() -> N
     )
 
     assert isinstance(selected, GrokResearchBackend)
+
+
+def test_selector_skips_gemini_3_and_uses_next_eligible_lane() -> None:
+    selected = select_research_backend(
+        [
+            ModelBinding("google/gemini-3.5-flash"),
+            ModelBinding("kimi/kimi-k2.6"),
+        ],
+        StaticCredentialProvider(
+            {"GEMINI_API_KEY": KEY, "MOONSHOT_API_KEY": KEY}
+        ),
+        http=ScriptedTransport(),
+    )
+
+    assert isinstance(selected, KimiResearchBackend)
 
 
 def test_selector_skips_uncredentialed_higher_priority_lane() -> None:

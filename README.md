@@ -203,11 +203,19 @@ tinyic persona show howard_marks_researched --json
 ```
 
 Use `--model provider/model` to choose an exact research model. Without it,
-TinyIC checks the configured and recommended models in the priority above. If
+TinyIC checks budget-capable configured and recommended models in the priority
+above, skipping ineligible bindings before credential or provider access. If
 no eligible API-key lane exists, the command exits `3` with
 `no_search_capable_lane` and points to `tinyic onboard`. The normal search
 budget is 12; Kimi gets 16 total `$web_search` echo rounds. `--max-searches N`
 sets an explicit cap. Non-interactive callers must pass `--yes`.
+
+Google research uses `google/gemini-2.5-flash`: one grounded prompt is one
+budget unit regardless of its internal Search queries, estimated at Google's
+worst-case $0.035 grounding fee. Gemini 3 remains available for ordinary
+debates, but its unbounded per-prompt query behavior makes it ineligible for
+persona research; explicit Gemini 3 research bindings fail before provider
+calls and automatic selection skips them.
 
 Research is provider-side: TinyIC does not scrape the cited pages itself. It
 plans six research angles, builds a deduplicated evidence ledger, drafts five

@@ -651,10 +651,10 @@ class PersonaFactory:
             if usage is not None:
                 usage_records.append(usage)
                 # Provider adapters report the actual priced unit here:
-                # server-side search invocations for OpenAI/Grok/Gemini and
-                # client/server echo rounds for Kimi. Older/custom backends
-                # may omit it, in which case their operation-call count is
-                # the only safe accounting fallback.
+                # server-side invocations for OpenAI/Grok, grounded prompts
+                # for Gemini 2.5, and client/server echo rounds for Kimi.
+                # Older/custom backends may omit it, in which case their
+                # operation-call count is the only safe accounting fallback.
                 reported_search_calls = getattr(usage, "search_calls", None)
                 if reported_search_calls is None:
                     reported_search_calls = getattr(usage, "calls", 1)

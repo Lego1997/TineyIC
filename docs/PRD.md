@@ -364,19 +364,28 @@ tinyic persona show SLUG [--json]
 `research` resolves and checks the slug **before credential/backend setup**.
 Built-in slugs can never be replaced, including with `--force`; either existing
 user artifact requires `--force` to run the guarded pair replacement. An explicit
-`--model` is exact. Otherwise TinyIC considers configured bindings plus one
-recommended binding per research provider and selects the first usable API-key
-lane in fixed priority `openai → grok → google → kimi`. Subscription and local
-lanes are not search backends. No usable lane exits `3` with the stable reason
+`--model` is exact. Google research accepts only
+`google/gemini-2.5-flash`; Gemini 3 cannot impose a per-prompt query ceiling, so
+explicit Gemini 3 research bindings fail before provider calls with
+`model_not_search_budget_capable` and automatic selection skips them. (Gemini
+3 remains in the ordinary debate catalog.) Otherwise TinyIC considers
+budget-capable configured bindings plus one recommended binding per research
+provider and selects the first usable API-key lane in fixed priority
+`openai → grok → google → kimi`. Subscription and local lanes are not search
+backends. No usable lane exits `3` with the stable reason
 `no_search_capable_lane` and onboarding guidance.
 
 Before any network provider call, the command prints a tool-fee-plus-token cost
 estimate to STDERR. Interactive callers must confirm; non-interactive callers
 must pass `--yes` and are never prompted. Progress remains on STDERR, while the
 success summary reports both paths, source/domain counts, quality, calls, and
-captured actual cost. OpenAI/Grok/Google use a default cap of 12 search calls;
-Kimi uses a run-wide cap of 16 `$web_search` echo rounds. `--max-searches` sets
-an explicit 1–16 cap; the Kimi counter persists across logical queries.
+captured actual cost. OpenAI tool invocations, successful Grok server-side tool
+uses, and Gemini 2.5 grounded prompts use a default run-wide cap of 12; Kimi
+uses a cap of 16 `$web_search` echo rounds. `--max-searches` sets an explicit
+1–16 cap. Grok sends `max_turns` with parallel tool calls disabled. A Gemini
+grounded prompt counts as one unit regardless of its internal queries and is
+priced with Google's worst-case $0.035 grounding fee. The Kimi counter persists
+across logical queries.
 
 `list` and `show` read metadata without instantiating TinyTroupe agents. Their
 `--json` forms emit one stable schema-versioned document; list output is
@@ -389,9 +398,9 @@ The Persona Factory is an injectable, provider-neutral pipeline:
 1. Plan six public-record angles (philosophy, decision process, risk, track
    record, voice, criticism) and add curated seed hints for canonical names.
 2. Search through provider-side tools only: OpenAI/Grok Responses web search,
-   Gemini Google Search, or Kimi's degraded prose-URL echo lane. TinyIC does not
-   fetch arbitrary cited pages locally. Results become a canonical-URL-deduped
-   evidence ledger.
+   Gemini 2.5 Flash Google Search grounding, or Kimi's degraded prose-URL echo
+   lane. TinyIC does not fetch arbitrary cited pages locally. Results become a
+   canonical-URL-deduped evidence ledger.
 3. Draft five dossier sections using only numbered evidence, then synthesize a
    TinyTroupe-compatible persona plus the TinyIC extension metadata.
 4. Run a second FActScore-lite pass over atomic dossier/persona claims. Claims

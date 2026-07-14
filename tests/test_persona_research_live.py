@@ -30,6 +30,7 @@ def _request() -> SearchRequest:
             "Howard Marks investment philosophy primary-source Oaktree memo",
             ("https://www.oaktreecapital.com/insights/memos",),
         ),
+        remaining_searches=1,
     )
 
 
@@ -70,7 +71,7 @@ def test_grok_research_search_live() -> None:
 def test_gemini_research_search_live() -> None:
     _require_any("GEMINI_API_KEY", "GOOGLE_API_KEY")
     backend = make_research_backend(
-        ModelBinding("google/gemini-3.5-flash"), EnvCredentialProvider()
+        ModelBinding("google/gemini-2.5-flash"), EnvCredentialProvider()
     )
     try:
         _assert_cited(backend.search(_request()))
@@ -100,7 +101,7 @@ def test_persona_research_cli_howard_marks_live() -> None:
     lanes = (
         ("openai/gpt-5.6-sol", ("OPENAI_API_KEY",)),
         ("grok/grok-4.5", ("XAI_API_KEY",)),
-        ("google/gemini-3.5-flash", ("GEMINI_API_KEY", "GOOGLE_API_KEY")),
+        ("google/gemini-2.5-flash", ("GEMINI_API_KEY", "GOOGLE_API_KEY")),
         ("kimi/kimi-k2.6", ("MOONSHOT_API_KEY", "KIMI_API_KEY")),
     )
     if requested:

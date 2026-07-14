@@ -12,6 +12,7 @@ from ._base import (
     Completion,
     EvidenceCollector,
     PURPOSE_SEARCH,
+    UnsupportedResearchModelError,
     annotation_excerpt,
     search_prompt,
     usage_from_gemini,
@@ -19,6 +20,8 @@ from ._base import (
 
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+GEMINI_RESEARCH_MODEL = "gemini-2.5-flash"
+GEMINI_RESEARCH_MODEL_REF = f"google/{GEMINI_RESEARCH_MODEL}"
 
 
 def _usage_object(data: Mapping[str, Any]) -> Any:
@@ -82,34 +85,38 @@ def _segment_excerpt(text: str, raw: Any) -> str:
     return text
 
 
-def _grounding_tool_count(data: Mapping[str, Any]) -> int:
-    count = 0
+def _grounded_prompt_count(data: Mapping[str, Any]) -> int:
+    """Return Google's billable grounding unit for one model request.
+
+    Gemini 2.5 bills Google Search grounding per grounded prompt, not per
+    internal query. Multiple ``arguments.queries`` rows therefore remain one
+    run-budget unit and one worst-case grounding fee.
+    """
+
     for step in data.get("steps") or ():
-        if not isinstance(step, Mapping) or step.get("type") != "google_search_call":
-            continue
-        arguments = step.get("arguments")
-        queries = arguments.get("queries") if isinstance(arguments, Mapping) else None
-        if isinstance(queries, Sequence) and not isinstance(queries, (str, bytes)):
-            count += sum(1 for query in queries if str(query).strip()) or 1
-        else:
-            count += 1
+        if isinstance(step, Mapping) and step.get("type") == "google_search_call":
+            return 1
     usage = _usage_object(data)
     if isinstance(usage, Mapping):
         raw_counts = usage.get("grounding_tool_count")
         if isinstance(raw_counts, Mapping):
             if raw_counts.get("type") in (None, "google_search"):
                 raw = raw_counts.get("count")
-                if isinstance(raw, int) and not isinstance(raw, bool):
-                    count = max(count, raw)
+                if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
+                    return 1
         elif isinstance(raw_counts, Sequence) and not isinstance(
             raw_counts, (str, bytes)
         ):
             for row in raw_counts:
                 if isinstance(row, Mapping) and row.get("type") == "google_search":
                     raw = row.get("count")
-                    if isinstance(raw, int) and not isinstance(raw, bool):
-                        count = max(count, raw)
-    return count
+                    if (
+                        isinstance(raw, int)
+                        and not isinstance(raw, bool)
+                        and raw > 0
+                    ):
+                        return 1
+    return 0
 
 
 class GeminiResearchBackend(BaseResearchBackend):
@@ -120,6 +127,11 @@ class GeminiResearchBackend(BaseResearchBackend):
     endpoint_suffix = "/interactions"
 
     def __init__(self, binding, credentials, *, base_url=GEMINI_BASE_URL, **kwargs):
+        if binding.model != GEMINI_RESEARCH_MODEL:
+            raise UnsupportedResearchModelError(
+                f"{binding.model_ref} cannot enforce persona research's search "
+                f"budget; use {GEMINI_RESEARCH_MODEL_REF}"
+            )
         super().__init__(binding, credentials, base_url=base_url, **kwargs)
 
     def _auth_headers(self, key: str) -> dict[str, str]:
@@ -219,23 +231,28 @@ class GeminiResearchBackend(BaseResearchBackend):
                         fallback_text=candidate_text,
                     )
 
-        tool_calls = _grounding_tool_count(data)
-        if tool_calls == 0 and collector.evidence:
-            tool_calls = 1
+        grounded_prompts = _grounded_prompt_count(data)
+        if grounded_prompts == 0 and collector.evidence:
+            grounded_prompts = 1
         usage = self._usage(
             usage_from_gemini(_usage_object(data)),
             purpose=PURPOSE_SEARCH,
-            search_tool_calls=tool_calls,
-            search_calls=tool_calls,
+            search_tool_calls=grounded_prompts,
+            search_calls=grounded_prompts,
         )
         return SearchResponse(
             collector.evidence,
             usage,
             budget_exhausted=(
                 request.remaining_searches is not None
-                and tool_calls >= request.remaining_searches
+                and grounded_prompts >= request.remaining_searches
             ),
         )
 
 
-__all__ = ["GEMINI_BASE_URL", "GeminiResearchBackend"]
+__all__ = [
+    "GEMINI_BASE_URL",
+    "GEMINI_RESEARCH_MODEL",
+    "GEMINI_RESEARCH_MODEL_REF",
+    "GeminiResearchBackend",
+]

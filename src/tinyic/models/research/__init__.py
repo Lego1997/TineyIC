@@ -11,8 +11,14 @@ from ._base import (
     PURPOSE_VERIFICATION,
     ResearchResponseError,
     SEARCH_TOOL_FEES_USD,
+    UnsupportedResearchModelError,
 )
-from .gemini import GEMINI_BASE_URL, GeminiResearchBackend
+from .gemini import (
+    GEMINI_BASE_URL,
+    GEMINI_RESEARCH_MODEL,
+    GEMINI_RESEARCH_MODEL_REF,
+    GeminiResearchBackend,
+)
 from .kimi import KIMI_BASE_URL, KimiResearchBackend
 from .responses import (
     GROK_BASE_URL,
@@ -30,6 +36,8 @@ from .selector import (
 
 __all__ = [
     "GEMINI_BASE_URL",
+    "GEMINI_RESEARCH_MODEL",
+    "GEMINI_RESEARCH_MODEL_REF",
     "GROK_BASE_URL",
     "KIMI_BASE_URL",
     "OPENAI_BASE_URL",
@@ -45,6 +53,7 @@ __all__ = [
     "ResearchResponseError",
     "SEARCH_TOOL_FEES_USD",
     "UnsupportedResearchProviderError",
+    "UnsupportedResearchModelError",
     "make_research_backend",
     "select_research_backend",
 ]

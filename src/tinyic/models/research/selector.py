@@ -9,7 +9,13 @@ from ..adapters._http import HttpTransport
 from ..binding import ModelBinding
 from ..credentials import CredentialProvider
 from ..types import AuthError, ProviderError
-from .gemini import GEMINI_BASE_URL, GeminiResearchBackend
+from ._base import UnsupportedResearchModelError
+from .gemini import (
+    GEMINI_BASE_URL,
+    GEMINI_RESEARCH_MODEL,
+    GEMINI_RESEARCH_MODEL_REF,
+    GeminiResearchBackend,
+)
 from .kimi import KimiResearchBackend
 from .responses import (
     GROK_BASE_URL,
@@ -113,6 +119,15 @@ def make_research_backend(
         raise UnsupportedResearchProviderError(
             f"provider {binding.provider!r} has no persona-research search tool"
         )
+    if provider == "google" and binding.model != GEMINI_RESEARCH_MODEL:
+        # Gemini 3 can issue an unbounded number of internal Search queries in
+        # one grounded prompt. Reject it before even resolving credentials;
+        # Gemini 2.5's per-grounded-prompt billing gives the factory an exact
+        # run-wide unit that it can cap before every request.
+        raise UnsupportedResearchModelError(
+            f"{binding.model_ref} cannot enforce persona research's search "
+            f"budget; use {GEMINI_RESEARCH_MODEL_REF}"
+        )
     resolved_credentials = _api_key_credentials(binding, credentials)
     classes = {
         "openai": (OpenAIResearchBackend, OPENAI_BASE_URL),
@@ -166,6 +181,8 @@ def select_research_backend(
     for provider in RESEARCH_PROVIDER_PRIORITY:
         for binding in by_provider.get(provider, ()):
             tried.append(provider)
+            if provider == "google" and binding.model != GEMINI_RESEARCH_MODEL:
+                continue
             try:
                 resolved_credentials = _api_key_credentials(binding, credentials)
             except ProviderError:
@@ -187,6 +204,7 @@ __all__ = [
     "NoSearchCapableLaneError",
     "RESEARCH_PROVIDER_PRIORITY",
     "UnsupportedResearchProviderError",
+    "UnsupportedResearchModelError",
     "make_research_backend",
     "select_research_backend",
 ]

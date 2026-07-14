@@ -355,7 +355,7 @@ def _add_persona_parser(subparsers) -> None:
         default=None,
         metavar="N",
         help=(
-            "Maximum provider search calls/echo rounds, 1-16 "
+            "Maximum billable search units/echo rounds, 1-16 "
             "(default: 12; Kimi: 16)."
         ),
     )

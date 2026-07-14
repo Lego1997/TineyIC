@@ -136,15 +136,23 @@ tinyic persona show howard_marks_researched --json
 backend setup. Built-ins can never be overwritten; replacing an existing user
 persona requires `--force`. Use `--model provider/model` for an exact binding,
 or let TinyIC choose the first usable **API-key** search lane in fixed priority
-`openai → grok → google → kimi`. Configured bindings win within a provider, and
-recommended provider bindings cover credentials not present in an OpenAI-only
-committee preset. Subscription and Ollama lanes are not persona-research lanes.
+`openai → grok → google → kimi`. Budget-capable configured bindings win within a
+provider, and recommended provider bindings cover credentials not present in an
+OpenAI-only committee preset. An ineligible binding is skipped before its
+credential or provider is touched. Subscription and Ollama lanes are not
+persona-research lanes.
+Google persona research is pinned to the budget-safe
+`google/gemini-2.5-flash` lane; explicit Gemini 3 bindings are rejected before
+provider calls and skipped during automatic selection. This does not change the
+ordinary debate model catalog.
 
 Before provider calls, the estimate and progress go to STDERR. `--yes` is
 required for non-interactive use; without an eligible lane the command exits
 `3` with `no_search_capable_lane` and onboarding guidance. The default cap is
-12 searches, or 16 total Kimi `$web_search` echo rounds; `--max-searches N`
-sets an explicit 1–16 cap.
+12 billable search units, or 16 total Kimi `$web_search` echo rounds;
+`--max-searches N` sets an explicit 1–16 cap. A Google unit is one Gemini 2.5
+grounded prompt regardless of its internal queries and is estimated at the
+worst-case $0.035 Google Search grounding fee.
 
 Success stages `~/.tinyic/personas/<slug>.agent.json` and
 `<slug>.dossier.md`, then installs each with an atomic replace and rollback on

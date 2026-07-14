@@ -29,7 +29,7 @@ _KIMI_DEFAULT_SEARCH_BUDGET = 16
 _RECOMMENDED_RESEARCH_MODELS = (
     ("openai", "openai/gpt-5.6-sol"),
     ("grok", "grok/grok-4.5"),
-    ("google", "google/gemini-3.5-flash"),
+    ("google", "google/gemini-2.5-flash"),
     ("kimi", "kimi/kimi-k2.6"),
 )
 
@@ -261,8 +261,16 @@ def _configured_bindings(preset: Any, binding_class: Any) -> tuple[Any, ...]:
             distinct.append(binding)
     configured_providers = {str(binding.provider).casefold() for binding in distinct}
     for provider, model_ref in _RECOMMENDED_RESEARCH_MODELS:
-        if provider not in configured_providers:
-            distinct.append(binding_class(model_ref))
+        if provider in configured_providers:
+            # Configured Google debate bindings normally use Gemini 3, which
+            # cannot enforce persona research's billable-search ceiling. Keep
+            # their preset precedence, then append the budget-safe 2.5 lane so
+            # selection can skip an ineligible Gemini 3 binding.
+            if provider != "google" or any(
+                str(binding.model_ref) == model_ref for binding in distinct
+            ):
+                continue
+        distinct.append(binding_class(model_ref))
     return tuple(distinct)
 
 
@@ -458,11 +466,18 @@ def research_persona(
                 )
             )
             # Validate the requested plan before presenting the cost gate.
-            factory_module.plan_queries(name, max_searches=effective_max_searches)
-            # A provider may make multiple billable search invocations inside
-            # one logical query. Price the full declared run-wide ceiling, not
-            # merely the number of planned research angles.
-            priced_search_calls = effective_max_searches
+            query_plan = factory_module.plan_queries(
+                name, max_searches=effective_max_searches
+            )
+            # OpenAI/Grok/Kimi can spend several budget units inside one
+            # logical query, so price their full declared ceiling. Gemini 2.5
+            # bills one grounded prompt per planned request and cannot exceed
+            # the number of research angles.
+            priced_search_calls = (
+                min(effective_max_searches, len(query_plan.queries))
+                if provider == "google"
+                else effective_max_searches
+            )
             model_ref = str(getattr(backend, "model_ref", model or "unknown"))
             estimate = _estimated_cost(
                 model_ref,
