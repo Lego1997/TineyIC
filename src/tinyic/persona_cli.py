@@ -457,16 +457,12 @@ def research_persona(
                     else max_searches
                 )
             )
-            plan = factory_module.plan_queries(
-                name, max_searches=effective_max_searches
-            )
-            logical_searches = len(plan.queries)
-            # Kimi's budget counts every client/server echo round across the
-            # run; the other providers make one billable tool call per logical
-            # query. Price the actual bounded unit for each lane.
-            priced_search_calls = (
-                effective_max_searches if provider == "kimi" else logical_searches
-            )
+            # Validate the requested plan before presenting the cost gate.
+            factory_module.plan_queries(name, max_searches=effective_max_searches)
+            # A provider may make multiple billable search invocations inside
+            # one logical query. Price the full declared run-wide ceiling, not
+            # merely the number of planned research angles.
+            priced_search_calls = effective_max_searches
             model_ref = str(getattr(backend, "model_ref", model or "unknown"))
             estimate = _estimated_cost(
                 model_ref,
@@ -527,7 +523,8 @@ def research_persona(
             file=out,
         )
         print(
-            f"Usage: {getattr(usage, 'calls', 0)} calls; actual cost {cost_text}",
+            f"Usage: {getattr(usage, 'calls', 0)} model requests; "
+            f"{getattr(usage, 'search_calls', 0)} searches; actual cost {cost_text}",
             file=out,
         )
         return 0

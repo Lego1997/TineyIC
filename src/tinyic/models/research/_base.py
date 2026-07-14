@@ -54,7 +54,9 @@ _RESERVED_BODY_PARAMS = frozenset(
         "include",
         "input",
         "messages",
+        "max_tool_calls",
         "model",
+        "parallel_tool_calls",
         "stream",
         "tool_choice",
         "tools",
@@ -298,6 +300,12 @@ def search_prompt(request: SearchRequest, *, inline_urls: bool = False) -> str:
         f"Research query: {request.query.text}",
         "Return a concise evidence digest with source-specific factual support.",
     ]
+    if request.remaining_searches is not None:
+        lines.append(
+            "Use at most "
+            f"{request.remaining_searches} provider-side search "
+            "queries/tool invocations in this response."
+        )
     if request.query.seed_urls:
         lines.append("Prioritize these canonical source hints when relevant:")
         lines.extend(f"- {url}" for url in request.query.seed_urls)
@@ -462,6 +470,7 @@ class BaseResearchBackend(BaseHttpAdapter):
         purpose: str,
         calls: int = 1,
         search_tool_calls: int = 0,
+        search_calls: int | None = None,
     ) -> CallUsage:
         cost: float | None = None
         if numbers.reported:
@@ -492,6 +501,7 @@ class BaseResearchBackend(BaseHttpAdapter):
             cached_tokens=numbers.cached_tokens,
             cost_usd=cost,
             calls=calls,
+            search_calls=search_calls,
         )
 
     # Provider modules implement this one method for their ordinary text lane.

@@ -226,8 +226,16 @@ class GeminiResearchBackend(BaseResearchBackend):
             usage_from_gemini(_usage_object(data)),
             purpose=PURPOSE_SEARCH,
             search_tool_calls=tool_calls,
+            search_calls=tool_calls,
         )
-        return SearchResponse(collector.evidence, usage)
+        return SearchResponse(
+            collector.evidence,
+            usage,
+            budget_exhausted=(
+                request.remaining_searches is not None
+                and tool_calls >= request.remaining_searches
+            ),
+        )
 
 
 __all__ = ["GEMINI_BASE_URL", "GeminiResearchBackend"]

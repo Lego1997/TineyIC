@@ -162,6 +162,40 @@ class FakeBackend:
         )
 
 
+class MultiSearchBackend(FakeBackend):
+    """Provider-shaped fake that reports several priced searches per request."""
+
+    def __init__(self, evidence: tuple[Evidence, ...], *, provider: str) -> None:
+        super().__init__(evidence)
+        self.provider = provider
+        self.remaining_budgets: list[int | None] = []
+
+    def search(self, request):
+        self.remaining_budgets.append(request.remaining_searches)
+        remaining = request.remaining_searches or 1
+        consumed = min(2, remaining)
+        start = self.search_index
+        self.search_index += consumed
+        return SearchResponse(
+            tuple(
+                self.evidence[index % len(self.evidence)]
+                for index in range(start, start + consumed)
+            ),
+            CallUsage(
+                "search",
+                self.model_ref,
+                input_tokens=10,
+                output_tokens=2,
+                cost_usd=0.001 * consumed,
+                calls=1,
+                search_calls=consumed,
+            ),
+            # Exercise the factory's actual-count stop even when an adapter
+            # does not independently mark its response exhausted.
+            budget_exhausted=False,
+        )
+
+
 @pytest.fixture(autouse=True)
 def _clear_tinytroupe_registry():
     yield
@@ -190,6 +224,22 @@ def test_query_plan_has_six_angles_and_canonical_seed_hints():
     assert canonical_seeds("Warren Buffett")[0].url.endswith("letters/letters.html")
     assert all(query.seed_urls for query in plan.queries)
     assert "Warren Buffett" in plan.queries[0].text
+
+
+@pytest.mark.parametrize("provider", ["openai", "grok", "google"])
+def test_factory_decrements_actual_multi_search_calls_and_stops_at_budget(
+    tmp_path, provider
+):
+    backend = MultiSearchBackend(_evidence(), provider=provider)
+
+    result = _factory(backend).run(
+        ResearchRequest(f"{provider} Budget", tmp_path, max_searches=3)
+    )
+
+    assert backend.remaining_budgets == [3, 1]
+    assert backend.search_index == 3
+    assert result.usage.search_calls == 3
+    assert result.specification["tinyic"]["generation"]["search_calls"] == 3
 
 
 def test_request_defaults_to_environment_persona_directory(tmp_path, monkeypatch):

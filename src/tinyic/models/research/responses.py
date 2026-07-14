@@ -82,6 +82,10 @@ class OpenAIResearchBackend(_ResponsesResearchBackend):
                 "include": ["web_search_call.action.sources"],
             }
         )
+        if request.remaining_searches is not None:
+            # Responses exposes a native aggregate built-in-tool ceiling. With
+            # only web_search enabled this is the exact remaining run budget.
+            body["max_tool_calls"] = request.remaining_searches
         data = self._post_json(body)
         text, annotations = response_text_and_annotations(data)
         calls = response_web_search_calls(data)
@@ -108,8 +112,16 @@ class OpenAIResearchBackend(_ResponsesResearchBackend):
             usage_from_responses(data.get("usage")),
             purpose=PURPOSE_SEARCH,
             search_tool_calls=tool_calls,
+            search_calls=tool_calls,
         )
-        return SearchResponse(collector.evidence, usage)
+        return SearchResponse(
+            collector.evidence,
+            usage,
+            budget_exhausted=(
+                request.remaining_searches is not None
+                and tool_calls >= request.remaining_searches
+            ),
+        )
 
 
 class GrokResearchBackend(_ResponsesResearchBackend):
@@ -145,6 +157,9 @@ class GrokResearchBackend(_ResponsesResearchBackend):
                 "model": self.binding.model,
                 "input": search_prompt(request),
                 "tools": [{"type": "web_search"}],
+                # xAI can serialize server-side calls, but does not expose a
+                # documented per-response call ceiling equivalent to OpenAI's.
+                "parallel_tool_calls": False,
             }
         )
         data = self._post_json(body)
@@ -171,8 +186,16 @@ class GrokResearchBackend(_ResponsesResearchBackend):
             usage_from_responses(data.get("usage")),
             purpose=PURPOSE_SEARCH,
             search_tool_calls=tool_calls,
+            search_calls=tool_calls,
         )
-        return SearchResponse(collector.evidence, usage)
+        return SearchResponse(
+            collector.evidence,
+            usage,
+            budget_exhausted=(
+                request.remaining_searches is not None
+                and tool_calls >= request.remaining_searches
+            ),
+        )
 
 
 __all__ = [

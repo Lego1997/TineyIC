@@ -84,7 +84,11 @@ def credentials(**overrides: str) -> StaticCredentialProvider:
     return StaticCredentialProvider(values)
 
 
-def request(*, seeds: tuple[str, ...] = ()) -> SearchRequest:
+def request(
+    *,
+    seeds: tuple[str, ...] = (),
+    remaining_searches: int | None = None,
+) -> SearchRequest:
     return SearchRequest(
         "Howard Marks",
         SearchQuery(
@@ -92,6 +96,7 @@ def request(*, seeds: tuple[str, ...] = ()) -> SearchRequest:
             "Howard Marks risk discipline primary-source memo",
             seeds,
         ),
+        remaining_searches=remaining_searches,
     )
 
 
@@ -124,6 +129,14 @@ def test_openai_forces_web_search_includes_sources_and_normalizes_citations() ->
                 },
             },
             {
+                "type": "web_search_call",
+                "action": {
+                    "type": "search",
+                    "queries": ["Howard Marks patient capital"],
+                    "sources": [],
+                },
+            },
+            {
                 "type": "message",
                 "content": [
                     {
@@ -147,7 +160,12 @@ def test_openai_forces_web_search_includes_sources_and_normalizes_citations() ->
         ModelBinding("openai/gpt-5.6-sol"), credentials(), http=http
     )
 
-    result = backend.search(request(seeds=("https://www.oaktreecapital.com/insights/memos",)))
+    result = backend.search(
+        request(
+            seeds=("https://www.oaktreecapital.com/insights/memos",),
+            remaining_searches=2,
+        )
+    )
 
     sent = http.sent[0]
     assert sent.url == "https://api.openai.com/v1/responses"
@@ -157,6 +175,8 @@ def test_openai_forces_web_search_includes_sources_and_normalizes_citations() ->
     ]
     assert sent.body["tool_choice"] == "required"
     assert sent.body["include"] == ["web_search_call.action.sources"]
+    assert sent.body["max_tool_calls"] == 2
+    assert "Use at most 2 provider-side search" in sent.body["input"]
     assert "Howard Marks risk discipline" in sent.body["input"]
     assert result.evidence == (
         Evidence(
@@ -181,8 +201,10 @@ def test_openai_forces_web_search_includes_sources_and_normalizes_citations() ->
     assert result.usage.input_tokens == 100
     assert result.usage.output_tokens == 20
     assert result.usage.cached_tokens == 7
-    # Token price plus the required $0.01 web-search invocation.
-    assert result.usage.cost_usd == pytest.approx(0.0111)
+    assert result.usage.search_calls == 2
+    assert result.budget_exhausted is True
+    # Token price plus two reported $0.01 web-search invocations.
+    assert result.usage.cost_usd == pytest.approx(0.0211)
 
 
 def test_grok_uses_responses_and_merges_flat_and_inline_citations() -> None:
@@ -196,6 +218,7 @@ def test_grok_uses_responses_and_merges_flat_and_inline_citations() -> None:
     wire = {
         "citations": [cited, other, "http://localhost/private"],
         "output": [
+            {"type": "web_search_call", "status": "completed"},
             {"type": "web_search_call", "status": "completed"},
             {
                 "type": "message",
@@ -217,11 +240,13 @@ def test_grok_uses_responses_and_merges_flat_and_inline_citations() -> None:
         ModelBinding("grok/grok-4.5"), credentials(), http=http
     )
 
-    result = backend.search(request())
+    result = backend.search(request(remaining_searches=2))
 
     sent = http.sent[0]
     assert sent.url == "https://api.x.ai/v1/responses"
     assert sent.body["tools"] == [{"type": "web_search"}]
+    assert sent.body["parallel_tool_calls"] is False
+    assert "Use at most 2 provider-side search" in sent.body["input"]
     assert "tool_choice" not in sent.body
     assert [item.url for item in result.evidence] == [cited, other]
     assert result.evidence[0].title == "oaktreecapital.com"
@@ -230,7 +255,9 @@ def test_grok_uses_responses_and_merges_flat_and_inline_citations() -> None:
     )
     assert result.evidence[1].excerpt == text
     assert result.usage is not None
-    assert result.usage.cost_usd == pytest.approx(0.00516)
+    assert result.usage.search_calls == 2
+    assert result.budget_exhausted is True
+    assert result.usage.cost_usd == pytest.approx(0.01016)
 
 
 def test_gemini_interactions_google_search_uses_grounding_rows_and_annotations() -> None:
@@ -282,18 +309,26 @@ def test_gemini_interactions_google_search_uses_grounding_rows_and_annotations()
         ModelBinding("google/gemini-3.5-flash"), credentials(), http=http
     )
 
-    result = backend.search(request(seeds=("https://www.oaktreecapital.com/insights/memos",)))
+    result = backend.search(
+        request(
+            seeds=("https://www.oaktreecapital.com/insights/memos",),
+            remaining_searches=2,
+        )
+    )
 
     sent = http.sent[0]
     assert sent.url == "https://generativelanguage.googleapis.com/v1beta/interactions"
     assert sent.headers["x-goog-api-key"] == KEY
     assert "authorization" not in sent.headers
     assert sent.body["tools"] == [{"type": "google_search"}]
+    assert "Use at most 2 provider-side search" in sent.body["input"]
     assert [item.url for item in result.evidence] == [primary, secondary]
     assert result.evidence[0].excerpt == "Cycles are inevitable."
     assert result.evidence[0].source_type == "primary"
     assert result.usage is not None
     assert result.usage.cached_tokens == 3
+    assert result.usage.search_calls == 2
+    assert result.budget_exhausted is True
     # Two queries were reported by the one search call.
     assert result.usage.cost_usd == pytest.approx(0.028093)
 
@@ -413,6 +448,7 @@ def test_kimi_echoes_builtin_results_verbatim_and_extracts_only_final_prose_urls
     assert "tool-only.invalid" not in result.evidence[0].excerpt
     assert result.usage is not None
     assert result.usage.calls == 2
+    assert result.usage.search_calls == 2
     assert result.usage.input_tokens == 25
     assert result.usage.output_tokens == 9
     assert result.usage.cost_usd == pytest.approx(0.00505975)
@@ -467,6 +503,7 @@ def test_kimi_cli_budget_caps_echo_rounds_across_logical_searches() -> None:
     assert exhausted.budget_exhausted is True
     assert exhausted.usage is not None
     assert exhausted.usage.calls == 1
+    assert exhausted.usage.search_calls == 1
     assert exhausted.usage.cost_usd == pytest.approx(0.00500685)
     assert backend.remaining_search_rounds == 0
     assert len(http.sent) == 3

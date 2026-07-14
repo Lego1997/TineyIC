@@ -472,6 +472,32 @@ def test_research_explicit_model_cost_gate_progress_and_success_summary():
     assert "actual cost $0.1234" in out.getvalue()
 
 
+def test_research_cost_gate_prices_full_declared_search_cap():
+    def make_backend(binding, _credentials, **_kwargs):
+        return FakeBackend(binding.model_ref)
+
+    err = io.StringIO()
+    assert (
+        research_persona(
+            "Full Cap Estimate",
+            model="openai/gpt-5.6-sol",
+            slug="full_cap_estimate",
+            max_searches=12,
+            yes=True,
+            force=True,
+            out=io.StringIO(),
+            err=err,
+            credentials=object(),
+            backend_maker=make_backend,
+            factory_class=RecordingFactory,
+        )
+        == 0
+    )
+
+    assert "12 searches + 7 synthesis/verification calls" in err.getvalue()
+    assert RecordingFactory.request.max_searches == 12
+
+
 def test_kimi_four_round_cap_completes_cli_factory_with_gathered_evidence(
     tmp_path, monkeypatch
 ):
@@ -514,6 +540,7 @@ def test_kimi_four_round_cap_completes_cli_factory_with_gathered_evidence(
     assert document["tinyic"]["generation"]["search_calls"] == 4
     assert "Search calls: 4." in dossier_path.read_text(encoding="utf-8")
     assert "Created persona 'ada_kimi_budget'" in out.getvalue()
+    assert "4 searches" in out.getvalue()
     assert "actual cost unavailable" not in out.getvalue()
     assert "TransientError" not in err.getvalue()
 

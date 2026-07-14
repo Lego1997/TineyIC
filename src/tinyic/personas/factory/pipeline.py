@@ -627,8 +627,18 @@ class PersonaFactory:
         search_calls = 0
         self.progress("planning")
         for query in plan.queries:
+            remaining_searches = request.max_searches - search_calls
+            if remaining_searches <= 0:
+                self.progress("search:budget_exhausted")
+                break
             self.progress(f"search:{query.angle}")
-            response = self.backend.search(SearchRequest(investor_name, query))
+            response = self.backend.search(
+                SearchRequest(
+                    investor_name,
+                    query,
+                    remaining_searches=remaining_searches,
+                )
+            )
             evidence = getattr(response, "evidence", None)
             if not isinstance(evidence, Sequence):
                 raise BackendContractError("search() must return SearchResponse.evidence")
@@ -640,10 +650,23 @@ class PersonaFactory:
             usage = getattr(response, "usage", None)
             if usage is not None:
                 usage_records.append(usage)
-                # Kimi reports every HTTP echo round here; single-request
-                # providers report one.  This keeps generation metadata and
-                # usage aligned with the unit constrained by --max-searches.
-                search_calls += usage.calls
+                # Provider adapters report the actual priced unit here:
+                # server-side search invocations for OpenAI/Grok/Gemini and
+                # client/server echo rounds for Kimi. Older/custom backends
+                # may omit it, in which case their operation-call count is
+                # the only safe accounting fallback.
+                reported_search_calls = getattr(usage, "search_calls", None)
+                if reported_search_calls is None:
+                    reported_search_calls = getattr(usage, "calls", 1)
+                if (
+                    not isinstance(reported_search_calls, int)
+                    or isinstance(reported_search_calls, bool)
+                    or reported_search_calls < 0
+                ):
+                    raise BackendContractError(
+                        "search usage.search_calls must be a non-negative integer or None"
+                    )
+                search_calls += reported_search_calls
             elif not budget_exhausted:
                 # Backends may omit token usage, but a completed ordinary
                 # search still consumed one provider call.
@@ -658,7 +681,7 @@ class PersonaFactory:
                         provider=item.provider or str(getattr(self.backend, "provider", "")),
                     )
                 )
-            if budget_exhausted:
+            if budget_exhausted or search_calls >= request.max_searches:
                 self.progress("search:budget_exhausted")
                 break
 

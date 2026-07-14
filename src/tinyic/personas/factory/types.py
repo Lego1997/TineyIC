@@ -15,7 +15,12 @@ from typing import Any, Protocol, runtime_checkable
 
 @dataclass(frozen=True)
 class CallUsage:
-    """Usage attributed to one backend operation."""
+    """Usage attributed to one backend operation.
+
+    ``calls`` counts model/HTTP operations. ``search_calls`` is the budgeted
+    search unit when known (provider tool invocations, or Kimi echo rounds) so
+    a multi-search response is never mistaken for one search.
+    """
 
     purpose: str
     model_ref: str
@@ -24,12 +29,19 @@ class CallUsage:
     cached_tokens: int = 0
     cost_usd: float | None = None
     calls: int = 1
+    search_calls: int | None = None
 
     def __post_init__(self) -> None:
         for name in ("input_tokens", "output_tokens", "cached_tokens", "calls"):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
+        if self.search_calls is not None and (
+            not isinstance(self.search_calls, int)
+            or isinstance(self.search_calls, bool)
+            or self.search_calls < 0
+        ):
+            raise ValueError("search_calls must be a non-negative integer or None")
         if self.cost_usd is not None and self.cost_usd < 0:
             raise ValueError("cost_usd must be non-negative or None")
 
@@ -143,6 +155,15 @@ class QueryPlan:
 class SearchRequest:
     investor_name: str
     query: SearchQuery
+    remaining_searches: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.remaining_searches is not None and (
+            not isinstance(self.remaining_searches, int)
+            or isinstance(self.remaining_searches, bool)
+            or self.remaining_searches < 1
+        ):
+            raise ValueError("remaining_searches must be a positive integer or None")
 
 
 @dataclass(frozen=True)

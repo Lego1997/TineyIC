@@ -190,8 +190,15 @@ class KimiResearchBackend(BaseResearchBackend):
         usage_records: list[UsageNumbers] = []
         search_tool_calls = 0
 
+        requested_remaining = (
+            request.remaining_searches
+            if request.remaining_searches is not None
+            else self._remaining_search_rounds
+        )
         query_round_limit = min(
-            MAX_WEB_SEARCH_ROUNDS, self._remaining_search_rounds
+            MAX_WEB_SEARCH_ROUNDS,
+            self._remaining_search_rounds,
+            requested_remaining,
         )
         for round_index in range(query_round_limit):
             # Charge before sending so exceptions cannot accidentally make a
@@ -233,14 +240,19 @@ class KimiResearchBackend(BaseResearchBackend):
                 purpose=PURPOSE_SEARCH,
                 calls=round_index + 1,
                 search_tool_calls=search_tool_calls,
+                search_calls=round_index + 1,
             )
             return SearchResponse(
                 collector.evidence,
                 usage_record,
-                budget_exhausted=self._remaining_search_rounds == 0,
+                budget_exhausted=(
+                    self._remaining_search_rounds == 0
+                    or round_index + 1 >= requested_remaining
+                ),
             )
 
-        if self._remaining_search_rounds == 0:
+        request_budget_exhausted = query_round_limit >= requested_remaining
+        if self._remaining_search_rounds == 0 or request_budget_exhausted:
             # Exhausting the user-selected run-wide budget is a normal bounded
             # completion condition, not a provider failure.  Preserve usage
             # from an unfinished final echo loop so the factory can account for
@@ -253,6 +265,7 @@ class KimiResearchBackend(BaseResearchBackend):
                     purpose=PURPOSE_SEARCH,
                     calls=len(usage_records),
                     search_tool_calls=search_tool_calls,
+                    search_calls=len(usage_records),
                 )
             return SearchResponse(
                 (),
