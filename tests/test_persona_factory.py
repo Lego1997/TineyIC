@@ -99,10 +99,12 @@ class FakeBackend:
         evidence: tuple[Evidence, ...],
         *,
         bad_quote: bool = False,
+        bad_quote_delimiters: tuple[str, str] = ('"', '"'),
         fail_at: str | None = None,
     ) -> None:
         self.evidence = evidence
         self.bad_quote = bad_quote
+        self.bad_quote_delimiters = bad_quote_delimiters
         self.fail_at = fail_at
         self.search_index = 0
         self.dossier_requests = []
@@ -126,7 +128,10 @@ class FakeBackend:
         if request.section_key == "voice":
             text = 'The public voice emphasizes "Buy only with a margin of safety". [1]'
             if self.bad_quote:
-                text += '\n\nThe investor said "This quote never appeared". [1]'
+                opening, closing = self.bad_quote_delimiters
+                text += (
+                    f"\n\nThe investor said {opening}This quote never appeared{closing}. [1]"
+                )
         else:
             text = f"The cited public record supports this {request.section_title.casefold()} summary. [1]"
         return DossierSynthesisResponse(
@@ -313,8 +318,17 @@ def test_fewer_than_three_domains_refuses_without_writes(tmp_path):
     assert backend.dossier_requests == []
 
 
-def test_unverifiable_quotes_are_dropped_from_both_artifacts(tmp_path):
-    backend = FakeBackend(_evidence(), bad_quote=True)
+@pytest.mark.parametrize(
+    "delimiters",
+    [('"', '"'), ('‘', '’'), ("'", "'")],
+    ids=("double", "curly-single", "straight-single"),
+)
+def test_unverifiable_quotes_are_dropped_from_both_artifacts(
+    tmp_path, delimiters
+):
+    backend = FakeBackend(
+        _evidence(), bad_quote=True, bad_quote_delimiters=delimiters
+    )
     result = _factory(backend).run(ResearchRequest("Quote Check", tmp_path))
     specification = json.loads(result.agent_path.read_text())
     quotes = specification["tinyic"]["famous_quotes"]

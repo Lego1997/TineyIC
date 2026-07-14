@@ -60,7 +60,9 @@ _TRACKING_QUERY_KEYS = frozenset(
     {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"}
 )
 _CITATION_RE = re.compile(r"\[(\d+)\]")
-_QUOTE_RE = re.compile(r'["“]([^"”\n]{2,})["”]')
+_QUOTE_RE = re.compile(
+    r'''(?:"([^"\n]{2,})"|“([^”\n]{2,})”|‘([^’\n]{2,})’|(?<![\w])'([^'\n]{2,})'(?![\w]))'''
+)
 _SLUG_RE = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
 
 _PRIMARY_HOSTS = frozenset(
@@ -383,7 +385,7 @@ def _get_path(root: Any, path: Sequence[str | int]) -> Any:
 
 
 def _quote_is_verbatim(text: str, citations: Sequence[int], evidence: Sequence[Evidence]) -> bool:
-    quote = text.strip().strip('"“”')
+    quote = text.strip().strip('"“”\'‘’')
     return bool(quote) and any(
         1 <= number <= len(evidence) and quote in evidence[number - 1].excerpt
         for number in citations
@@ -393,7 +395,12 @@ def _quote_is_verbatim(text: str, citations: Sequence[int], evidence: Sequence[E
 def _paragraph_quotes_are_verbatim(
     paragraph: str, citations: Sequence[int], evidence: Sequence[Evidence]
 ) -> bool:
-    quotes = _QUOTE_RE.findall(paragraph)
+    quotes = (
+        quote
+        for match in _QUOTE_RE.findall(paragraph)
+        for quote in match
+        if quote
+    )
     return all(_quote_is_verbatim(quote, citations, evidence) for quote in quotes)
 
 
