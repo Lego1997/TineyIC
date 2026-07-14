@@ -1,9 +1,9 @@
 """Tests for the live event source: ``EventQueueSource`` and the JSONL follower.
 
-These cover the M5 live-feed *bridge* — the piece that lets a debate running in
-another process be watched live by the TUI without a single engine import. The
-:class:`~tinyic.tui.live.EventQueueSource` is exercised as a pure queue adapter
-(no threads); the :class:`~tinyic.tui.live.EventLogFollower` is exercised against
+These cover the shared live-feed bridge — the piece that lets a debate running
+in another process be watched without a single engine import. The
+:class:`~tinyic.live.EventQueueSource` is exercised as a pure queue adapter
+(no threads); the :class:`~tinyic.live.EventLogFollower` is exercised against
 a file the test writes **incrementally**, which is exactly the concurrent-writer
 situation it exists for. All thread coordination is through blocking
 ``queue.get(timeout=...)`` — the test only ever advances when the follower has
@@ -20,7 +20,7 @@ import threading
 import pytest
 
 from tinyic.tui.events import Event
-from tinyic.tui.live import (
+from tinyic.live import (
     QUEUE_SENTINEL,
     EventLogFollower,
     EventQueueSource,

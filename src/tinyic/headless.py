@@ -3,7 +3,7 @@
 This is the M6 seam between the CLI verb and the engine.  It runs the debate in a
 worker thread that appends to the JSONL event log, and then *watches that file*
 exactly as any other process would (the follower/reader from
-``tinyic.tui.live`` / ``tinyic.tui.events``): the renderer and the headless
+``tinyic.live`` / ``tinyic.tui.events``): the renderer and the headless
 JSON stream both consume the file, never engine internals.
 
 Two faces:
@@ -164,7 +164,7 @@ def _stream_log(
 ) -> None:
     """Tail the actively-written log; echo each complete line verbatim to ``out``.
 
-    Mirrors :class:`~tinyic.tui.live.EventLogFollower`'s tailing discipline (a
+    Mirrors :class:`~tinyic.live.EventLogFollower`'s tailing discipline (a
     binary read fed through an incremental UTF-8 decoder so a poll landing
     mid-character or mid-line waits for the rest), then writes each *complete*
     newline-terminated line to ``out`` exactly as written — no re-serialization —
@@ -620,7 +620,7 @@ def _run_interactive(
             SteeringInbox,
         )
         from tinyic.tui.app import TownHallApp
-        from tinyic.tui.live import attach_event_log_follower
+        from tinyic.live import attach_event_log_follower
 
     log = EventLog(make_debate_id(ticker))
     inbox = steering if steering is not None else SteeringInbox()

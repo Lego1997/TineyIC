@@ -15,13 +15,6 @@ from .events import (
     missing_required_fields,
     read_events,
 )
-from .live import (
-    QUEUE_SENTINEL,
-    EventLogFollower,
-    EventQueueSource,
-    attach_event_log_follower,
-)
-
 __all__ = [
     "Event",
     "EventType",
@@ -30,8 +23,4 @@ __all__ = [
     "is_replayable",
     "missing_required_fields",
     "read_events",
-    "QUEUE_SENTINEL",
-    "EventLogFollower",
-    "EventQueueSource",
-    "attach_event_log_follower",
 ]

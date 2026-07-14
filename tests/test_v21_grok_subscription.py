@@ -1654,9 +1654,9 @@ def test_default_browser_opener_routes_through_webbrowser(no_real_browser):
     # The conftest guard replaces webbrowser.open with a recorder, which both
     # proves the default opener's wiring and keeps the offline suite from ever
     # popping a real browser tab.
-    from tinyic.tui.onboard import _default_browser_opener
+    from tinyic.browser import open_browser
 
-    assert _default_browser_opener("https://example.invalid/device") is True
+    assert open_browser("https://example.invalid/device") is True
     assert no_real_browser == ["https://example.invalid/device"]
 
 

@@ -14,7 +14,7 @@ import queue
 
 from tinyic.tui.app import TownHallApp
 from tinyic.tui.events import parse_event
-from tinyic.tui.live import QUEUE_SENTINEL
+from tinyic.live import QUEUE_SENTINEL
 from tinyic.tui.motion import PULSE_FRAMES, GlyphPulse
 from tinyic.tui.widgets import PersonaCard, StatusHeader, TurnCard
 

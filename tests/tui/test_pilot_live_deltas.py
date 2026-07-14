@@ -36,7 +36,7 @@ from collections import defaultdict
 
 from tinyic.tui.app import TownHallApp
 from tinyic.tui.events import parse_event, read_events
-from tinyic.tui.live import attach_event_log_follower
+from tinyic.live import attach_event_log_follower
 from tinyic.tui.state import (
     ArtifactState,
     PhaseState,

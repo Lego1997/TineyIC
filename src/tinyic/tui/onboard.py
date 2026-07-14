@@ -80,6 +80,7 @@ from tinyic.auth.manager import (
     AuthResolutionError,
 )
 from tinyic.auth.profiles import AuthLane, AuthProfile, ProfileKind
+from tinyic.browser import open_browser
 from tinyic.tui import theme
 
 __all__ = [
@@ -403,16 +404,6 @@ def _default_grok_login_factory():
     return GrokDeviceLoginSession()
 
 
-def _default_browser_opener(url: str) -> bool:
-    """Best-effort launch of the user's default browser (never raises)."""
-    import webbrowser
-
-    try:
-        return bool(webbrowser.open(url))
-    except Exception:
-        return False
-
-
 # --------------------------------------------------------------------------- #
 # The controller — the pure, Textual-free state machine
 # --------------------------------------------------------------------------- #
@@ -456,7 +447,7 @@ class OnboardController:
         self.verify_probe = verify_probe or live_token_probe
         self.openai_login_factory = openai_login_factory or _default_openai_login_factory
         self.grok_login_factory = grok_login_factory or _default_grok_login_factory
-        self.browser_opener = browser_opener or _default_browser_opener
+        self.browser_opener = browser_opener or open_browser
         # The MODEL step's catalog seam: static snapshots are offline; only the
         # explicit refresh action queries a provider's live model listing.
         self.catalog_factory = catalog_factory or self._default_catalog_service

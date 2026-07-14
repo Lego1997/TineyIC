@@ -1,4 +1,4 @@
-"""Live event source: watch a debate as it happens, engine-free.
+"""Live event source: watch a debate as it happens, renderer-free.
 
 Replay feeds the Town Hall TUI a *recorded* JSONL log; **live** feeds it the
 *same* events as they are produced, over a thread-safe :class:`queue.Queue`. The
@@ -21,8 +21,9 @@ Two pieces live here:
   watches a running debate live — a separate process, not a single import of
   engine code.
 
-Nothing here imports Textual or any engine internals — only the shared,
-framework-free event reader (:func:`tinyic.tui.events.parse_event`).
+Nothing here imports Textual or engine internals — only the shared,
+framework-free event reader (:func:`tinyic.tui.events.parse_event`). The module
+lives at package scope because web, replay, and any future renderer share it.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ import queue as _queue
 import threading
 from pathlib import Path
 
-from .events import Event, parse_event
+from .tui.events import Event, parse_event
 
 __all__ = [
     "QUEUE_SENTINEL",
@@ -241,12 +242,12 @@ def attach_event_log_follower(
     """Start (and return) an :class:`EventLogFollower` tailing ``path``.
 
     ``queue`` is the thread-safe queue the follower feeds and
-    ``TownHallApp.live(queue)`` drains; if omitted, a fresh one is created and
-    exposed as ``follower.queue``. The returned thread is already ``start()``-ed.
+    a renderer drains; if omitted, a fresh one is created and exposed as
+    ``follower.queue``. The returned thread is already ``start()``-ed.
 
     This is the M6 bridge: a headless debate in another process writes the JSONL
     log; ``attach_event_log_follower`` turns that file into the live event queue
-    the TUI renders — with zero engine imports on the renderer side.
+    a renderer consumes — with zero engine imports on the renderer side.
     """
     q = queue if queue is not None else _queue.Queue()
     follower = EventLogFollower(path, q, **kwargs)  # type: ignore[arg-type]

@@ -21,7 +21,7 @@ and draws the result across four panes (FR-5.1):
 log (:meth:`TownHallApp.replay`) or pulled off a ``queue.Queue`` a running debate
 feeds (:meth:`TownHallApp.live`) — travels through :meth:`TownHallApp.feed` →
 ``state.dispatch`` → :meth:`TownHallApp._sync`. Replay pre-loads the recorded
-events into ``self._pending``; live drains an :class:`~tinyic.tui.live.EventQueueSource`
+events into ``self._pending``; live drains an :class:`~tinyic.live.EventQueueSource`
 onto the *same* ``_pending`` each pump tick. A batched timer then folds
 ``_pending`` progressively (FR-5.5: batched ~30 ms UI updates, never a single
 dump). Live applies **no timing compression** — events render as they arrive —
@@ -68,7 +68,7 @@ from textual.widgets import Footer, Input, Static
 
 from . import theme
 from .events import Event, is_replayable, read_events
-from .live import EventQueueSource
+from tinyic.live import EventQueueSource
 from .state import TownHallState, TurnState
 from .steering import (
     ControlSink,
@@ -512,8 +512,8 @@ class TownHallApp(App):
         """An app fed live by a thread-safe queue of parsed :class:`Event`\\ s.
 
         ``event_queue`` is a ``queue.Queue`` any producer thread ``put``s events
-        onto (e.g. :func:`~tinyic.tui.live.attach_event_log_follower` tailing a
-        running debate's JSONL log). A :data:`~tinyic.tui.live.QUEUE_SENTINEL`
+        onto (e.g. :func:`~tinyic.live.attach_event_log_follower` tailing a
+        running debate's JSONL log). A :data:`~tinyic.live.QUEUE_SENTINEL`
         (or ``None``) on the queue closes the stream.
         """
         return cls(live_queue=event_queue, **kwargs)
@@ -571,7 +571,7 @@ class TownHallApp(App):
         """Enqueue one event for rendering.
 
         The single entry point onto the shared pump queue. Replay pre-loads the
-        whole recorded log; live polls its :class:`~tinyic.tui.live.EventQueueSource`
+        whole recorded log; live polls its :class:`~tinyic.live.EventQueueSource`
         each tick and calls this for every event the producer queued. Both drain
         through the same pump, so replay and live share one code path.
         """
@@ -600,7 +600,7 @@ class TownHallApp(App):
         """True when no more events will ever arrive.
 
         Replay is finite (pre-loaded). A live source is exhausted once its stream
-        closes (a :data:`~tinyic.tui.live.QUEUE_SENTINEL`) or a terminal debate
+        closes (a :data:`~tinyic.live.QUEUE_SENTINEL`) or a terminal debate
         event has been folded — so the pump keeps polling an open live queue even
         when ``_pending`` momentarily empties, instead of stopping between events.
         """
@@ -1149,7 +1149,7 @@ def run_replay(log_path: str | Path) -> None:
 def run_live(event_queue: "queue.Queue") -> None:
     """Launch the TUI to render a live debate fed off ``event_queue``.
 
-    The producer (e.g. :func:`~tinyic.tui.live.attach_event_log_follower`) fills
+    The producer (e.g. :func:`~tinyic.live.attach_event_log_follower`) fills
     the queue on another thread; the app drains and renders it. Blocks until the
     stream closes and the user quits.
     """

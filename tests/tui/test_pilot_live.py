@@ -21,7 +21,7 @@ import queue
 
 from tinyic.tui.app import TownHallApp
 from tinyic.tui.events import read_events
-from tinyic.tui.live import QUEUE_SENTINEL, attach_event_log_follower
+from tinyic.live import QUEUE_SENTINEL, attach_event_log_follower
 from tinyic.tui.widgets import PersonaCard, StatusHeader, TurnCard
 
 from tests.support import synthetic_events as G
