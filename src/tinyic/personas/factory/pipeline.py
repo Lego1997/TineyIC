@@ -60,10 +60,12 @@ _TRACKING_QUERY_KEYS = frozenset(
     {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"}
 )
 _CITATION_RE = re.compile(r"\[(\d+)\]")
-_QUOTE_RE = re.compile(
-    r'''(?:["“]([^"”\n]{2,})["”]|(?<![\w])['‘]([^'’\n]{2,})['’](?![\w]))'''
-)
 _SLUG_RE = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
+
+_DOUBLE_QUOTE_OPENERS = frozenset({'"', "“"})
+_DOUBLE_QUOTE_CLOSERS = frozenset({'"', "”"})
+_SINGLE_QUOTE_OPENERS = frozenset({"'", "‘"})
+_SINGLE_QUOTE_CLOSERS = frozenset({"'", "’"})
 
 _PRIMARY_HOSTS = frozenset(
     {
@@ -392,16 +394,56 @@ def _quote_is_verbatim(text: str, citations: Sequence[int], evidence: Sequence[E
     )
 
 
+def _quoted_spans(text: str) -> tuple[str, ...]:
+    """Extract paired prose quotations without mistaking apostrophes for quotes."""
+
+    spans: list[str] = []
+    index = 0
+    while index < len(text):
+        opener = text[index]
+        if opener in _DOUBLE_QUOTE_OPENERS:
+            closers = _DOUBLE_QUOTE_CLOSERS
+            single = False
+        elif opener in _SINGLE_QUOTE_OPENERS and (
+            index == 0 or not (text[index - 1].isalnum() or text[index - 1] == "_")
+        ):
+            closers = _SINGLE_QUOTE_CLOSERS
+            single = True
+        else:
+            index += 1
+            continue
+
+        closing_index = index + 1
+        while closing_index < len(text):
+            candidate = text[closing_index]
+            if candidate in closers and (
+                not single
+                or closing_index + 1 == len(text)
+                or not (
+                    text[closing_index + 1].isalnum()
+                    or text[closing_index + 1] == "_"
+                )
+            ):
+                break
+            closing_index += 1
+
+        if closing_index >= len(text):
+            index += 1
+            continue
+        if closing_index - index > 2:
+            spans.append(text[index + 1 : closing_index])
+        index = closing_index + 1
+
+    return tuple(spans)
+
+
 def _paragraph_quotes_are_verbatim(
     paragraph: str, citations: Sequence[int], evidence: Sequence[Evidence]
 ) -> bool:
-    quotes = (
-        quote
-        for match in _QUOTE_RE.findall(paragraph)
-        for quote in match
-        if quote
+    return all(
+        _quote_is_verbatim(quote, citations, evidence)
+        for quote in _quoted_spans(paragraph)
     )
-    return all(_quote_is_verbatim(quote, citations, evidence) for quote in quotes)
 
 
 def _verification_prompt(claims: Sequence[AtomicClaim], ledger: EvidenceLedger) -> str:

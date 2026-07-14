@@ -100,11 +100,15 @@ class FakeBackend:
         *,
         bad_quote: bool = False,
         bad_quote_delimiters: tuple[str, str] = ('"', '"'),
+        bad_quote_text: str = "This quote never appeared",
+        voice_addendum: str | None = None,
         fail_at: str | None = None,
     ) -> None:
         self.evidence = evidence
         self.bad_quote = bad_quote
         self.bad_quote_delimiters = bad_quote_delimiters
+        self.bad_quote_text = bad_quote_text
+        self.voice_addendum = voice_addendum
         self.fail_at = fail_at
         self.search_index = 0
         self.dossier_requests = []
@@ -130,8 +134,10 @@ class FakeBackend:
             if self.bad_quote:
                 opening, closing = self.bad_quote_delimiters
                 text += (
-                    f"\n\nThe investor said {opening}This quote never appeared{closing}. [1]"
+                    f"\n\nThe investor said {opening}{self.bad_quote_text}{closing}. [1]"
                 )
+            if self.voice_addendum:
+                text += f"\n\n{self.voice_addendum}"
         else:
             text = f"The cited public record supports this {request.section_title.casefold()} summary. [1]"
         return DossierSynthesisResponse(
@@ -404,6 +410,40 @@ def test_unverifiable_quotes_are_dropped_from_both_artifacts(
     dossier = result.dossier_path.read_text()
     assert "This quote never appeared" not in dossier
     assert "Buy only with a margin of safety" in dossier
+
+
+@pytest.mark.parametrize(
+    ("delimiters", "quote"),
+    [
+        (("‘", "’"), "It’s never too late"),
+        (("'", "'"), "It's never too late"),
+        (("‘", "'"), "It’s never too late"),
+        (("'", "’"), "It's never too late"),
+    ],
+    ids=("curly", "straight", "curly-straight", "straight-curly"),
+)
+def test_unverifiable_single_quoted_contractions_are_dropped(
+    tmp_path, delimiters, quote
+):
+    backend = FakeBackend(
+        _evidence(),
+        bad_quote=True,
+        bad_quote_delimiters=delimiters,
+        bad_quote_text=quote,
+    )
+
+    result = _factory(backend).run(ResearchRequest("Apostrophe Quote", tmp_path))
+
+    assert quote not in result.dossier_path.read_text()
+
+
+def test_unquoted_contractions_and_possessives_are_not_treated_as_quotes(tmp_path):
+    statement = "It's clear that the investor’s discipline protects owners' capital. [1]"
+    backend = FakeBackend(_evidence(), voice_addendum=statement)
+
+    result = _factory(backend).run(ResearchRequest("Apostrophe Prose", tmp_path))
+
+    assert statement in result.dossier_path.read_text()
 
 
 def test_collision_requires_force_and_force_replaces_both(tmp_path):
