@@ -40,7 +40,7 @@ import time
 from pathlib import Path
 from typing import TextIO
 
-from .constants import MIN_PERSONAS
+from .constants import MAX_PERSONAS, MIN_PERSONAS
 from .events import EventLog, make_debate_id
 from .result import debate_status, exit_code_for_status
 from .tui.events import Event, parse_event, read_events
@@ -72,19 +72,28 @@ class PersonaSelectionError(ValueError):
     """A ``--personas`` value naming an unknown or too-small committee."""
 
 
-def resolve_personas(spec: str | None) -> list[str]:
+def resolve_personas(
+    spec: str | None, *, config_path: str | Path | None = None
+) -> list[str]:
     """Resolve a ``--personas a,b,c`` value (or ``None``) to registry names.
 
-    ``None`` selects the default six-member committee. A comma list is validated
-    against the persona registry and must name at least ``MIN_PERSONAS`` members;
-    an unknown name is a :class:`PersonaSelectionError` listing the valid keys.
+    ``None`` selects the user-overlay committee when present, otherwise the
+    built-in six. A comma list always takes precedence.
     """
-    if spec is None:
-        return list(DEFAULT_PERSONAS)
-    from .personas.registry import PERSONA_REGISTRY, list_personas
+    from .personas.registry import list_personas, registry_snapshot
 
-    names = [token.strip() for token in spec.split(",") if token.strip()]
-    unknown = [name for name in names if name not in PERSONA_REGISTRY]
+    if spec is None:
+        try:
+            from .models.presets import load_config
+
+            configured = load_config(config_path).get("committee")
+        except Exception as exc:
+            raise PersonaSelectionError(f"invalid committee overlay: {exc}") from exc
+        names = list(configured or DEFAULT_PERSONAS)
+    else:
+        names = [token.strip() for token in spec.split(",") if token.strip()]
+    registry = registry_snapshot()
+    unknown = [name for name in names if name not in registry]
     if unknown:
         raise PersonaSelectionError(
             f"unknown persona(s): {', '.join(unknown)}; "
@@ -94,6 +103,12 @@ def resolve_personas(spec: str | None) -> list[str]:
         raise PersonaSelectionError(
             f"a committee needs at least {MIN_PERSONAS} personas, got {len(names)}"
         )
+    if len(names) > MAX_PERSONAS:
+        raise PersonaSelectionError(
+            f"a committee supports at most {MAX_PERSONAS} personas, got {len(names)}"
+        )
+    if len(set(names)) != len(names):
+        raise PersonaSelectionError("a committee cannot contain duplicate personas")
     return names
 
 
@@ -439,7 +454,11 @@ def run_debate_command(
         # resolution's STDOUT to STDERR too; the default committee needs no import
         # and is unaffected. STDERR stays the human channel for any banner.
         with contextlib.redirect_stdout(err):
-            persona_names = resolve_personas(personas)
+            persona_names = (
+                list(DEFAULT_PERSONAS)
+                if personas is None and committee is not None
+                else resolve_personas(personas, config_path=config_path)
+            )
     except PersonaSelectionError as exc:
         _progress(err, f"tinyic: {exc}")
         return 3

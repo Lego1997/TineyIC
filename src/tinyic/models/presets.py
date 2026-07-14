@@ -76,6 +76,7 @@ from typing import Any
 
 from .binding import ModelBinding
 from .thinking import ThinkingLevel, UnsupportedThinkingLevelError
+from tinyic.constants import MAX_PERSONAS, MIN_PERSONAS
 
 #: Built-in fallback when no ``tinyic.toml`` is present: one strong model
 #: everywhere (FR-1.4's ``default`` preset), so a committee always resolves.
@@ -408,6 +409,24 @@ def _builtin_raw_config() -> dict[str, Any]:
     }
 
 
+def _parse_committee(value: Any, *, where: str) -> list[str] | None:
+    """Validate the optional top-level ``committee = [...]`` overlay key."""
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise PresetError(f"{where} committee must be an array of persona slugs")
+    names = [item.strip() for item in value]
+    if any(not item for item in names):
+        raise PresetError(f"{where} committee entries must be non-empty persona slugs")
+    if len(names) != len(set(names)):
+        raise PresetError(f"{where} committee cannot contain duplicate personas")
+    if not MIN_PERSONAS <= len(names) <= MAX_PERSONAS:
+        raise PresetError(
+            f"{where} committee needs {MIN_PERSONAS}-{MAX_PERSONAS} members, got {len(names)}"
+        )
+    return names
+
+
 def _load_toml(resolved: Path, *, what: str) -> dict[str, Any]:
     try:
         with resolved.open("rb") as stream:
@@ -460,10 +479,12 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
         raise PresetError(
             f"default_preset {default_preset!r} is not a defined preset in {where}"
         )
+    committee = _parse_committee(raw.get("committee"), where=where)
     return {
         "presets": presets,
         "default_preset": str(default_preset),
         "auth": auth,
+        "committee": committee,
     }
 
 

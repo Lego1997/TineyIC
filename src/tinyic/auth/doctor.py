@@ -102,6 +102,7 @@ _KNOWN_REASONS = frozenset(
         "probe_failed",
         "unknown_provider",
         "invalid_preset",
+        "unknown_persona",
     }
 )
 
@@ -125,6 +126,7 @@ _FIXED_MESSAGES = {
     "probe_failed": "The provider readiness check failed.",
     "unknown_provider": "The selected provider is not registered.",
     "invalid_preset": "The selected preset configuration is invalid.",
+    "unknown_persona": "The configured committee names an unknown persona.",
 }
 
 ReasonProbe: TypeAlias = Callable[..., object]
@@ -327,6 +329,21 @@ def run_doctor(
     )
     try:
         probes = context.collect(selected)
+        committee = config.get("committee") or []
+        if committee:
+            from tinyic.personas.registry import registry_snapshot
+
+            available = registry_snapshot(warn=False)
+            if any(name not in available for name in committee):
+                probes = (
+                    *probes,
+                    _result(
+                        provider="tinyic",
+                        lane="committee",
+                        required=False,
+                        reason="unknown_persona",
+                    ),
+                )
     except Exception as exc:
         from tinyic.models.presets import PresetError
 

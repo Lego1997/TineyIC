@@ -37,6 +37,9 @@ def isolate_tinyic_run_logs(tmp_path, monkeypatch):
     monkeypatch.setenv(
         "TINYIC_USER_CONFIG", str(tmp_path / "tinyic-user" / "tinyic.toml")
     )
+    monkeypatch.setenv(
+        "TINYIC_PERSONAS_DIR", str(tmp_path / "tinyic-user" / "personas")
+    )
 
 
 @pytest.fixture(autouse=True)

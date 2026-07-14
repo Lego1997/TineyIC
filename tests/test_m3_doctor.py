@@ -318,6 +318,29 @@ def test_doctor_probes_every_builtin_provider_lane_and_requires_selected_preset(
     )
 
 
+def test_doctor_warns_when_overlay_committee_names_unknown_persona(tmp_path):
+    overlay = Path(os.environ["TINYIC_USER_CONFIG"])
+    overlay.parent.mkdir(parents=True, exist_ok=True)
+    overlay.write_text(
+        'committee = ["warren_buffett", "not_a_persona"]\n',
+        encoding="utf-8",
+    )
+    report = run_doctor(
+        manager=_manager(tmp_path),
+        openai_probe=lambda: "runtime_unavailable",
+        anthropic_probe=lambda: "runtime_unavailable",
+        grok_probe=lambda: "missing_credential",
+        runtime_locator=lambda _command: None,
+    )
+    committee_probe = next(
+        probe for probe in report.probes if probe.lane == "committee"
+    )
+    assert committee_probe.provider == "tinyic"
+    assert committee_probe.status is ProbeStatus.WARNING
+    assert committee_probe.reason_code == "unknown_persona"
+    assert committee_probe.required is False
+
+
 def test_configured_key_makes_selected_preset_ready_without_live_network(
     tmp_path,
 ):
