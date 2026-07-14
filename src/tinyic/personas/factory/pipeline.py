@@ -23,6 +23,14 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .schema import SchemaValidationError, validate_agent_spec
 from .seeds import canonical_name_key, plan_queries
+from .templates import (
+    DISCLAIMER,
+    DOSSIER_SECTIONS,
+    LOW_SOURCE_WARNING,
+    render_dossier,
+    render_dossier_prompt,
+    render_persona_prompt,
+)
 from .types import (
     AtomicClaim,
     CallUsage,
@@ -35,19 +43,6 @@ from .types import (
     SearchRequest,
     UsageSummary,
     VerificationRequest,
-)
-
-
-DISCLAIMER = (
-    "Educational simulation based only on the public record and limited to "
-    "investment philosophy and methodology. It may contain errors, and is not "
-    "affiliated with or endorsed by the person represented."
-)
-
-LOW_SOURCE_WARNING = (
-    "**LOW-SOURCE WARNING:** This profile rests on a thin independent-source "
-    "base. Treat every characterization as provisional and consult the cited "
-    "public record directly."
 )
 
 PROTECTED_BUILTIN_SLUGS = frozenset(
@@ -97,35 +92,6 @@ _COUNTRY_SECOND_LEVEL_SUFFIXES = frozenset(
         "org.uk",
     }
 )
-
-_DOSSIER_SECTIONS: tuple[tuple[str, str, str], ...] = (
-    (
-        "philosophy",
-        "Philosophy",
-        "Distill enduring investment principles and distinguish direct statements from interpretation.",
-    ),
-    (
-        "methodology",
-        "Methodology & decision process",
-        "Describe repeatable analysis, valuation, portfolio, and decision habits.",
-    ),
-    (
-        "risk",
-        "Risk discipline & red flags",
-        "Describe downside discipline, disqualifiers, uncertainty, and known limitations.",
-    ),
-    (
-        "track_record",
-        "Track record highlights (public)",
-        "Use only documented public positions or records; avoid causal performance claims.",
-    ),
-    (
-        "voice",
-        "Voice",
-        "Characterize public investment communication and use only excerpt-verbatim quotations.",
-    ),
-)
-
 
 class PersonaFactoryError(RuntimeError):
     reason_code = "persona_factory_error"
@@ -345,43 +311,6 @@ def _draft_paragraphs(text: str, source_count: int) -> tuple[str, ...]:
     return tuple(kept)
 
 
-def _dossier_prompt(
-    investor_name: str, section_title: str, instructions: str, ledger: EvidenceLedger
-) -> str:
-    return (
-        f"Write the {section_title!r} section of a public-record dossier about "
-        f"{investor_name}. {instructions}\n\n"
-        "Use ONLY the numbered evidence below. Every prose paragraph must end "
-        "with one or more citations like [1]. Quote only text appearing "
-        "verbatim in an evidence excerpt. If the evidence is thin, write 'the "
-        "public record does not establish ...' instead of guessing. Return "
-        "prose only, without a heading or sources list.\n\n"
-        + ledger.numbered_text()
-    )
-
-
-def _persona_prompt(
-    investor_name: str,
-    sections: Mapping[str, tuple[str, ...]],
-    ledger: EvidenceLedger,
-) -> str:
-    dossier = "\n\n".join(
-        f"## {key}\n" + "\n\n".join(paragraphs)
-        for key, paragraphs in sections.items()
-    )
-    return (
-        f"Create a TinyTroupe TinyPerson JSON object for an educational public-"
-        f"record simulation of {investor_name}. Use ONLY the verified-style "
-        "dossier and numbered ledger below. Do not include age, family, health, "
-        "residence, or other private-life material. Keep beliefs to at most 15; "
-        "include style, personality.traits, behaviors.general, skills, "
-        "preferences interests/likes/dislikes, and public other_facts. Include "
-        "the complete tinyic schema_version 1 block. Famous quotes must copy an "
-        "excerpt verbatim and use a 1-based source index.\n\n"
-        f"DOSSIER\n{dossier}\n\nLEDGER\n{ledger.numbered_text()}"
-    )
-
-
 def _persona_claims(specification: Mapping[str, Any]) -> list[AtomicClaim]:
     claims: list[AtomicClaim] = []
 
@@ -583,43 +512,6 @@ def _source_records(ledger: EvidenceLedger, accessed: str) -> tuple[dict[str, st
     return ledger.source_records(accessed)
 
 
-def _render_dossier(
-    *,
-    investor_name: str,
-    epithet: str,
-    sections: Mapping[str, tuple[str, ...]],
-    ledger: EvidenceLedger,
-    quality: str,
-    model_ref: str,
-    generated_date: str,
-    search_calls: int,
-    usage: UsageSummary,
-) -> str:
-    title = f"# {investor_name} — {epithet}\n\n"
-    output = [title, f"> **Disclaimer:** {DISCLAIMER}\n"]
-    if quality == "thin":
-        output.append(f"\n> {LOW_SOURCE_WARNING}\n")
-    section_titles = {key: title for key, title, _ in _DOSSIER_SECTIONS}
-    for key, paragraphs in sections.items():
-        output.append(f"\n## {section_titles[key]}\n\n")
-        output.append("\n\n".join(paragraphs))
-        output.append("\n")
-    output.append("\n## Sources\n\n")
-    for number, item in enumerate(ledger.items, 1):
-        accessed = item.accessed or generated_date
-        output.append(
-            f"{number}. [{item.title}]({item.url}) — {item.source_type}; "
-            f"accessed {accessed}\n"
-        )
-    cost = "unavailable (subscription or unpriced lane)" if usage.cost_usd is None else f"${usage.cost_usd:.6f}"
-    output.append(
-        "\n---\n"
-        f"Generated by TinyIC with `{model_ref}` on {generated_date}. "
-        f"Search calls: {search_calls}. Sources: {len(ledger.items)}. Cost: {cost}.\n"
-    )
-    return "".join(output)
-
-
 def _stage_file(path: Path, content: bytes) -> Path:
     descriptor, raw_path = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     staged = Path(raw_path)
@@ -777,13 +669,18 @@ class PersonaFactory:
 
         self.progress("distilling_dossier")
         draft_sections: dict[str, tuple[str, ...]] = {}
-        for key, title, instructions in _DOSSIER_SECTIONS:
+        for key, title, instructions in DOSSIER_SECTIONS:
             response = self.backend.synthesize_dossier(
                 DossierSynthesisRequest(
                     investor_name,
                     key,
                     title,
-                    _dossier_prompt(investor_name, title, instructions, ledger),
+                    render_dossier_prompt(
+                        investor_name,
+                        title,
+                        instructions,
+                        ledger.numbered_text(),
+                    ),
                     ledger.items,
                 )
             )
@@ -803,7 +700,11 @@ class PersonaFactory:
             PersonaSynthesisRequest(
                 investor_name,
                 slug,
-                _persona_prompt(investor_name, draft_sections, ledger),
+                render_persona_prompt(
+                    investor_name,
+                    draft_sections,
+                    ledger.numbered_text(),
+                ),
                 {key: tuple(value) for key, value in draft_sections.items()},
                 ledger.items,
                 source_records,
@@ -866,7 +767,11 @@ class PersonaFactory:
                 ):
                     kept.append(paragraph)
             if not kept:
-                title = next(title for section_key, title, _ in _DOSSIER_SECTIONS if section_key == key)
+                title = next(
+                    title
+                    for section_key, title, _ in DOSSIER_SECTIONS
+                    if section_key == key
+                )
                 kept.append(
                     f"The public record does not establish a sufficiently specific {title.casefold()} profile. [1]"
                 )
@@ -880,16 +785,16 @@ class PersonaFactory:
         validate_agent_spec(specification)
 
         usage = UsageSummary.from_records(usage_records, search_calls=search_calls)
-        dossier = _render_dossier(
+        dossier = render_dossier(
             investor_name=investor_name,
             epithet=specification["tinyic"]["epithet"],
             sections=verified_sections,
-            ledger=ledger,
+            evidence=ledger.items,
             quality=quality,
             model_ref=str(self.backend.model_ref),
             generated_date=generated_date,
             search_calls=search_calls,
-            usage=usage,
+            cost_usd=usage.cost_usd,
         )
         agent_bytes = (
             json.dumps(specification, indent=2, ensure_ascii=False, sort_keys=False) + "\n"

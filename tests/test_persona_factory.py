@@ -34,31 +34,12 @@ from tinyic.personas.registry import load_persona
 from tinytroupe.agent import TinyPerson
 
 
+_FIXTURES = Path(__file__).parent / "fixtures" / "persona_factory"
+
+
 def _evidence(count: int = 6) -> tuple[Evidence, ...]:
-    hosts = (
-        "letters.example",
-        "archive.example",
-        "regulator.example",
-        "university.example",
-        "newspaper.example",
-        "journal.example",
-    )
-    result = []
-    for index, host in enumerate(hosts[:count], 1):
-        excerpt = (
-            "Buy only with a margin of safety and demand evidence before conviction."
-            if index == 1
-            else f"Public record excerpt {index} documents investment method and risk discipline."
-        )
-        result.append(
-            Evidence(
-                f"https://{host}/source-{index}",
-                f"Source {index}",
-                excerpt,
-                source_type="primary" if index == 1 else "secondary",
-            )
-        )
-    return tuple(result)
+    records = json.loads((_FIXTURES / "evidence.json").read_text(encoding="utf-8"))
+    return tuple(Evidence(**record) for record in records[:count])
 
 
 def _valid_spec(request, *, include_bad_quote: bool = False):
@@ -257,12 +238,17 @@ def test_end_to_end_writes_cited_schema_valid_loadable_artifacts(
     assert result.source_count == 6
     assert result.domain_count == 6
     assert result.agent_path.exists() and result.dossier_path.exists()
-    specification = json.loads(result.agent_path.read_text())
+    agent_text = result.agent_path.read_text(encoding="utf-8")
+    assert agent_text == (_FIXTURES / "ada_value.agent.json").read_text(
+        encoding="utf-8"
+    )
+    specification = json.loads(agent_text)
     validate_agent_spec(specification)
     assert specification["tinyic"]["generation"]["disclaimer"]
     assert specification["tinyic"]["generation"]["quality"] == "normal"
     assert len(specification["tinyic"]["sources"]) == 6
-    dossier = result.dossier_path.read_text()
+    dossier = result.dossier_path.read_text(encoding="utf-8")
+    assert dossier == (_FIXTURES / "ada_value.dossier.md").read_text(encoding="utf-8")
     assert "**Disclaimer:**" in dossier
     for heading in (
         "Philosophy",
@@ -286,7 +272,18 @@ def test_end_to_end_writes_cited_schema_valid_loadable_artifacts(
     assert result.usage.calls == 13  # 6 search + 5 dossier + persona + verify
     assert result.usage.cost_usd == pytest.approx(0.021)
     # Every dossier synthesis call receives only the immutable ledger snapshot.
-    assert all(request.evidence == backend.dossier_requests[0].evidence for request in backend.dossier_requests)
+    assert all(
+        request.evidence == backend.dossier_requests[0].evidence
+        for request in backend.dossier_requests
+    )
+    assert all(
+        "Use ONLY the numbered evidence" in request.prompt
+        for request in backend.dossier_requests
+    )
+    persona_prompt = backend.persona_requests[0].prompt
+    assert "the complete tinyic schema_version 1 block" in persona_prompt
+    assert "DOSSIER\n## philosophy" in persona_prompt
+    assert "\n\nLEDGER\n[1] Source 1" in persona_prompt
 
 
 def test_three_to_four_domains_write_thin_warning(tmp_path):
