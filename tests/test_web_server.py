@@ -1,0 +1,368 @@
+"""Focused real-socket tests for TinyIC's localhost web face."""
+
+from __future__ import annotations
+
+import http.client
+import io
+import json
+import threading
+from pathlib import Path
+
+import pytest
+
+from tinyic.report import render_html, render_markdown
+from tinyic.tui.events import read_events
+from tinyic.web.security import CSP_POLICY, SecurityPolicy, is_json_content_type
+from tinyic.web.server import WebFace, WebServer
+
+
+def _event(seq: int, event_type: str, **payload: object) -> dict[str, object]:
+    return {
+        "v": 1,
+        "seq": seq,
+        "ts": f"2026-07-14T12:00:0{seq}.000Z",
+        "debate_id": "aapl-20260714-web1",
+        "type": event_type,
+        "payload": payload,
+    }
+
+
+def _write_log(path: Path, events: list[dict[str, object]]) -> None:
+    path.write_text(
+        "".join(json.dumps(event, separators=(",", ":")) + "\n" for event in events),
+        encoding="utf-8",
+    )
+
+
+def _assets(name: str):
+    values = {
+        "index.html": (b"<!doctype html><title>TinyIC</title>", "text/html; charset=utf-8"),
+        "app.js": (b"export {};", "text/javascript; charset=utf-8"),
+        "style.css": (b"body{}", "text/css; charset=utf-8"),
+    }
+    return values.get(name)
+
+
+@pytest.fixture
+def servers():
+    running: list[WebServer] = []
+
+    def make(path: Path, **kwargs) -> WebServer:
+        server = WebServer(
+            path,
+            token="test-token",
+            open_browser=False,
+            asset_loader=_assets,
+            stderr=io.StringIO(),
+            poll_interval=0.005,
+            heartbeat_interval=0.03,
+            **kwargs,
+        ).start()
+        running.append(server)
+        return server
+
+    yield make
+    for server in running:
+        server.shutdown()
+
+
+def _request(
+    server: WebServer,
+    method: str,
+    target: str,
+    *,
+    headers: dict[str, str] | None = None,
+    body: bytes | None = None,
+    host: str | None = None,
+) -> tuple[int, dict[str, str], bytes]:
+    connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=3)
+    connection.putrequest(method, target, skip_host=True)
+    connection.putheader("Host", host or f"127.0.0.1:{server.port}")
+    for name, value in (headers or {}).items():
+        connection.putheader(name, value)
+    if body is not None and not any(
+        name.casefold() == "content-length" for name in (headers or {})
+    ):
+        connection.putheader("Content-Length", str(len(body)))
+    connection.endheaders(body)
+    response = connection.getresponse()
+    response_body = response.read()
+    result = response.status, {name: value for name, value in response.getheaders()}, response_body
+    connection.close()
+    return result
+
+
+def _auth(server: WebServer) -> dict[str, str]:
+    return {"Authorization": f"Bearer {server.token}"}
+
+
+def _post_json(server: WebServer, path: str, value: object):
+    body = json.dumps(value).encode("utf-8")
+    return _request(
+        server,
+        "POST",
+        path,
+        headers={**_auth(server), "Content-Type": "application/json; charset=utf-8"},
+        body=body,
+    )
+
+
+def test_security_policy_exact_allowlists_and_json_type():
+    policy = SecurityPolicy(port=8123, token="safe-token")
+    assert policy.valid_host("127.0.0.1:8123")
+    assert policy.valid_host("localhost:8123")
+    assert policy.valid_host("[::1]:8123")
+    assert not policy.valid_host("127.0.0.1:8124")
+    assert not policy.valid_host("attacker.test")
+    assert policy.valid_origin(None)
+    assert policy.valid_origin("http://localhost:8123")
+    assert not policy.valid_origin("https://localhost:8123")
+    assert is_json_content_type("application/json; charset=utf-8")
+    assert not is_json_content_type("application/x-www-form-urlencoded")
+
+
+def test_token_cookie_handoff_and_security_headers(tmp_path, servers):
+    path = tmp_path / "run.jsonl"
+    _write_log(path, [])
+    server = servers(path, replay=True)
+
+    status, headers, _ = _request(server, "GET", "/")
+    assert status == 401
+    assert headers["Cache-Control"] == "no-store"
+    assert headers["Content-Security-Policy"] == CSP_POLICY
+
+    assert _request(server, "GET", "/?token=wrong")[0] == 403
+    status, headers, _ = _request(server, "GET", "/?token=test-token")
+    assert status == 302
+    assert headers["Location"] == "/"
+    cookie = headers["Set-Cookie"]
+    assert "tinyic_token=test-token" in cookie
+    assert "HttpOnly" in cookie and "SameSite=Strict" in cookie and "Path=/" in cookie
+
+    status, _, body = _request(
+        server, "GET", "/", headers={"Cookie": cookie.split(";", 1)[0]}
+    )
+    assert status == 200
+    assert b"TinyIC" in body
+
+
+def test_host_origin_and_json_only_rejections(tmp_path, servers):
+    path = tmp_path / "run.jsonl"
+    _write_log(path, [])
+    server = servers(path, inbox=FakeInbox())
+
+    assert _request(server, "GET", "/api/meta", headers=_auth(server), host="attacker.test")[0] == 403
+    assert _request(
+        server,
+        "POST",
+        "/api/steering",
+        headers={
+            **_auth(server),
+            "Origin": "http://attacker.test",
+            "Content-Type": "application/json",
+        },
+        body=b' {"type":"steer","text":"x"}',
+    )[0] == 403
+    assert _request(
+        server,
+        "POST",
+        "/api/steering",
+        headers={
+            **_auth(server),
+            "Origin": f"http://127.0.0.1:{server.port}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body=b"type=steer&text=x",
+    )[0] == 415
+
+
+def test_sse_full_replay_resume_and_post_final_204(tmp_path, servers):
+    path = tmp_path / "run.jsonl"
+    events = [
+        _event(1, "debate_started", ticker="AAPL", company_name="Apple Inc."),
+        _event(2, "talk_delta", turn_id="t1", text="hello"),
+        _event(3, "debate_completed", phases_completed=[], duration_s=1, result_ref="x"),
+    ]
+    _write_log(path, events)
+    server = servers(path, replay=True)
+
+    status, headers, body = _request(
+        server, "GET", "/events?from_seq=0", headers=_auth(server)
+    )
+    text = body.decode("utf-8")
+    assert status == 200
+    assert headers["Content-Type"].startswith("text/event-stream")
+    assert text.startswith("retry: 1500\n\n")
+    assert [line for line in text.splitlines() if line.startswith("id:")] == [
+        "id:1",
+        "id:2",
+        "id:3",
+    ]
+    envelopes = [
+        json.loads(line.removeprefix("data:"))
+        for line in text.splitlines()
+        if line.startswith("data:")
+    ]
+    assert envelopes == events
+
+    status, _, body = _request(
+        server,
+        "GET",
+        "/events?from_seq=0",
+        headers={**_auth(server), "Last-Event-ID": "1"},
+    )
+    assert status == 200
+    assert b"id:1\n" not in body
+    assert b"id:2\n" in body and b"id:3\n" in body
+    assert _request(server, "GET", "/events?from_seq=3", headers=_auth(server))[0] == 204
+
+
+def test_sse_heartbeat_and_live_run_finish_seam(tmp_path, servers):
+    path = tmp_path / "run.jsonl"
+    _write_log(path, [_event(1, "debate_started", ticker="AAPL")])
+    server = servers(path)
+    connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=3)
+    connection.request("GET", "/events?from_seq=0", headers=_auth(server))
+    response = connection.getresponse()
+    assert response.status == 200
+    seen = []
+    while ": ping\n" not in seen:
+        line = response.readline().decode("utf-8")
+        assert line
+        seen.append(line)
+    assert server.active_sse == 1
+    server.mark_run_finished()
+    response.read()
+    connection.close()
+    assert server.wait_for_sse_disconnect(timeout=2)
+
+
+class FakeInbox:
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def submit(self, mode, text, *, target=None, source=None):
+        self.calls.append(("submit", mode, text, target, source))
+        return "api-0001"
+
+    def request_interrupt(self, *, text=None, target=None, source=None):
+        self.calls.append(("interrupt", text, target, source))
+        return True
+
+
+class FakeControl:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def pause(self):
+        self.calls.append("pause")
+
+    def resume(self):
+        self.calls.append("resume")
+
+    def next_phase(self):
+        self.calls.append("next_phase")
+
+    def stop(self):
+        self.calls.append("stop")
+
+
+def test_steering_and_control_posts_preserve_protocol(tmp_path, servers):
+    path = tmp_path / "run.jsonl"
+    _write_log(path, [])
+    inbox = FakeInbox()
+    control = FakeControl()
+    server = servers(path, inbox=inbox, control=control)
+
+    status, _, body = _post_json(
+        server,
+        "/api/steering",
+        {"type": "steer", "target": "Warren Buffett", "text": "Press valuation."},
+    )
+    assert status == 202
+    assert json.loads(body)["msg_id"] == "api-0001"
+    assert inbox.calls == [
+        ("submit", "steer", "Press valuation.", "Warren Buffett", "api")
+    ]
+    assert _post_json(server, "/api/steering", {"type": "interrupt"})[0] == 202
+    assert inbox.calls[-1] == ("interrupt", None, None, "api")
+
+    for action in ("pause", "resume", "next_phase", "stop"):
+        assert _post_json(server, "/api/control", {"type": action})[0] == 202
+    assert control.calls == ["pause", "resume", "next_phase", "stop"]
+
+
+def test_replay_rejects_state_changes(tmp_path, servers):
+    path = tmp_path / "run.jsonl"
+    _write_log(path, [])
+    server = servers(path, replay=True)
+    assert _post_json(server, "/api/steering", {"type": "steer", "text": "x"})[0] == 409
+    assert _post_json(server, "/api/control", {"type": "pause"})[0] == 409
+
+
+def test_meta_and_exports_use_current_log_verbatim(tmp_path, servers):
+    path = tmp_path / "run.jsonl"
+    events = [
+        _event(1, "debate_started", ticker="AAPL", company_name="Apple Inc.", preset="default", personas=[], moderator={}, aggregator={}, caps={}, config_hash="x", tinyic_version="x"),
+        _event(2, "debate_completed", phases_completed=[], duration_s=1, result_ref="x"),
+    ]
+    _write_log(path, events)
+    server = servers(path, replay=True)
+
+    status, _, body = _request(server, "GET", "/api/meta", headers=_auth(server))
+    assert status == 200
+    assert json.loads(body) == {
+        "run_id": "aapl-20260714-web1",
+        "ticker": "AAPL",
+        "status": "replay",
+        "seq_high": 2,
+        "replay": True,
+    }
+
+    parsed = read_events(path)
+    status, headers, body = _request(
+        server, "GET", "/api/result?fmt=html", headers=_auth(server)
+    )
+    assert status == 200
+    assert body.decode("utf-8") == render_html(parsed)
+    assert headers["Content-Disposition"].endswith('.html"')
+    status, _, body = _request(
+        server, "GET", "/api/result?fmt=md", headers=_auth(server)
+    )
+    assert status == 200
+    assert body.decode("utf-8") == render_markdown(parsed)
+
+
+def test_browser_open_is_injected_and_server_is_loopback_only(tmp_path):
+    path = tmp_path / "run.jsonl"
+    _write_log(path, [])
+    opened: list[str] = []
+    stderr = io.StringIO()
+    server = WebFace.replay(
+        path,
+        token="browser-token",
+        browser_opener=lambda url: opened.append(url),
+        asset_loader=_assets,
+        stderr=stderr,
+    ).start()
+    try:
+        assert opened == [server.launch_url]
+        assert server.launch_url.endswith("/?token=browser-token")
+        assert server.launch_url in stderr.getvalue()
+        assert server.host == "127.0.0.1"
+    finally:
+        server.shutdown()
+    with pytest.raises(ValueError, match="127.0.0.1"):
+        WebServer(path, host="0.0.0.0")
+
+
+def test_snapshot_ignores_partial_utf8_tail(tmp_path):
+    path = tmp_path / "run.jsonl"
+    first = json.dumps(_event(1, "debate_started", ticker="AAPL"), ensure_ascii=False)
+    second = json.dumps(_event(2, "talk_delta", turn_id="t", text="paused…"), ensure_ascii=False).encode("utf-8")
+    ellipsis = "…".encode("utf-8")
+    cut = second.rfind(ellipsis) + 2
+    path.write_bytes(first.encode("utf-8") + b"\n" + second[:cut])
+    server = WebServer(path, token="test-token", open_browser=False)
+    snapshot = server.snapshot()
+    assert [record.seq for record in snapshot.records] == [1]
