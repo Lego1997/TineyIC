@@ -1,7 +1,7 @@
 """TinyIC command-line entry point.
 
-M0 established the console script and ``--help`` path; M5 adds ``tinyic replay``
-to render a recorded event log in the Textual TUI. M3 adds the headless
+M0 established the console script and ``--help`` path; ``tinyic replay`` serves
+a recorded event log in the read-only web viewer. M3 adds the headless
 ``doctor`` seam and its interactive twin ``tinyic onboard`` (the FR-2.4 wizard).
 M6 adds the flagship ``tinyic debate`` (interactive Town Hall or headless/JSON
 agent mode, FR-6.1/6.2) plus ``tinyic runs list`` and ``tinyic result`` for
@@ -38,16 +38,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     replay = subparsers.add_parser(
         "replay",
-        help="Replay a recorded debate event log in the TUI (no LLM calls).",
+        help="Replay a recorded debate in the read-only web viewer (no LLM calls).",
         description=(
-            "Replay a recorded TinyIC debate by re-feeding its JSONL event log "
-            "to the Town Hall TUI. Accepts a path to a .jsonl log."
+            "Replay a recorded TinyIC debate by serving its JSONL event log "
+            "to the same localhost Town Hall used for live debates."
         ),
     )
     replay.add_argument(
         "path",
-        help="Path to a recorded debate event log (.jsonl).",
+        help="Debate id or path to a recorded .jsonl event log.",
     )
+    _add_web_flags(replay)
     replay.set_defaults(func=_cmd_replay)
 
     doctor = subparsers.add_parser(
@@ -467,13 +468,15 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
 
 def _cmd_replay(args: argparse.Namespace) -> int:
-    """Launch the Town Hall TUI to replay ``args.path``."""
-    # Import lazily so the (heavy) Textual stack is only loaded when replaying,
-    # keeping ``tinyic --help`` and other commands fast and import-light.
-    from .tui.app import run_replay
+    """Serve ``args.path`` in the read-only localhost Town Hall."""
+    from .headless import run_replay_command
 
-    run_replay(args.path)
-    return 0
+    return run_replay_command(
+        args.path,
+        port=args.port,
+        no_open=args.no_open,
+        no_wait=args.no_wait,
+    )
 
 
 def _cmd_onboard(args: argparse.Namespace) -> int:

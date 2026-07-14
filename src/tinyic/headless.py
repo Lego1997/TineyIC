@@ -50,6 +50,7 @@ __all__ = [
     "PersonaSelectionError",
     "resolve_personas",
     "run_debate_command",
+    "run_replay_command",
 ]
 
 #: The default six-member committee (PRD §1), in the canonical speaking order.
@@ -701,3 +702,49 @@ def _run_web(
         preset=preset,
         config_path=config_path,
     )
+
+
+def run_replay_command(
+    id_or_path: str,
+    *,
+    port: int = 0,
+    no_open: bool = False,
+    no_wait: bool = False,
+    err: TextIO | None = None,
+    browser_opener=None,
+) -> int:
+    """Serve a recorded log through the same web face, read-only and offline."""
+    err = err if err is not None else sys.stderr
+    from .result import resolve_run_path
+
+    path = resolve_run_path(id_or_path)
+    if not path.is_file():
+        _progress(
+            err,
+            f"tinyic: no debate run found for {id_or_path!r} (looked at {path})",
+        )
+        return 3
+    with contextlib.redirect_stdout(err):
+        from tinyic.web import WebFace
+
+    face = WebFace.replay(
+        path,
+        port=port,
+        browser_opener=browser_opener,
+        open_browser=not no_open,
+        stderr=err,
+    )
+    try:
+        face.start()
+        if no_wait:
+            face.wait_for_sse_disconnect(timeout=1.0)
+        else:
+            _progress(err, f"replay viewer at {face.base_url}, Ctrl-C to exit")
+            try:
+                while not face.wait(0.5):
+                    pass
+            except KeyboardInterrupt:
+                pass
+    finally:
+        face.shutdown(timeout=1.0)
+    return 0
