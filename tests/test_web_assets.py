@@ -232,8 +232,10 @@ def test_controls_use_json_post_protocol(javascript: str) -> None:
         assert f'"{steering_type}"' in javascript
     assert "event.shiftKey" in javascript
     assert "event.isComposing" in javascript
+    assert "state.steeringPending" in javascript
     assert 'detail === "replay_read_only"' in javascript
     assert "!state.paused" in javascript
+    assert '!["completed", "error"].includes(state.meta.status)' in javascript
 
 
 def test_page_states_and_jump_to_live_are_implemented(

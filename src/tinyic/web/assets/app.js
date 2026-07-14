@@ -138,6 +138,7 @@
     currentTurnId: "",
     mode: "steer",
     paused: false,
+    steeringPending: false,
     thinkingVisible: false,
     phases: new Map(),
     turns: new Map(),
@@ -536,7 +537,7 @@
     dom.companyName.textContent = asString(payload.company_name, "Company name unavailable");
     renderRoster(asArray(payload.personas));
     dom.transcriptStatus.textContent = "Debate record opened";
-    if (!state.meta.replay && state.meta.status !== "completed") {
+    if (!state.meta.replay && !["completed", "error"].includes(state.meta.status)) {
       setRunState("live");
     }
   }
@@ -1213,6 +1214,9 @@
   }
 
   async function submitSteering() {
+    if (state.steeringPending) {
+      return;
+    }
     const text = dom.steeringText.value.trim();
     if (!text) {
       dom.steeringText.focus();
@@ -1222,6 +1226,7 @@
     if (state.mode === "steer" && dom.steeringTarget.value) {
       payload.target = dom.steeringTarget.value;
     }
+    state.steeringPending = true;
     dom.sendButton.disabled = true;
     try {
       await postJson("/api/steering", payload);
@@ -1230,6 +1235,7 @@
     } catch (error) {
       showToast(error.message);
     } finally {
+      state.steeringPending = false;
       dom.sendButton.disabled = !controlsShouldBeEnabled(state.meta.status);
     }
   }
