@@ -13,6 +13,7 @@ from ._base import (
     EvidenceCollector,
     PURPOSE_SEARCH,
     annotation_excerpt,
+    annotation_excerpt_is_source_supplied,
     response_text_and_annotations,
     response_web_search_calls,
     search_prompt,
@@ -46,6 +47,7 @@ def _add_response_annotations(
             title=annotation.get("title"),
             excerpt=annotation_excerpt(block_text, annotation),
             fallback_text=block_text,
+            quote_eligible=annotation_excerpt_is_source_supplied(annotation),
         )
     return urls
 

@@ -116,7 +116,11 @@ class UsageSummary:
 
 @dataclass(frozen=True)
 class Evidence:
-    """One provider-returned, citable public-record excerpt."""
+    """One provider-returned, citable public-record excerpt.
+
+    The quote_eligible flag is true only for source-owned text, never for the
+    research model's synthesized prose.
+    """
 
     url: str
     title: str
@@ -125,6 +129,11 @@ class Evidence:
     provider: str = ""
     source_type: str = "secondary"
     accessed: str | None = None
+    quote_eligible: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.quote_eligible, bool):
+            raise TypeError("quote_eligible must be a boolean")
 
 
 @dataclass(frozen=True)

@@ -14,6 +14,7 @@ from ._base import (
     PURPOSE_SEARCH,
     UnsupportedResearchModelError,
     annotation_excerpt,
+    annotation_excerpt_is_source_supplied,
     search_prompt,
     usage_from_gemini,
 )
@@ -186,6 +187,7 @@ class GeminiResearchBackend(BaseResearchBackend):
                 title=annotation.get("title"),
                 excerpt=annotation_excerpt(block_text, annotation),
                 fallback_text=block_text,
+                quote_eligible=annotation_excerpt_is_source_supplied(annotation),
             )
 
         # Legacy groundingMetadata: supports identify which chunk grounds which
@@ -219,6 +221,7 @@ class GeminiResearchBackend(BaseResearchBackend):
                             title=web.get("title"),
                             excerpt=excerpt,
                             fallback_text=candidate_text,
+                            quote_eligible=False,
                         )
             for index, chunk in enumerate(chunks):
                 if index in supported_indexes:

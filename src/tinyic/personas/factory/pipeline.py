@@ -14,9 +14,11 @@ import json
 import os
 import re
 import tempfile
+import unicodedata
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date
+from html import unescape as html_unescape
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -31,6 +33,7 @@ from .templates import (
     render_dossier_prompt,
     render_persona_prompt,
 )
+from .url_safety import normalize_public_host, url_contains_sensitive_material
 from .types import (
     AtomicClaim,
     CallUsage,
@@ -62,10 +65,604 @@ _TRACKING_QUERY_KEYS = frozenset(
 _CITATION_RE = re.compile(r"\[(\d+)\]")
 _SLUG_RE = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
 
-_DOUBLE_QUOTE_OPENERS = frozenset({'"', "“"})
-_DOUBLE_QUOTE_CLOSERS = frozenset({'"', "”"})
-_SINGLE_QUOTE_OPENERS = frozenset({"'", "‘"})
-_SINGLE_QUOTE_CLOSERS = frozenset({"'", "’"})
+_DOUBLE_QUOTE_OPENERS = frozenset(
+    {
+        '"',
+        "«",
+        "»",
+        "“",
+        "”",
+        "„",
+        "‟",
+        "❝",
+        "❞",
+        "「",
+        "」",
+        "『",
+        "』",
+        "〝",
+        "〞",
+        "〟",
+        "﹁",
+        "﹂",
+        "﹃",
+        "﹄",
+        "＂",
+        "｢",
+        "｣",
+    }
+)
+_DOUBLE_QUOTE_CLOSERS = _DOUBLE_QUOTE_OPENERS
+_SINGLE_QUOTE_OPENERS = frozenset(
+    {"'", "ʻ", "ʼ", "ʹ", "‘", "’", "‚", "‛", "′", "‹", "›", "＇"}
+)
+_SINGLE_QUOTE_CLOSERS = _SINGLE_QUOTE_OPENERS
+_DIRECTIONAL_QUOTE_PAIRS = frozenset(
+    {
+        ("«", "»"),
+        ("»", "«"),
+        ("“", "”"),
+        ("„", "”"),
+        ("‟", "”"),
+        ("❝", "❞"),
+        ("「", "」"),
+        ("『", "』"),
+        ("〝", "〞"),
+        ("〝", "〟"),
+        ("﹁", "﹂"),
+        ("﹃", "﹄"),
+        ("｢", "｣"),
+        ("‘", "’"),
+        ("‚", "’"),
+        ("‛", "’"),
+        ("‹", "›"),
+        ("›", "‹"),
+    }
+)
+_QUOTE_STRIP_CHARACTERS = "".join(
+    sorted(_DOUBLE_QUOTE_OPENERS | _SINGLE_QUOTE_OPENERS)
+)
+_QUOTE_CHARACTERS = _DOUBLE_QUOTE_OPENERS | _SINGLE_QUOTE_OPENERS
+_QUOTE_LIKE_UNICODE_NAMES = (
+    "APOSTROPHE",
+    "DASIA",
+    "COMMA ABOVE",
+    "COMMA BELOW",
+    "GERESH",
+    "GERSHAYIM",
+    "HALF RING",
+    "KORONIS",
+    "PRIME",
+    "PSILI",
+    "QUOTATION MARK",
+    "REVERSED COMMA",
+    "SALTILLO",
+    "TURNED COMMA",
+)
+_QUOTE_LIKE_MODIFIER_NAMES = (
+    "ACUTE ACCENT",
+    "GRAVE ACCENT",
+)
+_MARKDOWN_BLOCKQUOTE_RE = re.compile(
+    r"^[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+)*(?:>[ \t]?)+(.*)$"
+)
+_MARKDOWN_FENCE_RE = re.compile(
+    r"^[ \t]*(?:(?:(?:[-+*]|\d{1,9}[.)])[ \t]+)|(?:>[ \t]?))*"
+    r"(?:`{3,}|~{3,})",
+    flags=re.MULTILINE,
+)
+_HTML_QUOTE_RE = re.compile(
+    r"<(blockquote|q)\b[^>]*>(.*?)</\1\s*>", flags=re.IGNORECASE | re.DOTALL
+)
+_HTML_QUOTE_TAG_RE = re.compile(r"</?(?:blockquote|q)\b", flags=re.IGNORECASE)
+_HTML_RAW_CONTAINER_TAG_RE = re.compile(
+    r"</?(?:pre|xmp|listing|textarea|plaintext|script|style|iframe|"
+    r"noembed|noframes|title)\b",
+    flags=re.IGNORECASE,
+)
+_HTML_INLINE_CODE_RE = re.compile(
+    r"<(code|kbd|samp|tt)\b([^>]*)>(.*?)</\1\s*>",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_HTML_INLINE_CODE_TAG_RE = re.compile(
+    r"</?(?:code|kbd|samp|tt)\b", flags=re.IGNORECASE
+)
+_LEADING_APOSTROPHE_WORDS = frozenset(
+    {"bout", "cause", "em", "n", "round", "til", "tis", "twas"}
+)
+_FIXED_INTERNAL_APOSTROPHE_STEMS = {
+    "all": frozenset({"y"}),
+    "am": frozenset({"ma"}),
+    "d": frozenset(
+        {
+            "he",
+            "how",
+            "i",
+            "it",
+            "she",
+            "that",
+            "there",
+            "they",
+            "this",
+            "we",
+            "what",
+            "when",
+            "where",
+            "who",
+            "why",
+            "you",
+        }
+    ),
+    "ll": frozenset(
+        {
+            "he",
+            "how",
+            "i",
+            "it",
+            "she",
+            "that",
+            "there",
+            "they",
+            "this",
+            "we",
+            "what",
+            "when",
+            "where",
+            "who",
+            "why",
+            "you",
+        }
+    ),
+    "m": frozenset({"i"}),
+    "re": frozenset(
+        {
+            "how",
+            "there",
+            "they",
+            "we",
+            "what",
+            "when",
+            "where",
+            "who",
+            "why",
+            "you",
+        }
+    ),
+    "ve": frozenset(
+        {
+            "could",
+            "how",
+            "i",
+            "might",
+            "must",
+            "should",
+            "there",
+            "they",
+            "we",
+            "what",
+            "when",
+            "where",
+            "who",
+            "would",
+            "why",
+            "you",
+        }
+    ),
+}
+_NEGATIVE_CONTRACTION_STEMS = frozenset(
+    {
+        "ain",
+        "aren",
+        "can",
+        "couldn",
+        "daren",
+        "didn",
+        "doesn",
+        "don",
+        "hadn",
+        "hasn",
+        "haven",
+        "isn",
+        "mightn",
+        "mustn",
+        "needn",
+        "oughtn",
+        "shan",
+        "shouldn",
+        "wasn",
+        "weren",
+        "won",
+        "wouldn",
+    }
+)
+_CHAINED_APOSTROPHE_SUFFIXES = frozenset({"d", "ll", "re", "s", "ve"})
+_SAFE_PLAIN_INLINE_CODE = frozenset(
+    {
+        "false",
+        "model_ref",
+        "none",
+        "null",
+        "slug",
+        "symbol",
+        "ticker",
+        "tickers",
+        "true",
+    }
+)
+_INLINE_CODE_RATIO_COMPONENTS = frozenset(
+    {
+        "assets",
+        "book",
+        "b",
+        "debt",
+        "ebit",
+        "ebitda",
+        "earnings",
+        "e",
+        "equity",
+        "ev",
+        "fcf",
+        "price",
+        "p",
+        "revenue",
+        "sales",
+    }
+)
+_SAFE_S_CONTRACTION_STEMS = frozenset(
+    {"he", "here", "how", "it", "let", "she", "that", "there", "what", "where", "who"}
+)
+_SAFE_S_POSSESSIVE_STEMS = frozenset(
+    {"analysis", "business", "cafe", "consensus", "investor", "status"}
+)
+_POSSESSIVE_DETERMINERS = frozenset(
+    {
+        "a",
+        "all",
+        "an",
+        "both",
+        "each",
+        "either",
+        "every",
+        "few",
+        "her",
+        "his",
+        "its",
+        "many",
+        "most",
+        "my",
+        "neither",
+        "no",
+        "our",
+        "several",
+        "some",
+        "that",
+        "the",
+        "their",
+        "these",
+        "this",
+        "those",
+        "your",
+    }
+)
+_AFFIRMATIVE_COMPOUND_PLURAL_POSSESSIVES = {
+    ("business", "risks"): "impact",
+    ("company", "reports"): "findings",
+    ("market", "signals"): "value",
+}
+_SEQUENTIAL_QUOTE_PUNCTUATION = frozenset(
+    {"/", "—", "–", "|", "&", "+", ",", ":", ";"}
+)
+_DECADE_APOSTROPHE_GOVERNORS = frozenset(
+    {
+        "after",
+        "and",
+        "april",
+        "around",
+        "august",
+        "before",
+        "by",
+        "calendar",
+        "circa",
+        "cy",
+        "december",
+        "early",
+        "february",
+        "fiscal",
+        "fq",
+        "fy",
+        "during",
+        "from",
+        "h1",
+        "h2",
+        "in",
+        "january",
+        "july",
+        "june",
+        "late",
+        "march",
+        "may",
+        "mid",
+        "november",
+        "october",
+        "of",
+        "or",
+        "september",
+        "since",
+        "spring",
+        "summer",
+        "fall",
+        "autumn",
+        "the",
+        "through",
+        "throughout",
+        "to",
+        "until",
+        "versus",
+        "vs",
+        "winter",
+        "year",
+    }
+)
+_POSSESSIVE_GOVERNORS = frozenset(
+    {
+        "about",
+        "and",
+        "among",
+        "at",
+        "between",
+        "but",
+        "by",
+        "for",
+        "from",
+        "into",
+        "of",
+        "nor",
+        "or",
+        "over",
+        "through",
+        "to",
+        "toward",
+        "under",
+        "with",
+        "without",
+    }
+)
+_NON_POSSESSIVE_PHRASE_STARTS = frozenset(
+    {
+        "a",
+        "aboard",
+        "about",
+        "above",
+        "abroad",
+        "across",
+        "after",
+        "again",
+        "ahead",
+        "always",
+        "against",
+        "along",
+        "already",
+        "although",
+        "am",
+        "amid",
+        "among",
+        "and",
+        "an",
+        "apart",
+        "around",
+        "as",
+        "aside",
+        "at",
+        "away",
+        "back",
+        "before",
+        "behind",
+        "below",
+        "beneath",
+        "beside",
+        "between",
+        "beyond",
+        "but",
+        "by",
+        "because",
+        "be",
+        "been",
+        "being",
+        "can",
+        "could",
+        "despite",
+        "did",
+        "do",
+        "does",
+        "down",
+        "during",
+        "except",
+        "fast",
+        "for",
+        "from",
+        "he",
+        "had",
+        "has",
+        "have",
+        "here",
+        "home",
+        "i",
+        "if",
+        "in",
+        "inside",
+        "into",
+        "it",
+        "is",
+        "just",
+        "like",
+        "later",
+        "near",
+        "nearby",
+        "never",
+        "nor",
+        "may",
+        "might",
+        "must",
+        "now",
+        "of",
+        "off",
+        "on",
+        "onto",
+        "opposite",
+        "or",
+        "often",
+        "once",
+        "outside",
+        "over",
+        "past",
+        "regarding",
+        "round",
+        "she",
+        "shall",
+        "should",
+        "since",
+        "so",
+        "sometimes",
+        "soon",
+        "still",
+        "than",
+        "that",
+        "the",
+        "then",
+        "there",
+        "they",
+        "this",
+        "those",
+        "through",
+        "throughout",
+        "till",
+        "to",
+        "today",
+        "together",
+        "tomorrow",
+        "toward",
+        "under",
+        "underneath",
+        "unless",
+        "unlike",
+        "until",
+        "up",
+        "upon",
+        "twice",
+        "via",
+        "we",
+        "was",
+        "were",
+        "when",
+        "whereas",
+        "whether",
+        "while",
+        "with",
+        "will",
+        "within",
+        "without",
+        "would",
+        "yesterday",
+        "yet",
+        "you",
+    }
+)
+_LY_POSSESSIVE_HEADS = frozenset(
+    {"assembly", "family", "monopoly", "quarterly", "rally", "supply"}
+)
+_NOMINAL_MODIFIER_STARTS = frozenset({"early", "later", "only"})
+_AUXILIARY_WORDS = frozenset(
+    {
+        "am",
+        "are",
+        "be",
+        "been",
+        "being",
+        "can",
+        "could",
+        "did",
+        "do",
+        "does",
+        "had",
+        "has",
+        "have",
+        "is",
+        "may",
+        "might",
+        "must",
+        "shall",
+        "should",
+        "was",
+        "were",
+        "will",
+        "would",
+    }
+)
+_IRREGULAR_REPORTING_VERBS = frozenset(
+    {
+        "added",
+        "adds",
+        "argues",
+        "asks",
+        "believes",
+        "claims",
+        "comments",
+        "declares",
+        "explains",
+        "insists",
+        "maintains",
+        "notes",
+        "observes",
+        "recalls",
+        "replies",
+        "reply",
+        "responds",
+        "respond",
+        "said",
+        "says",
+        "spoke",
+        "states",
+        "suggests",
+        "thinks",
+        "told",
+        "warns",
+        "wrote",
+        "writes",
+    }
+)
+_PROPER_PLURAL_NOMINAL_HEADS = frozenset(
+    {
+        "assets",
+        "bonds",
+        "businesses",
+        "costs",
+        "earnings",
+        "equities",
+        "estimates",
+        "goals",
+        "holdings",
+        "interests",
+        "liabilities",
+        "margins",
+        "methods",
+        "operations",
+        "options",
+        "positions",
+        "prices",
+        "principles",
+        "profits",
+        "returns",
+        "revenues",
+        "rights",
+        "risks",
+        "sales",
+        "shares",
+        "stocks",
+        "subsidiaries",
+        "valuations",
+        "weights",
+    }
+)
 
 _PRIMARY_HOSTS = frozenset(
     {
@@ -147,18 +744,30 @@ def canonicalize_url(url: str) -> str:
     """Canonicalize a public HTTP URL for ledger identity and reject secrets."""
     if not isinstance(url, str):
         raise ValueError("evidence URL must be a string")
-    parsed = urlsplit(url.strip())
+    try:
+        parsed = urlsplit(url.strip())
+        port = parsed.port
+    except ValueError:
+        raise ValueError("evidence URL is malformed") from None
     if parsed.scheme.casefold() not in {"http", "https"} or not parsed.hostname:
-        raise ValueError(f"evidence URL must be public http(s): {url!r}")
+        raise ValueError("evidence URL must be public http(s)")
     if parsed.username or parsed.password:
         raise ValueError("evidence URL must not contain credentials")
+    if url_contains_sensitive_material(url):
+        raise ValueError("evidence URL must not contain credential-like query parameters")
     scheme = parsed.scheme.casefold()
-    host = parsed.hostname.casefold().rstrip(".")
-    port = parsed.port
+    host = normalize_public_host(parsed.hostname)
+    if host is None:
+        raise ValueError("evidence URL host must be public")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    rendered_host = f"[{host}]" if address is not None and address.version == 6 else host
     if port is None or (scheme == "http" and port == 80) or (scheme == "https" and port == 443):
-        netloc = host
+        netloc = rendered_host
     else:
-        netloc = f"{host}:{port}"
+        netloc = f"{rendered_host}:{port}"
     path = parsed.path or "/"
     if path != "/":
         path = path.rstrip("/") or "/"
@@ -179,8 +788,9 @@ def independent_domain(url: str) -> str:
     The common compound suffixes relevant to cited English-language sources
     are handled explicitly; ordinary hosts collapse to their last two labels.
     """
-    host = urlsplit(url).hostname or ""
-    host = host.casefold().rstrip(".").removeprefix("www.")
+    raw_host = urlsplit(url).hostname or ""
+    host = normalize_public_host(raw_host) or ""
+    host = host.removeprefix("www.")
     try:
         ipaddress.ip_address(host)
         return host
@@ -196,7 +806,8 @@ def independent_domain(url: str) -> str:
 
 
 def _is_curated_primary(url: str) -> bool:
-    host = (urlsplit(url).hostname or "").casefold().rstrip(".").removeprefix("www.")
+    host = normalize_public_host(urlsplit(url).hostname or "") or ""
+    host = host.removeprefix("www.")
     return any(host == primary or host.endswith(f".{primary}") for primary in _PRIMARY_HOSTS)
 
 
@@ -236,7 +847,12 @@ class EvidenceLedger:
         # strongest source classification returned by later search angles.
         index = existing - 1
         old = self._items[index]
-        richer = normalized if len(normalized.excerpt) > len(old.excerpt) else old
+        candidates = (old, normalized)
+        quote_eligible = tuple(item for item in candidates if item.quote_eligible)
+        richer = max(
+            quote_eligible or candidates,
+            key=lambda item: len(item.excerpt),
+        )
         self._items[index] = replace(
             richer,
             source_type=(
@@ -304,12 +920,16 @@ def _citation_numbers(text: str, source_count: int) -> tuple[int, ...]:
 
 def _draft_paragraphs(text: str, source_count: int) -> tuple[str, ...]:
     """Keep only model paragraphs carrying at least one valid ledger citation."""
-    blocks = re.split(r"\n\s*\n", str(text).strip())
+    # Preserve horizontal indentation until the CommonMark safety gate runs;
+    # ``str.strip()`` would turn a four-space code block into ordinary prose.
+    blocks = re.split(r"\n\s*\n", str(text).strip("\r\n"))
     kept: list[str] = []
     for block in blocks:
-        paragraph = " ".join(
-            line.strip() for line in block.splitlines() if not line.lstrip().startswith("#")
-        ).strip()
+        paragraph = "\n".join(
+            line.rstrip()
+            for line in block.splitlines()
+            if not line.lstrip().startswith("#")
+        ).strip("\r\n")
         if paragraph and _citation_numbers(paragraph, source_count):
             kept.append(paragraph)
     return tuple(kept)
@@ -386,26 +1006,842 @@ def _get_path(root: Any, path: Sequence[str | int]) -> Any:
     return value
 
 
-def _quote_is_verbatim(text: str, citations: Sequence[int], evidence: Sequence[Evidence]) -> bool:
-    quote = text.strip().strip('"“”\'‘’')
-    return bool(quote) and any(
-        1 <= number <= len(evidence) and quote in evidence[number - 1].excerpt
-        for number in citations
+def _quote_is_verbatim(
+    text: str, citations: Sequence[int], evidence: Sequence[Evidence]
+) -> bool:
+    quote = " ".join(text.strip().strip(_QUOTE_STRIP_CHARACTERS).split())
+    if not quote:
+        return False
+    for number in citations:
+        if not 1 <= number <= len(evidence):
+            continue
+        item = evidence[number - 1]
+        if not item.quote_eligible:
+            continue
+        excerpt = item.excerpt
+        for match in re.finditer(re.escape(quote), excerpt):
+            start, end = match.span()
+            left_ok = (
+                not _is_word_character(quote[0])
+                or start == 0
+                or not _is_word_character(excerpt[start - 1])
+            )
+            right_ok = (
+                not _is_word_character(quote[-1])
+                or end == len(excerpt)
+                or not _is_word_character(excerpt[end])
+            )
+            if left_ok and right_ok:
+                return True
+    return False
+
+
+def _is_word_character(character: str) -> bool:
+    return character.isalnum() or unicodedata.category(character) in {
+        "Cf",
+        "Mc",
+        "Me",
+        "Mn",
+        "Pc",
+    }
+
+
+def _is_gated_quote_delimiter(character: str) -> bool:
+    if character == "`" or character in _QUOTE_CHARACTERS:
+        return True
+    name = unicodedata.name(character, "")
+    category = unicodedata.category(character)
+    return (
+        category in {"Pi", "Pf"}
+        or any(fragment in name for fragment in _QUOTE_LIKE_UNICODE_NAMES)
+        or (
+            category in {"Lm", "Sk"}
+            and any(fragment in name for fragment in _QUOTE_LIKE_MODIFIER_NAMES)
+        )
     )
 
 
-def _quoted_spans(text: str) -> tuple[str, ...]:
-    """Extract paired prose quotations without mistaking apostrophes for quotes."""
+def _is_unsupported_quote_character(character: str) -> bool:
+    if character in _QUOTE_CHARACTERS:
+        return False
+    category = unicodedata.category(character)
+    if category.startswith("M"):
+        # Context decides whether a combining mark is an attempted delimiter.
+        # Attached marks are legitimate decomposed text; free-standing marks
+        # are rejected by ``_is_standalone_combining_mark``.
+        return False
+    if _is_gated_quote_delimiter(character):
+        return True
+    normalized = unicodedata.normalize("NFKC", character)
+    return normalized != character and any(
+        _is_gated_quote_delimiter(mapped) for mapped in normalized
+    )
+
+
+def _is_standalone_combining_mark(text: str, index: int) -> bool:
+    """Reject combining marks used as free-standing quote delimiters."""
+
+    if not unicodedata.category(text[index]).startswith("M"):
+        return False
+    cursor = index - 1
+    while cursor >= 0 and (
+        unicodedata.category(text[cursor]).startswith("M")
+        or unicodedata.category(text[cursor]) == "Cf"
+    ):
+        cursor -= 1
+    return cursor < 0 or not text[cursor].isalnum()
+
+
+def _is_markdown_escaped(text: str, index: int) -> bool:
+    slashes = 0
+    cursor = index - 1
+    while cursor >= 0 and text[cursor] == "\\":
+        slashes += 1
+        cursor -= 1
+    return slashes % 2 == 1
+
+
+def _markdown_inline_code_end(text: str, start: int) -> int | None:
+    """Return the last closer index for a valid CommonMark backtick span."""
+
+    if _is_markdown_escaped(text, start):
+        return None
+    run = 1
+    while start + run < len(text) and text[start + run] == "`":
+        run += 1
+    delimiter = "`" * run
+    cursor = start + run
+    while cursor < len(text):
+        end = text.find(delimiter, cursor)
+        if end < 0:
+            return None
+        before_is_tick = end > 0 and text[end - 1] == "`"
+        after = end + run
+        after_is_tick = after < len(text) and text[after] == "`"
+        if not before_is_tick and not after_is_tick:
+            content = text[start + run : end]
+            return after - 1 if content else None
+        cursor = end + run
+    return None
+
+
+def _inline_code_content_is_technical(content: str) -> bool:
+    """Accept only a small, affirmative grammar of technical tokens."""
+
+    stripped = content.strip()
+    if not stripped or "\n" in stripped or "\r" in stripped:
+        return False
+    folded = " ".join(stripped.split()).casefold()
+    if folded in _SAFE_PLAIN_INLINE_CODE:
+        return True
+    if any(character in _QUOTE_CHARACTERS for character in stripped):
+        # The whole displayed value must be exactly one quotation. The caller
+        # then parses that span and checks it verbatim; a verified prefix
+        # cannot authorize an unchecked suffix inside the same code span.
+        outer_delimiters_match = (
+            stripped[0] in _DOUBLE_QUOTE_OPENERS
+            and stripped[-1] in _DOUBLE_QUOTE_CLOSERS
+        ) or (
+            stripped[0] in _SINGLE_QUOTE_OPENERS
+            and stripped[-1] in _SINGLE_QUOTE_CLOSERS
+        )
+        if not outer_delimiters_match:
+            return False
+        parsed_spans = _quoted_spans(stripped)
+        return parsed_spans == (stripped[1:-1],)
+    if re.fullmatch(r"price\s*`\s*book", folded) is not None:
+        return True
+    ratio = re.fullmatch(
+        r"([a-z]+)\s*/\s*([a-z]+)(?:\s+ratio)?", folded
+    )
+    if ratio is not None:
+        return all(
+            component in _INLINE_CODE_RATIO_COMPONENTS
+            for component in ratio.groups()
+        )
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+", stripped):
+        return True
+    if re.fullmatch(r"\d{1,2}[A-Z]", stripped) is not None:
+        return True
+    return re.fullmatch(r"[A-Z][A-Z0-9]{1,9}", stripped) is not None
+
+
+def _inline_code_content_is_unambiguously_structured_technical(
+    content: str,
+) -> bool:
+    """Accept the narrower grammar safe for source-reporting frames."""
+
+    stripped = content.strip()
+    if not stripped or "\n" in stripped or "\r" in stripped:
+        return False
+    folded = " ".join(stripped.split()).casefold()
+    if folded in {"false", "none", "null", "true"}:
+        return True
+    if re.fullmatch(r"price\s*`\s*book", folded) is not None:
+        return True
+    ratio = re.fullmatch(
+        r"([a-z]+)\s*/\s*([a-z]+)(?:\s+ratio)?", folded
+    )
+    if ratio is not None:
+        return all(
+            component in _INLINE_CODE_RATIO_COMPONENTS
+            for component in ratio.groups()
+        )
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+", stripped):
+        return True
+    return re.fullmatch(r"\d{1,2}[A-Z]", stripped) is not None
+
+
+def _inline_code_context_allows_technical_use(
+    text: str, start: int, end: int, content: str
+) -> bool:
+    """Recognize bounded sentence frames that conventionally typeset code."""
+
+    prefix = text[:start]
+    suffix = text[end + 1 :]
+    clause = re.split(r"[.!?;\n]", prefix)[-1]
+    neutral_suffix = (
+        r"^\s*(?:(?:at\s+\d+(?:\.\d+)?x)|"
+        r"(?:is\s+(?:present|stable|valid))|"
+        r"(?:data|discipline|metadata))?"
+        r"\s*[.!?]?\s*(?:\[\d+\]\s*)*$"
+    )
+    if re.fullmatch(
+        neutral_suffix,
+        suffix,
+        flags=re.IGNORECASE,
+    ) is None:
+        return False
+    clause_start = r"^\s*(?:(?:[-+*]|\d{1,9}[.)])\s+)*"
+    neutral_use = (
+        clause_start
+        + r"(?:the\s+)?"
+        r"(?:(?:(?:current|famous|primary|reported|valuation)\s+){0,2}"
+        r"(?:metric|ratio)|api(?:\s+field)?|code|field|formula|function|"
+        r"investor|model|parser|schema|syntax|system)\s+"
+        r"(?:accepts|calculates|compares|computes|contains|expects|is|reads|"
+        r"references|returns|sets|tracks|uses|was|writes)\s*$"
+    )
+    if re.search(neutral_use, clause, flags=re.IGNORECASE) is not None:
+        return True
+    field_label = (
+        clause_start
+        + r"(?:the\s+)?(?:api\s+)?field"
+        r"(?:\s+(?:called|is|named))?\s*$"
+    )
+    if re.search(field_label, clause, flags=re.IGNORECASE) is not None:
+        return True
+    technical_reporting = (
+        clause_start
+        + r"(?:the\s+)?(?:api|dataset|filing|record|report|schema|table)\s+"
+        r"(?:contained|contains|disclosed|discloses|listed|lists|presented|"
+        r"presents|reported|reports|showed|shows|stated|states)\s*$"
+    )
+    return (
+        re.search(technical_reporting, clause, flags=re.IGNORECASE)
+        is not None
+        and _inline_code_content_is_unambiguously_structured_technical(
+            content
+        )
+    )
+
+
+def _inline_code_is_quote_like(
+    text: str, start: int, end: int, content: str
+) -> bool:
+    """Fail closed unless content and surrounding prose are technical."""
+
+    return not (
+        _inline_code_content_is_technical(content)
+        and _inline_code_context_allows_technical_use(
+            text, start, end, content
+        )
+    )
+
+
+def _literal_backtick_spans(content: str) -> tuple[str, ...] | None:
+    """Extract paired literal backticks from a wider inline-code span."""
+
+    indexes = tuple(
+        index for index, character in enumerate(content) if character == "`"
+    )
+    if len(indexes) <= 1:
+        return ()
+    if len(indexes) % 2:
+        return None
+    spans: list[str] = []
+    for opener, closer in zip(indexes[::2], indexes[1::2], strict=True):
+        if closer == opener + 1:
+            return None
+        spans.append(content[opener + 1 : closer])
+    return tuple(spans)
+
+
+def _word_after(text: str, start: int) -> str | None:
+    index = start
+    while index < len(text) and text[index].isspace():
+        index += 1
+    match = re.match(r"[A-Za-z0-9_]+", text[index:])
+    return match.group(0).casefold() if match is not None else None
+
+
+def _phrase_words_after(text: str, start: int) -> tuple[tuple[str, ...], bool]:
+    tail = text[start:].lstrip()
+    if tail.startswith("["):
+        return (), False
+    segment = re.split(
+        r"[!?;,:]|(?:\.(?=\s*(?:\[|$)))", tail, maxsplit=1
+    )[0]
+    words = tuple(re.findall(r"[A-Za-z0-9_]+", segment))
+    if not words:
+        return (), False
+    first = re.match(r"[A-Za-z0-9_]+", tail)
+    hyphenated = first is not None and tail[first.end() :].startswith("-")
+    return words, hyphenated
+
+
+def _is_internal_word_apostrophe(text: str, index: int) -> bool:
+    if not (
+        index > 0
+        and index + 1 < len(text)
+        and _is_word_character(text[index - 1])
+        and _is_word_character(text[index + 1])
+    ):
+        return False
+
+    left_start = index
+    while left_start > 0 and _is_word_character(text[left_start - 1]):
+        left_start -= 1
+    right_end = index + 1
+    while right_end < len(text) and _is_word_character(text[right_end]):
+        right_end += 1
+    left = text[left_start:index]
+    right = text[index + 1 : right_end]
+    left_folded = left.casefold()
+    right_folded = right.casefold()
+    chained = (
+        left_start > 0
+        and text[left_start - 1] in _SINGLE_QUOTE_OPENERS
+        and _is_internal_word_apostrophe(text, left_start - 1)
+    )
+    if chained and right_folded in _CHAINED_APOSTROPHE_SUFFIXES:
+        return True
+    fixed_stems = _FIXED_INTERNAL_APOSTROPHE_STEMS.get(right_folded)
+    if fixed_stems is not None:
+        return left_folded in fixed_stems
+    if right_folded == "t":
+        return left_folded in _NEGATIVE_CONTRACTION_STEMS
+    if right_folded == "n":
+        return (
+            right_end + 1 < len(text)
+            and text[right_end] in _SINGLE_QUOTE_OPENERS
+            and _is_word_character(text[right_end + 1])
+        )
+    if right_folded == "s":
+        normalized_left = "".join(
+            character
+            for character in unicodedata.normalize("NFKD", left)
+            if not unicodedata.category(character).startswith("M")
+            and unicodedata.category(character) != "Cf"
+        ).casefold()
+        if (
+            left[:1].isupper()
+            or normalized_left in _SAFE_S_CONTRACTION_STEMS
+            or normalized_left in _SAFE_S_POSSESSIVE_STEMS
+        ):
+            return True
+        # An otherwise ordinary isolated ``'s`` remains a possessive. If a
+        # real later closer exists, however, the pair is an ambiguous quote
+        # span and must be verified rather than silently consumed.
+        return not _has_later_single_quote_closer(text, right_end)
+    if len(left) == 1 and left.isalpha():
+        if left_folded in {"d", "l", "o"}:
+            return True
+        return (
+            left_folded == "n"
+            and left_start > 0
+            and text[left_start - 1] in _SINGLE_QUOTE_OPENERS
+        )
+    return False
+
+
+def _is_plural_possessive_mark(text: str, index: int) -> bool:
+    """Return whether a boundary apostrophe follows a word ending in s.
+
+    At top level this form is an apostrophe, not an opening quote. Closing
+    quotes after an s-ending word are handled while an already-open span is
+    scanned, so they never reach this predicate as a new opener.
+    """
+
+    return (
+        index > 0
+        and text[index - 1].casefold() == "s"
+        and (
+            index + 1 == len(text)
+            or not _is_word_character(text[index + 1])
+        )
+    )
+
+
+def _plural_boundary_clause_words(text: str, index: int) -> tuple[str, ...]:
+    clause = re.split(r"[.!?;:,\n]", text[:index])[-1]
+    return tuple(re.findall(r"[A-Za-z]+", clause))
+
+
+def _is_affirmative_simple_plural_possessive(
+    text: str, index: int
+) -> bool:
+    """Recognize only one-word and determiner-led possessors positively."""
+
+    if not _is_plural_possessive_mark(text, index):
+        return False
+    words = _plural_boundary_clause_words(text, index)
+    return len(words) == 1 or (
+        len(words) == 2
+        and words[0].casefold() in _POSSESSIVE_DETERMINERS
+    )
+
+
+def _looks_like_reporting_shaped_plural_boundary(text: str, index: int) -> bool:
+    """Fail closed on a multi-token subject/finite s-boundary shape.
+
+    This is deliberately the conservative default rather than a vocabulary of
+    possible subjects or reporting verbs. Explicit simple and compound
+    possessive grammars are handled before this ambiguity rule; other
+    multi-token shapes require quote verification when a later s-ending mark
+    can act as their closer.
+    """
+
+    if (
+        not _is_plural_possessive_mark(text, index)
+        or _is_affirmative_simple_plural_possessive(text, index)
+    ):
+        return False
+    words = _plural_boundary_clause_words(text, index)
+    return (
+        len(words) >= 2
+        and words[-1].islower()
+        and words[-1].casefold().endswith("s")
+    )
+
+
+def _is_affirmative_compound_plural_possessive(
+    text: str, index: int
+) -> bool:
+    """Preserve a bounded set of unambiguous noun-compound possessives.
+
+    Outside this positive grammar, a determiner-led compound ending in ``s``
+    is irreducibly ambiguous with a finite clause and intentionally fails
+    closed when a later possessive-looking delimiter could close a quote.
+    """
+
+    if not _is_plural_possessive_mark(text, index):
+        return False
+    clause_words = tuple(
+        word.casefold() for word in _plural_boundary_clause_words(text, index)
+    )
+    if len(clause_words) != 3 or clause_words[0] != "the":
+        return False
+    expected_possessed_head = _AFFIRMATIVE_COMPOUND_PLURAL_POSSESSIVES.get(
+        clause_words[1:]
+    )
+    if expected_possessed_head is None:
+        return False
+
+    tail = text[index + 1 :]
+    continuation = re.match(
+        r"\s*([A-Za-z]+)\s+and\s+([A-Za-z]+s)", tail,
+        flags=re.IGNORECASE,
+    )
+    if (
+        continuation is None
+        or continuation.group(1).casefold() != expected_possessed_head
+    ):
+        return False
+    second_mark = index + 1 + continuation.end()
+    return (
+        second_mark < len(text)
+        and text[second_mark] in _SINGLE_QUOTE_OPENERS
+        and _is_plausible_plural_possessive(text, second_mark)
+    )
+
+
+def _plural_possessive_has_governor(text: str, index: int) -> bool:
+    words = tuple(re.findall(r"[A-Za-z0-9_]+", text[:index]))
+    return len(words) >= 2 and words[-2].casefold() in _POSSESSIVE_GOVERNORS
+
+
+def _has_strong_clause_boundary(text: str, start: int, end: int) -> bool:
+    return re.search(r"[,;:!?]|\.(?=\s)", text[start:end]) is not None
+
+
+def _looks_like_single_opener(text: str, index: int) -> bool:
+    opening_boundary = index == 0 or text[index - 1].isspace() or text[index - 1] in "([{—–-:=,;"
+    return (
+        opening_boundary
+        and index + 1 < len(text)
+        and not text[index + 1].isspace()
+    )
+
+
+def _looks_like_clear_quote_closer(text: str, index: int) -> bool:
+    """Return whether a delimiter has an affirmative local closing boundary."""
+
+    if index == 0 or text[index - 1].isspace():
+        return False
+    if index + 1 == len(text):
+        return True
+    tail = text[index + 1 :]
+    return (
+        tail[0].isspace()
+        or tail[0] in ",.;:!?"
+        or tail[0] in _SEQUENTIAL_QUOTE_PUNCTUATION
+        or _CITATION_RE.match(tail) is not None
+    )
+
+
+def _looks_like_clear_sequential_opener(text: str, index: int) -> bool:
+    return _looks_like_single_opener(text, index) or (
+        index > 0
+        and text[index - 1] in _SEQUENTIAL_QUOTE_PUNCTUATION
+        and index + 1 < len(text)
+        and not text[index + 1].isspace()
+    )
+
+
+def _quote_delimiters_are_coherent(opening: str, closing: str) -> bool:
+    return opening == closing or (opening, closing) in _DIRECTIONAL_QUOTE_PAIRS
+
+
+def _looks_like_nested_same_family_opener(
+    text: str,
+    index: int,
+    delimiters: frozenset[str],
+    *,
+    opening_delimiter: str,
+    single: bool,
+) -> bool:
+    """Fail closed when a possible closer structurally looks like nesting."""
+
+    if single and _is_internal_word_apostrophe(text, index):
+        return False
+    later: list[int] = []
+    for cursor in range(index + 1, len(text)):
+        if text[cursor] not in delimiters:
+            continue
+        if single and (
+            _is_internal_word_apostrophe(text, cursor)
+            or _is_trailing_elision_apostrophe(text, cursor)
+            or _is_plausible_plural_possessive(text, cursor)
+        ):
+            continue
+        later.append(cursor)
+        if len(later) == 2:
+            break
+    if len(later) < 2:
+        return False
+    between = _CITATION_RE.sub(" ", text[index + 1 : later[0]])
+    punctuation_only = bool(between) and all(
+        character in _SEQUENTIAL_QUOTE_PUNCTUATION for character in between
+    )
+    if (
+        _looks_like_clear_quote_closer(text, index)
+        and _looks_like_clear_sequential_opener(text, later[0])
+        and _quote_delimiters_are_coherent(opening_delimiter, text[index])
+        and _quote_delimiters_are_coherent(text[later[0]], text[later[1]])
+        and (re.search(r"\s", between) is not None or punctuation_only)
+    ):
+        # A local closer, intervening whitespace/prose, and a local opener are
+        # sufficient to recognize sequential quotations. The prose itself is
+        # deliberately open-vocabulary; each resulting quote is still checked
+        # independently. Adjacent and punctuation-wrapped candidates lack one
+        # of these boundary signals and remain ambiguous nesting.
+        return False
+    return True
+
+
+def _leading_apostrophe_match(text: str, index: int) -> re.Match[str] | None:
+    tail = text[index + 1 :]
+    decade = re.match(r"\d{2}(?:s)?\b", tail, flags=re.IGNORECASE)
+    if decade is not None:
+        return decade
+    word = re.match(r"[A-Za-z]+\b", tail)
+    if word is not None and word.group(0).casefold() in _LEADING_APOSTROPHE_WORDS:
+        return word
+    return None
+
+
+def _is_trailing_elision_apostrophe(text: str, index: int) -> bool:
+    if index == 0 or (
+        index + 1 < len(text) and _is_word_character(text[index + 1])
+    ):
+        return False
+    match = re.search(r"([A-Za-z]+)$", text[:index])
+    return (
+        match is not None
+        and len(match.group(1)) >= 3
+        and match.group(1).casefold().endswith("in")
+    )
+
+
+def _is_plausible_plural_possessive(text: str, index: int) -> bool:
+    if index == 0 or text[index - 1].casefold() != "s":
+        return False
+    words, hyphenated = _phrase_words_after(text, index + 1)
+    if not words:
+        return False
+    first_raw = words[0]
+    following_word = first_raw.casefold()
+    if first_raw[0].isupper():
+        nominal_head = False
+        for raw in words[1:]:
+            if not raw or not raw[0].islower():
+                continue
+            candidate = raw.casefold()
+            # An auxiliary before any noun head makes the phrase a clause
+            # (``Buffett has said``), not a proper-name possessive modifier.
+            if candidate in _AUXILIARY_WORDS:
+                return False
+            if (
+                candidate in _IRREGULAR_REPORTING_VERBS
+                or candidate.endswith("ed")
+            ):
+                return False
+            if (
+                candidate in _NON_POSSESSIVE_PHRASE_STARTS
+                or candidate in _NOMINAL_MODIFIER_STARTS
+                or (
+                    candidate.endswith("ly")
+                    and candidate not in _LY_POSSESSIVE_HEADS
+                )
+            ):
+                continue
+            if (
+                candidate.endswith("s")
+                and candidate not in _PROPER_PLURAL_NOMINAL_HEADS
+                and not candidate.endswith("ings")
+            ):
+                # Before a noun head, an unknown third-person ``-s`` token is
+                # a finite clause boundary (``Buffett predicts``), not evidence
+                # that the proper name modifies a possessive noun phrase.
+                return False
+            nominal_head = True
+            break
+        if not nominal_head:
+            return False
+    if (
+        following_word in _NON_POSSESSIVE_PHRASE_STARTS
+        and not hyphenated
+        and not (
+            following_word in _NOMINAL_MODIFIER_STARTS
+            and len(words) > 1
+            and words[1].casefold() not in _NON_POSSESSIVE_PHRASE_STARTS
+        )
+    ):
+        return False
+    return not (
+        following_word.endswith("ly")
+        and following_word not in _LY_POSSESSIVE_HEADS
+        and (
+            len(words) == 1
+            or words[1].casefold() in _NON_POSSESSIVE_PHRASE_STARTS
+        )
+    )
+
+
+def _has_likely_single_quote_closer(text: str, start: int) -> bool:
+    for index in range(start, len(text)):
+        if text[index] not in _SINGLE_QUOTE_CLOSERS:
+            continue
+        if _is_internal_word_apostrophe(
+            text, index
+        ) or _is_trailing_elision_apostrophe(text, index):
+            continue
+        if text[index] != "‘" and _leading_apostrophe_match(text, index) is not None:
+            # A second decade/elision is its own apostrophe, not the closer for
+            # the first one: ``the '80s ... the '90s`` / ``’Tis ..., ’cause``.
+            return False
+        if _looks_like_single_opener(text, index):
+            return False
+        # A leading elision or abbreviated year followed by an s-apostrophe
+        # boundary is indistinguishable from a quotation ending in s. Treat it
+        # as a closer so exact-quote verification fails closed.
+        return True
+    return False
+
+
+def _has_later_single_quote_closer(
+    text: str,
+    start: int,
+    *,
+    accept_plausible_possessive: bool = False,
+) -> bool:
+    """Find a later closer without consuming another quote or a possessive."""
+
+    for index in range(start, len(text)):
+        if text[index] not in _SINGLE_QUOTE_CLOSERS:
+            continue
+        if _is_internal_word_apostrophe(
+            text, index
+        ) or _is_trailing_elision_apostrophe(text, index):
+            continue
+        if text[index] != "‘" and _leading_apostrophe_match(text, index) is not None:
+            return False
+        if _looks_like_single_opener(text, index):
+            return False
+        if (
+            _is_plausible_plural_possessive(text, index)
+            and (
+                not accept_plausible_possessive
+                or _plural_possessive_has_governor(text, index)
+            )
+        ):
+            continue
+        return True
+    return False
+
+
+def _is_leading_apostrophe(text: str, index: int) -> bool:
+    """Return whether a boundary apostrophe starts a decade or common elision."""
+
+    # A left-curly mark is unambiguously typographic opening punctuation.
+    if text[index] == "‘":
+        return False
+
+    match = _leading_apostrophe_match(text, index)
+    if match is None:
+        return False
+
+    prefix_words = tuple(
+        word.casefold()
+        for word in re.findall(
+            r"[A-Za-z]+", re.split(r"[.!?;\n]", text[:index])[-1]
+        )
+    )
+    quarter_context = re.search(
+        r"\b(?:[1-4]Q|CY|FQ[1-4]?|FY\d{0,4}|H[12]|Q[1-4])\s*$",
+        text[:index],
+        flags=re.IGNORECASE,
+    ) is not None
+    if prefix_words and (
+        not match.group(0)[0].isdigit()
+        or (
+            prefix_words[-1] not in _DECADE_APOSTROPHE_GOVERNORS
+            and not quarter_context
+        )
+    ):
+        # Mid-clause elisions are quote openers. Abbreviated years remain prose
+        # only after their closed-class grammatical governors (for example,
+        # "in '08" or "the '80s"). This avoids an open-ended verb allowlist and
+        # makes unmatched provider output fail closed.
+        return False
+
+    end = index + 1 + match.end()
+    # ``'80s'`` and ``'cause'`` are explicitly delimited quotations.  Longer
+    # ambiguous phrases are quotes whenever a structural closer remains after
+    # contractions, possessives, and independent elisions are excluded.
+    return not (
+        (end < len(text) and text[end] in _SINGLE_QUOTE_CLOSERS)
+        or _has_likely_single_quote_closer(text, end)
+    )
+
+
+def _is_unquoted_apostrophe(
+    text: str, index: int, *, allow_plain_plural_possessive: bool
+) -> bool:
+    if _is_internal_word_apostrophe(
+        text, index
+    ) or _is_trailing_elision_apostrophe(text, index):
+        return True
+    if _is_plural_possessive_mark(text, index):
+        if _is_affirmative_compound_plural_possessive(text, index):
+            return True
+        return (
+            allow_plain_plural_possessive
+            and not _has_later_single_quote_closer(
+                text,
+                index + 1,
+                accept_plausible_possessive=(
+                    _looks_like_reporting_shaped_plural_boundary(text, index)
+                ),
+            )
+        )
+    return _is_leading_apostrophe(text, index)
+
+
+def _should_skip_single_closer(text: str, index: int) -> bool:
+    if _is_internal_word_apostrophe(text, index):
+        return True
+    if _is_trailing_elision_apostrophe(text, index):
+        return _has_later_single_quote_closer(text, index + 1)
+    return (
+        _is_plausible_plural_possessive(text, index)
+        and _has_later_single_quote_closer(text, index + 1)
+    )
+
+
+def _quoted_spans(text: str) -> tuple[str, ...] | None:
+    """Extract prose quotations, returning ``None`` for malformed delimiters.
+
+    Common Western and CJK quote glyphs are accepted in either orientation
+    because provider output sometimes normalizes only one side. Apostrophes in
+    words, plural possessives, decades, and common leading elisions remain
+    ordinary prose. Ambiguous possessives around a single-quoted span are
+    parsed conservatively so fabricated suffixes cannot escape exact-quote
+    verification.
+    """
 
     spans: list[str] = []
+    last_closing_index: int | None = None
     index = 0
     while index < len(text):
         opener = text[index]
+        if opener == "`":
+            run = 1
+            while index + run < len(text) and text[index + run] == "`":
+                run += 1
+            if run >= 3:
+                # Generated dossier prose has no reason to contain a fenced
+                # code block. Reject it rather than treating the fence as an
+                # unchecked quotation channel.
+                return None
+            code_end = _markdown_inline_code_end(text, index)
+            if code_end is None:
+                return None
+            code_content = text[index + run : code_end - run + 1]
+            if _inline_code_is_quote_like(text, index, code_end, code_content):
+                return None
+            literal_backtick_spans = _literal_backtick_spans(code_content)
+            if literal_backtick_spans is None:
+                return None
+            # Paired literal backticks inside a wider CommonMark span are
+            # visible delimiters and therefore need exact-quote verification.
+            # Replace them only after their spans have been captured, then
+            # continue scanning all other quote glyphs in the code content.
+            code_spans = _quoted_spans(code_content.replace("`", " "))
+            if code_spans is None:
+                return None
+            spans.extend(literal_backtick_spans)
+            spans.extend(code_spans)
+            index = code_end + 1
+            continue
+        if _is_standalone_combining_mark(text, index):
+            return None
+        if _is_unsupported_quote_character(opener):
+            return None
         if opener in _DOUBLE_QUOTE_OPENERS:
             closers = _DOUBLE_QUOTE_CLOSERS
             single = False
-        elif opener in _SINGLE_QUOTE_OPENERS and (
-            index == 0 or not (text[index - 1].isalnum() or text[index - 1] == "_")
+        elif opener in _SINGLE_QUOTE_OPENERS and not _is_unquoted_apostrophe(
+            text,
+            index,
+            allow_plain_plural_possessive=(
+                last_closing_index is None
+                or _has_strong_clause_boundary(
+                    text, last_closing_index + 1, index
+                )
+                or _plural_possessive_has_governor(text, index)
+            ),
         ):
             closers = _SINGLE_QUOTE_CLOSERS
             single = True
@@ -416,33 +1852,190 @@ def _quoted_spans(text: str) -> tuple[str, ...]:
         closing_index = index + 1
         while closing_index < len(text):
             candidate = text[closing_index]
-            if candidate in closers and (
-                not single
-                or closing_index + 1 == len(text)
-                or not (
-                    text[closing_index + 1].isalnum()
-                    or text[closing_index + 1] == "_"
-                )
-            ):
+            if _is_standalone_combining_mark(text, closing_index):
+                return None
+            if _is_unsupported_quote_character(candidate):
+                return None
+            if candidate in closers:
+                if (
+                    closing_index > 0
+                    and closing_index + 1 < len(text)
+                    and _is_word_character(text[closing_index - 1])
+                    and _is_word_character(text[closing_index + 1])
+                    and (
+                        not single
+                        or not _is_internal_word_apostrophe(
+                            text, closing_index
+                        )
+                    )
+                ):
+                    # A delimiter embedded between two words is either a
+                    # no-space quote boundary or same-family nesting. Both are
+                    # malformed unless the mark is a recognized apostrophe.
+                    return None
+                if _looks_like_nested_same_family_opener(
+                    text,
+                    closing_index,
+                    closers,
+                    opening_delimiter=opener,
+                    single=single,
+                ):
+                    return None
+                if (
+                    _looks_like_single_opener(text, closing_index)
+                ):
+                    # Same-delimiter nesting is ambiguous by construction.  Do
+                    # not greedily split around an unchecked inner quotation.
+                    return None
+                if single and _should_skip_single_closer(text, closing_index):
+                    closing_index += 1
+                    continue
                 break
             closing_index += 1
 
         if closing_index >= len(text):
-            index += 1
-            continue
-        if closing_index - index > 2:
-            spans.append(text[index + 1 : closing_index])
+            return None
+        if closing_index == index + 1:
+            return None
+        spans.append(text[index + 1 : closing_index])
+        last_closing_index = closing_index
         index = closing_index + 1
 
     return tuple(spans)
 
 
+def _advance_columns(text: str, start_column: int = 0) -> int:
+    columns = start_column
+    for character in text:
+        if character == " ":
+            columns += 1
+        elif character == "\t":
+            columns += 4 - (columns % 4)
+        else:
+            break
+    return columns
+
+
+def _leading_indentation_columns(line: str) -> int:
+    indentation = re.match(r"[ \t]*", line)
+    return _advance_columns(indentation.group(0) if indentation else "")
+
+
+def _list_item_has_code_padding(line: str) -> bool:
+    """Consume nested list markers and detect a five-column code item."""
+
+    indentation = re.match(r"[ \t]*", line)
+    raw_indentation = indentation.group(0) if indentation else ""
+    cursor = len(raw_indentation)
+    column = _advance_columns(raw_indentation)
+    if column > 3:
+        return False
+    while cursor < len(line):
+        marker = re.match(r"(?:[-+*]|\d{1,9}[.)])", line[cursor:])
+        if marker is None:
+            return False
+        column += len(marker.group(0))
+        cursor += marker.end()
+        padding = re.match(r"[ \t]+", line[cursor:])
+        if padding is None:
+            return False
+        raw_padding = padding.group(0)
+        next_column = _advance_columns(raw_padding, column)
+        if next_column - column >= 5:
+            return True
+        column = next_column
+        cursor += padding.end()
+    return False
+
+
+def _paragraph_has_commonmark_code(paragraph: str) -> bool:
+    """Reject fenced and standalone indented code in generated prose."""
+
+    if _MARKDOWN_FENCE_RE.search(paragraph) is not None:
+        return True
+    first_content_line = next(
+        (line for line in paragraph.splitlines() if line.strip()), None
+    )
+    if first_content_line is None:
+        return False
+    if _list_item_has_code_padding(first_content_line):
+        # Five columns after a list marker form an indented code item, not an
+        # ordinary one-to-four-column list continuation.
+        return True
+    return (
+        _leading_indentation_columns(first_content_line) >= 4
+    )
+
+
 def _paragraph_quotes_are_verbatim(
     paragraph: str, citations: Sequence[int], evidence: Sequence[Evidence]
 ) -> bool:
+    if (
+        _paragraph_has_commonmark_code(paragraph)
+        or _HTML_RAW_CONTAINER_TAG_RE.search(paragraph) is not None
+    ):
+        return False
+    blockquotes: list[str] = []
+    current_blockquote: list[str] = []
+    for line in paragraph.splitlines():
+        match = _MARKDOWN_BLOCKQUOTE_RE.match(line)
+        if match is not None:
+            content = match.group(1).strip()
+            if not content:
+                if current_blockquote:
+                    blockquotes.append(" ".join(current_blockquote))
+                    current_blockquote = []
+                continue
+            current_blockquote.append(content)
+            continue
+        if current_blockquote and line.strip():
+            # CommonMark permits an unmarked lazy continuation line inside a
+            # blockquote paragraph. Include it in the exact-verbatim gate.
+            current_blockquote.append(line.strip())
+    if current_blockquote:
+        blockquotes.append(" ".join(current_blockquote))
+    for blockquote in blockquotes:
+        blockquote = " ".join(_CITATION_RE.sub(" ", blockquote).split())
+        if not _quote_is_verbatim(blockquote, citations, evidence):
+            return False
+
+    html_quotes = list(_HTML_QUOTE_RE.finditer(paragraph))
+    unmatched_html = _HTML_QUOTE_RE.sub("", paragraph)
+    if _HTML_QUOTE_TAG_RE.search(unmatched_html):
+        return False
+    for match in html_quotes:
+        content = re.sub(r"<[^>]+>", " ", match.group(2))
+        content = html_unescape(_CITATION_RE.sub(" ", content))
+        content = " ".join(content.split())
+        if not _quote_is_verbatim(content, citations, evidence):
+            return False
+
+    html_inline_code = list(_HTML_INLINE_CODE_RE.finditer(paragraph))
+    unmatched_inline_code = _HTML_INLINE_CODE_RE.sub("", paragraph)
+    if _HTML_INLINE_CODE_TAG_RE.search(unmatched_inline_code):
+        return False
+    for match in html_inline_code:
+        if match.group(2).strip():
+            # Retained markup must not carry unchecked attributes.
+            return False
+        raw_content = match.group(3)
+        if "<" in raw_content or ">" in raw_content:
+            return False
+        content = " ".join(html_unescape(raw_content).split())
+        if _inline_code_is_quote_like(
+            paragraph, match.start(), match.end() - 1, content
+        ):
+            return False
+    # Markdown renderers decode named and numeric character references before
+    # displaying punctuation; scan the decoded form so ``&ldquo;`` cannot
+    # disguise a quotation.
+    scan_text = re.sub(r"<[^>]*>", " ", paragraph)
+    spans = _quoted_spans(html_unescape(scan_text))
+    if spans is None:
+        return False
     return all(
         _quote_is_verbatim(quote, citations, evidence)
-        for quote in _quoted_spans(paragraph)
+        for quote in spans
     )
 
 
@@ -553,7 +2146,11 @@ def _filter_persona(
     tinyic.setdefault("signal_rules", [])
     tinyic.setdefault("red_flags", [])
     tinyic.setdefault("famous_quotes", [])
-    persona.setdefault("occupation", {})["description"] = tinyic["epithet"]
+    occupation = persona.setdefault("occupation", {})
+    for key in ("organization", "title"):
+        if not occupation.get(key):
+            occupation.pop(key, None)
+    occupation["description"] = tinyic["epithet"]
     return filtered
 
 
@@ -586,6 +2183,37 @@ def _restore(path: Path, old: bytes | None, *, replace_fn: Callable[[Path, Path]
         staged.unlink(missing_ok=True)
 
 
+def _restore_error(
+    path: Path,
+    old: bytes | None,
+    *,
+    replace_fn: Callable[[Path, Path], Any],
+) -> BaseException | None:
+    """Best-effort restore, tolerating a move-then-raise implementation."""
+
+    try:
+        current = path.read_bytes() if path.exists() else None
+    except BaseException as error:
+        return error
+    if current == old:
+        return None
+    try:
+        _restore(path, old, replace_fn=replace_fn)
+    except BaseException as error:
+        try:
+            current = path.read_bytes() if path.exists() else None
+        except BaseException:
+            return error
+        return None if current == old else error
+    try:
+        current = path.read_bytes() if path.exists() else None
+    except BaseException as error:
+        return error
+    if current != old:
+        return OSError("artifact restore returned without restoring the destination")
+    return None
+
+
 def write_artifact_pair(
     agent_path: Path,
     agent_bytes: bytes,
@@ -603,25 +2231,33 @@ def write_artifact_pair(
         )
     old_agent = agent_path.read_bytes() if agent_path.exists() else None
     old_dossier = dossier_path.read_bytes() if dossier_path.exists() else None
-    staged_agent = _stage_file(agent_path, agent_bytes)
-    staged_dossier = _stage_file(dossier_path, dossier_bytes)
-    agent_committed = False
+    staged_agent: Path | None = None
+    staged_dossier: Path | None = None
     try:
+        staged_agent = _stage_file(agent_path, agent_bytes)
+        staged_dossier = _stage_file(dossier_path, dossier_bytes)
         replace_fn(staged_agent, agent_path)
-        agent_committed = True
         replace_fn(staged_dossier, dossier_path)
     except BaseException:
-        if agent_committed:
-            _restore(agent_path, old_agent, replace_fn=replace_fn)
-        # Normally the second rename failed before changing the destination. If
-        # an exotic replace implementation changed then raised, restore it too.
-        current = dossier_path.read_bytes() if dossier_path.exists() else None
-        if current != old_dossier:
-            _restore(dossier_path, old_dossier, replace_fn=replace_fn)
+        # Restore both destinations independently. An injected or exotic
+        # replacement can move a file and then raise during installation or
+        # rollback, so destination bytes—not call return values—are decisive.
+        rollback_errors = tuple(
+            error
+            for error in (
+                _restore_error(agent_path, old_agent, replace_fn=replace_fn),
+                _restore_error(dossier_path, old_dossier, replace_fn=replace_fn),
+            )
+            if error is not None
+        )
+        if rollback_errors:
+            raise RuntimeError("persona artifact rollback failed") from rollback_errors[0]
         raise
     finally:
-        staged_agent.unlink(missing_ok=True)
-        staged_dossier.unlink(missing_ok=True)
+        if staged_agent is not None:
+            staged_agent.unlink(missing_ok=True)
+        if staged_dossier is not None:
+            staged_dossier.unlink(missing_ok=True)
 
 
 class PersonaFactory:
@@ -716,6 +2352,9 @@ class PersonaFactory:
             for item in evidence:
                 if not isinstance(item, Evidence):
                     raise BackendContractError("search evidence entries must be Evidence")
+                if url_contains_sensitive_material(item.url):
+                    self.progress("search:unsafe_url_dropped")
+                    continue
                 ledger.add(
                     replace(
                         item,
@@ -779,8 +2418,8 @@ class PersonaFactory:
                 ),
                 {key: tuple(value) for key, value in draft_sections.items()},
                 ledger.items,
-                source_records,
-                generation,
+                tuple(dict(item) for item in source_records),
+                dict(generation),
             )
         )
         raw_specification = getattr(persona_response, "specification", None)
@@ -789,6 +2428,14 @@ class PersonaFactory:
         if getattr(persona_response, "usage", None) is not None:
             usage_records.append(persona_response.usage)
         specification = copy.deepcopy(dict(raw_specification))
+        specification["type"] = "TinyPerson"
+        if isinstance(specification.get("persona"), dict):
+            specification["persona"]["name"] = investor_name
+        if isinstance(specification.get("tinyic"), dict):
+            specification["tinyic"]["schema_version"] = 1
+            # Generated temperament is a neutral simulation control, not a
+            # biographical claim inferred from public evidence.
+            specification["tinyic"]["temperament"] = "balanced"
         # Generation metadata and sources are deterministic factory-owned fields;
         # a provider cannot suppress or forge them.
         if isinstance(specification.get("tinyic"), dict):

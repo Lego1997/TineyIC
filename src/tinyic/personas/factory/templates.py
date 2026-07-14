@@ -7,7 +7,10 @@ verified dossier sections; this module performs no network or model work.
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Mapping, Sequence
+from html import escape as html_escape
+from urllib.parse import quote
 
 from .types import Evidence
 
@@ -51,6 +54,36 @@ DOSSIER_SECTIONS: tuple[tuple[str, str, str], ...] = (
         "Characterize public investment communication and use only excerpt-verbatim quotations.",
     ),
 )
+
+
+def _markdown_source_label(value: str) -> str:
+    visible = "".join(
+        (
+            " "
+            if unicodedata.category(character) in {"Cc", "Cf", "Cs"}
+            else character
+        )
+        for character in str(value)
+    )
+    visible = " ".join(visible.split())
+    visible = html_escape(visible, quote=False)
+    return (
+        visible.replace("\\", r"\\")
+        .replace("[", r"\[")
+        .replace("]", r"\]")
+        .replace("(", r"\(")
+        .replace(")", r"\)")
+    )
+
+
+def _markdown_destination(value: str) -> str:
+    # Angle destinations have an unambiguous closing delimiter. Percent-encode
+    # that delimiter, backslashes, controls, whitespace, and non-ASCII bytes;
+    # retain normal RFC 3986 URL syntax and existing percent escapes.
+    return quote(
+        str(value).strip(),
+        safe="/:?#[]@!$&'()*+,;=%~-._",
+    )
 
 
 def render_dossier_prompt(
@@ -121,7 +154,8 @@ def render_dossier(
     for number, item in enumerate(evidence, 1):
         accessed = item.accessed or generated_date
         output.append(
-            f"{number}. [{item.title}]({item.url}) — {item.source_type}; "
+            f"{number}. [{_markdown_source_label(item.title)}]"
+            f"(<{_markdown_destination(item.url)}>) — {item.source_type}; "
             f"accessed {accessed}\n"
         )
     cost = (

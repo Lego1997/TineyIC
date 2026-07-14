@@ -29,7 +29,9 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 KIMI_BASE_URL_ENV_VAR = "MOONSHOT_BASE_URL"
 MAX_RESEARCH_SEARCH_ROUNDS = 16
 
-_MARKDOWN_URL_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)", re.I)
+_MARKDOWN_URL_RE = re.compile(
+    r"\[([^\]\n]+)\]\((https?://(?:[^\s()]|\([^()\s]*\))+)\)", re.I
+)
 _BARE_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.I)
 
 
@@ -102,6 +104,26 @@ def _paragraph_at(text: str, offset: int) -> str:
     start = text.rfind("\n\n", 0, offset)
     end = text.find("\n\n", offset)
     return text[(start + 2 if start >= 0 else 0) : (end if end >= 0 else len(text))]
+
+
+def _trim_bare_prose_url(value: str) -> str:
+    """Remove sentence/markup punctuation without corrupting balanced URLs."""
+
+    candidate = value
+    changed = True
+    while changed:
+        changed = False
+        stripped = candidate.rstrip(".,;:!?")
+        if stripped != candidate:
+            candidate = stripped
+            changed = True
+        for opener, closer in (("(", ")"), ("[", "]"), ("{", "}")):
+            if candidate.endswith(closer) and candidate.count(
+                closer
+            ) > candidate.count(opener):
+                candidate = candidate[:-1]
+                changed = True
+    return candidate
 
 
 class KimiResearchBackend(BaseResearchBackend):
@@ -221,18 +243,27 @@ class KimiResearchBackend(BaseResearchBackend):
 
             final_text = "".join(text_parts)
             collector = EvidenceCollector(request, self.provider)
+            markdown_spans: list[tuple[int, int]] = []
             for match in _MARKDOWN_URL_RE.finditer(final_text):
+                markdown_spans.append(match.span())
                 collector.add(
                     match.group(2),
                     title=match.group(1),
                     excerpt=_paragraph_at(final_text, match.start()),
                     fallback_text=final_text,
+                    quote_eligible=False,
                 )
             for match in _BARE_URL_RE.finditer(final_text):
+                if any(
+                    start <= match.start() and match.end() <= end
+                    for start, end in markdown_spans
+                ):
+                    continue
                 collector.add(
-                    match.group(0),
+                    _trim_bare_prose_url(match.group(0)),
                     excerpt=_paragraph_at(final_text, match.start()),
                     fallback_text=final_text,
+                    quote_eligible=False,
                 )
             numbers = _usage_total(usage_records)
             usage_record = self._usage(

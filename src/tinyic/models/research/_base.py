@@ -9,7 +9,6 @@ URL locally.
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -27,6 +26,10 @@ from tinyic.personas.factory.types import (
     SearchRequest,
     VerificationRequest,
     VerificationResponse,
+)
+from tinyic.personas.factory.url_safety import (
+    public_host_is_allowed,
+    url_contains_sensitive_material,
 )
 
 from ..adapters._base import BaseHttpAdapter
@@ -171,7 +174,10 @@ def _safe_public_url(value: Any) -> str | None:
 
     if not isinstance(value, str):
         return None
-    candidate = value.strip().rstrip(".,;:!?)]}")
+    # Provider citation fields are structured data, so preserve every URL
+    # character. Prose-only backends must remove surrounding punctuation at
+    # their extraction boundary before calling the collector.
+    candidate = value.strip()
     try:
         parsed = urlsplit(candidate)
         port = parsed.port  # force validation of malformed ports
@@ -181,14 +187,9 @@ def _safe_public_url(value: Any) -> str | None:
         return None
     if parsed.username or parsed.password:
         return None
-    host = parsed.hostname.casefold().rstrip(".")
-    if host == "localhost" or host.endswith(".localhost"):
+    if url_contains_sensitive_material(candidate):
         return None
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        address = None
-    if address is not None and not address.is_global:
+    if not public_host_is_allowed(parsed.hostname):
         return None
     del port
     return candidate
@@ -239,6 +240,13 @@ def annotation_excerpt(text: str, annotation: Mapping[str, Any]) -> str:
     return _clean_text(text)
 
 
+def annotation_excerpt_is_source_supplied(annotation: Mapping[str, Any]) -> bool:
+    return any(
+        bool(_clean_text(annotation.get(field)))
+        for field in ("snippet", "excerpt", "cited_text")
+    )
+
+
 class EvidenceCollector:
     """Insertion-ordered URL dedupe with provider-neutral evidence records."""
 
@@ -259,11 +267,13 @@ class EvidenceCollector:
         title: Any = "",
         excerpt: Any = "",
         fallback_text: str = "",
+        quote_eligible: bool = True,
     ) -> None:
         clean_url = _safe_public_url(url)
         if clean_url is None:
             return
-        clean_excerpt = _clean_text(excerpt) or _clean_text(fallback_text)
+        supplied_excerpt = _clean_text(excerpt)
+        clean_excerpt = supplied_excerpt or _clean_text(fallback_text)
         if not clean_excerpt:
             return
         host = _host_label(clean_url)
@@ -275,6 +285,7 @@ class EvidenceCollector:
             query=self._request.query.text,
             provider=self._provider,
             source_type=source_type,
+            quote_eligible=bool(supplied_excerpt) and quote_eligible,
         )
         index = self._by_url.get(clean_url)
         if index is None:
@@ -282,7 +293,14 @@ class EvidenceCollector:
             self._items.append(item)
             return
         old = self._items[index]
-        richer = item if len(item.excerpt) > len(old.excerpt) else old
+        candidates = (old, item)
+        quote_eligible_items = tuple(
+            candidate for candidate in candidates if candidate.quote_eligible
+        )
+        richer = max(
+            quote_eligible_items or candidates,
+            key=lambda candidate: len(candidate.excerpt),
+        )
         if old.title == _host_label(clean_url) and item.title != old.title:
             richer = Evidence(
                 url=richer.url,
@@ -292,6 +310,7 @@ class EvidenceCollector:
                 provider=richer.provider,
                 source_type=richer.source_type,
                 accessed=richer.accessed,
+                quote_eligible=richer.quote_eligible,
             )
         self._items[index] = richer
 
@@ -621,6 +640,7 @@ __all__ = [
     "UnsupportedResearchModelError",
     "UsageNumbers",
     "annotation_excerpt",
+    "annotation_excerpt_is_source_supplied",
     "response_text_and_annotations",
     "response_web_search_calls",
     "search_prompt",

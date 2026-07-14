@@ -19,6 +19,7 @@ from tinyic.models.research import (
     make_research_backend,
     select_research_backend,
 )
+from tinyic.models.research._base import EvidenceCollector
 from tinyic.personas.factory import (
     DossierSynthesisRequest,
     Evidence,
@@ -99,6 +100,174 @@ def request(
         ),
         remaining_searches=remaining_searches,
     )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/report?access_token=DO_NOT_PERSIST",
+        "https://example.com/report?api-key=DO_NOT_PERSIST",
+        "https://example.com/report?X-Amz-Signature=DO_NOT_PERSIST",
+        "https://example.com/report?public=1;session_id=DO_NOT_PERSIST",
+        "https://example.com/report?%EF%BD%81pi_key=DO_NOT_PERSIST",
+        "https://example.com/report?year=1%3Baccess_token=DO_NOT_PERSIST",
+        "https://example.com/report?access%255Ftoken=DO_NOT_PERSIST",
+        "https://example.com/report?%D0%B0ccess_token=DO_NOT_PERSIST",
+        "https://example.com/report?api_token=DO_NOT_PERSIST",
+        "https://example.com/report?secret_token=DO_NOT_PERSIST",
+        "https://example.com/report?session=DO_NOT_PERSIST",
+        "https://example.com/report?sid=DO_NOT_PERSIST",
+        "https://example.com/report?oauth_verifier=DO_NOT_PERSIST",
+        "https://example.com/report?client_assertion=DO_NOT_PERSIST",
+        "https://example.com/report?code=DO_NOT_PERSIST",
+        "https://example.com/report?authorization_code=DO_NOT_PERSIST",
+        "https://example.com/report?auth_code=DO_NOT_PERSIST",
+        "https://example.com/report?oauth_code=DO_NOT_PERSIST",
+        "https://example.com/report?one_time_code=DO_NOT_PERSIST",
+        "https://example.com/report?otp=DO_NOT_PERSIST",
+        "https://example.com/report?passcode=DO_NOT_PERSIST",
+        "https://example.com/report?CF_Authorization=DO_NOT_PERSIST",
+        "https://example.com/report?SAMLart=DO_NOT_PERSIST",
+        "https://example.com/report?RelayState=DO_NOT_PERSIST",
+        "https://example.com/report?oauth_state=DO_NOT_PERSIST",
+        "https://example.com/report?login_ticket=DO_NOT_PERSIST",
+        "https://example.com/report?payload=%7B%22access_token%22%3A"
+        "%22DO_NOT_PERSIST%22%7D",
+        "https://example.com/report?payload=%7B%22p%5Cu0061ssword%22%3A"
+        "%22DO_NOT_PERSIST%22%7D",
+        "https://example.com/report?payload=%7B%22access%5Cu005ftoken%22%3A"
+        "%22DO_NOT_PERSIST%22%7D",
+        "https://example.com/report?set-cookie=DO_NOT_PERSIST",
+        "https://example.com/report;jsessionid=DO_NOT_PERSIST",
+        "https://example.com/report%3Baccess_token=DO_NOT_PERSIST",
+        "https://example.com/callback#access_token=DO_NOT_PERSIST",
+        "https://example.com/report?next=http%3A%2F%2F127.0.0.1%2Fprivate",
+        "https://example.com/report?next=ftp%3A%2F%2F127.0.0.1%2Fprivate",
+        "https://example.com/report?next=https%3A%2F%2Fuser%3Apass%40example.org",
+        r"https://example.com/report?next=\\127.0.0.1\private",
+        "https://example.com/a)[leak](https://user:DO_NOT_PERSIST@evil.example/x",
+        "https://example.com/archive/https://127.0.0.1/private",
+    ],
+)
+def test_evidence_collector_rejects_credential_bearing_urls(url: str) -> None:
+    collector = EvidenceCollector(request(), "openai")
+
+    collector.add(url, title="Unsafe source", excerpt="Public excerpt")
+
+    assert collector.evidence == ()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/report?year=2025",
+        "https://example.com/report?section=valuation",
+        "https://example.com/report?monkey=capuchin",
+        "https://example.com/report?tokenized=true",
+        "https://example.com/report?client_id=public-client",
+    ],
+)
+def test_evidence_collector_allows_benign_public_queries(url: str) -> None:
+    collector = EvidenceCollector(request(), "openai")
+
+    collector.add(url, title="Public source", excerpt="Public excerpt")
+
+    assert collector.evidence[0].url == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost/private",
+        "http://127.0.0.1/private",
+        "http://10.0.0.1/private",
+        "http://169.254.169.254/latest/meta-data",
+        "http://192.0.2.1/documentation",
+        "http://224.0.0.1/multicast",
+        "http://2130706433/private",
+        "http://127.1/private",
+        "http://0177.0.0.1/private",
+        "http://0x7f000001/private",
+        "http://%6cocalhost/private",
+        "http://%31%32%37.0.0.1/private",
+        "http://127。0。0。1/private",
+        "http://ⓛocalhost/private",
+        "http://intranet/private",
+        "http://./private",
+        "http://example..org/private",
+        "http://[::1]/private",
+        "http://[::]/private",
+        "http://[fe80::1]/private",
+        "http://[ff02::1]/multicast",
+    ],
+)
+def test_evidence_collector_rejects_non_public_or_ambiguous_hosts(url: str) -> None:
+    collector = EvidenceCollector(request(), "openai")
+
+    collector.add(url, title="Unsafe source", excerpt="Public excerpt")
+
+    assert collector.evidence == ()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://en.wikipedia.org/wiki/Value_(finance)",
+        "https://[2606:4700:4700::1111]/dns-query",
+        "https://example.org/report!",
+        "https://example.org/report;",
+    ],
+)
+def test_evidence_collector_preserves_balanced_public_urls(url: str) -> None:
+    collector = EvidenceCollector(request(), "openai")
+
+    collector.add(url, title="Public source", excerpt="Public excerpt")
+
+    assert collector.evidence[0].url == url
+
+
+def test_evidence_collector_allows_nested_public_redirect_url() -> None:
+    url = (
+        "https://example.com/report?next=https%3A%2F%2Fwww.wikipedia.org%2F"
+        "wiki%2FValue_%28finance%29"
+    )
+    collector = EvidenceCollector(request(), "openai")
+
+    collector.add(url, title="Public source", excerpt="Public excerpt")
+
+    assert collector.evidence[0].url == url
+
+
+def test_kimi_prose_url_cleanup_preserves_balanced_url_syntax() -> None:
+    final_text = (
+        "See [Wikipedia](https://en.wikipedia.org/wiki/Value_(finance)) and "
+        "[a literal path](https://example.org/report!) plus "
+        "the resolver at https://[2606:4700:4700::1111]/dns-query. "
+        "Ignore prose punctuation after https://example.org/report)."
+    )
+    wire = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {"content": final_text},
+            }
+        ],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 5},
+    }
+    backend = KimiResearchBackend(
+        ModelBinding("kimi/kimi-k2.6"),
+        credentials(),
+        http=ScriptedTransport(wire),
+    )
+
+    result = backend.search(request())
+
+    assert [item.url for item in result.evidence] == [
+        "https://en.wikipedia.org/wiki/Value_(finance)",
+        "https://example.org/report!",
+        "https://[2606:4700:4700::1111]/dns-query",
+        "https://example.org/report",
+    ]
 
 
 def _annotation(text: str, phrase: str, url: str, title: str) -> dict:
@@ -187,6 +356,7 @@ def test_openai_forces_web_search_includes_sources_and_normalizes_citations() ->
             request().query.text,
             "openai",
             "primary",
+            quote_eligible=False,
         ),
         Evidence(
             secondary,
@@ -195,6 +365,7 @@ def test_openai_forces_web_search_includes_sources_and_normalizes_citations() ->
             request().query.text,
             "openai",
             "secondary",
+            quote_eligible=False,
         ),
     )
     assert result.usage is not None
@@ -256,6 +427,7 @@ def test_grok_uses_responses_and_merges_flat_and_inline_citations() -> None:
         "Marks frames risk as the possibility of permanent loss."
     )
     assert result.evidence[1].excerpt == text
+    assert all(not item.quote_eligible for item in result.evidence)
     assert result.usage is not None
     assert result.usage.search_calls == 2
     assert result.budget_exhausted is True
@@ -437,6 +609,7 @@ def test_gemini_interactions_google_search_uses_grounding_rows_and_annotations()
     assert [item.url for item in result.evidence] == [primary, secondary]
     assert result.evidence[0].excerpt == "Cycles are inevitable."
     assert result.evidence[0].source_type == "primary"
+    assert all(item.quote_eligible for item in result.evidence)
     assert result.usage is not None
     assert result.usage.cached_tokens == 3
     # Gemini 2.5 bills one grounded model prompt regardless of the number of
@@ -479,6 +652,7 @@ def test_gemini_normalizes_legacy_grounding_metadata_without_legacy_request() ->
 
     assert result.evidence[0].url == url
     assert result.evidence[0].excerpt == phrase
+    assert result.evidence[0].quote_eligible is False
     assert http.sent[0].url.endswith("/interactions")
 
 
@@ -559,6 +733,7 @@ def test_kimi_echoes_builtin_results_verbatim_and_extracts_only_final_prose_urls
         "https://www.oaktreecapital.com/insights/memos"
     ]
     assert "tool-only.invalid" not in result.evidence[0].excerpt
+    assert result.evidence[0].quote_eligible is False
     assert result.usage is not None
     assert result.usage.calls == 2
     assert result.usage.search_calls == 2
