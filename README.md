@@ -2,15 +2,16 @@
 
 **An AI investment committee you can *watch think*.** Six legendary value
 investors — Buffett, Munger, Graham, Lynch, Marks, Li Lu — debate any public
-company through a structured four-phase protocol, live in your terminal.
+company through a structured four-phase protocol, live in a secured local
+browser Town Hall.
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Built with TinyTroupe](https://img.shields.io/badge/built%20with-TinyTroupe-orange.svg)](https://github.com/microsoft/TinyTroupe)
-[![Interface: TUI · headless · replay](https://img.shields.io/badge/interface-TUI%20·%20headless%20·%20replay-8a63d2.svg)](AGENTS.md)
+[![Interface: web · headless · replay](https://img.shields.io/badge/interface-web%20·%20headless%20·%20replay-8a63d2.svg)](AGENTS.md)
 
 Type a ticker. The committee convenes, each investor's *private reasoning* is one
-keypress away, you interject mid-debate like a moderator, and every debate is a
+click away, you interject mid-debate like a moderator, and every debate is a
 replayable artifact — a scorecard, an investment memo, and a disagreement
 analysis you can re-render or hand to another AI agent forever after.
 
@@ -68,13 +69,13 @@ cd TineyIC
 uv sync            # installs both workspace packages (tinyic + the vendored tinytroupe)
 uv sync --extra cn # optional: China A-share / HK market data via akshare (heavy, opt-in)
 
-tinyic onboard     # interactive wizard: detect access, pick a lane, verify, persist
-tinyic debate AAPL # convene the committee — opens the live Town Hall TUI
+tinyic onboard     # Textual TUI wizard: detect access, pick a lane, verify, persist
+tinyic debate AAPL # convene the committee — opens the local browser Town Hall
 ```
 
-`tinyic onboard` walks auth setup in a full-screen wizard and persists only
-verified routes to your OS keyring — then, once a provider verifies, lets you
-pick that provider's model as the committee default (saved to
+`tinyic onboard` remains a full-screen Textual wizard. It walks auth setup and
+persists only verified routes to your OS keyring — then, once a provider
+verifies, lets you pick that provider's model as the committee default (saved to
 `~/.tinyic/tinyic.toml`). Prefer a `.env`? `OPENAI_API_KEY=sk-…` in a `.env`
 file (copy `.env.example`) is picked up automatically. Other keys:
 `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY` (Grok — also enables the
@@ -95,31 +96,40 @@ Every debate is streamed as an append-only **JSONL event log**. The engine only
 emits events; the renderers only consume them. That single contract is why the
 same debate can be watched, scripted, or shared — and replayed offline forever.
 
-### 1. TUI — the Town Hall (for humans)
+### 1. Web Town Hall — the default human interface
 
 ```bash
 tinyic debate AAPL                     # the six-member committee, default preset
 tinyic debate NVDA --personas warren_buffett,howard_marks,li_lu
 tinyic debate "Costco" --preset heterogeneous --thinking high
+tinyic debate AAPL --no-open           # print the private URL; do not launch a browser
+tinyic debate AAPL --port 8765         # choose the loopback port
 ```
 
-A Textual full-screen town hall: watch each persona stream its speech and
-reasoning in real time, expand any THINK block, and steer from the composer.
+TinyIC binds a stdlib HTTP server to `127.0.0.1` on an ephemeral port, launches
+your browser, and streams the event log over SSE. The investment-memo layout
+shows the phase timeline, persona roster and model bindings, streaming speech,
+expandable reasoning, scorecard, disagreement analysis, and steering
+history. It follows the system light/dark preference and collapses cleanly on
+narrow screens.
 
-**The Town Hall.** Terminal-grade data where the numbers live, theater where
-the personas live. The header is a ticker strip — identity, live elapsed /
-token / cost meters, a four-phase stepper — and phases open as centered act
-headers (`ACT II · CROSS-EXAMINATION`, devil's advocate credited). The
-committee bench renders each investor as a medallion card (a two-letter
-monogram on the persona's own color) with their model binding and live
-attention; the current speaker is spotlit in their color while the idle bench
-mutes, and a streaming THINK breathes a soft glyph pulse. Turn cards wear
-their speaker's color and render finished speech as markdown; the verdict
-lands as a real scorecard table inside a double-rule frame, followed by a
-per-model usage rollup. Two registered themes (`tinyic-dark` / `tinyic-light`)
-cover dark and light terminals — `d` cycles them in the town hall and the
-onboarding wizard alike — and a replayed log renders identically to the live
-run that produced it.
+The composer can steer the next turn (optionally targeting one persona) or
+queue an instruction for the next phase. You can also pause/resume, advance a
+paused phase, interrupt the current turn, stop gracefully, toggle all reasoning,
+and export HTML or Markdown. Interrupt and Stop require confirmation. Replay
+uses the same page but hides/disables every write control.
+
+The viewer starts before the engine emits `debate_started`. After a live debate
+finishes, TinyIC keeps the viewer available until Ctrl-C; `--no-wait` exits after
+the run and an attached browser's SSE connection drain. With
+`--no-open --no-wait`, it returns immediately once the run finishes if no
+client is attached.
+
+This is deliberately a **local capability, not a hosted service**: the server
+binds only to loopback, prints a fresh token-bearing URL, trades that token for
+an `HttpOnly; SameSite=Strict` cookie, validates literal Host and Origin values,
+accepts state changes only as authenticated JSON, and sends a restrictive CSP.
+Model output is escaped before TinyIC's small Markdown subset is rendered.
 
 <!-- Screenshots coming soon. -->
 > _Screenshots and a recorded demo are coming soon._
@@ -144,13 +154,15 @@ calls**:
 
 ```bash
 tinyic runs list                                # what's on disk
-tinyic replay <debate_id>                        # re-render in the TUI
+tinyic replay <debate_id>                        # read-only browser replay
 tinyic result <debate_id> --json                 # the assembled scorecard/memo/usage document
 tinyic export <debate_id> --html -o aapl.html    # one self-contained static HTML page
 tinyic export <debate_id> --md  > aapl.md        # scorecard/memo/transcript/disagreements
 ```
 
-The exported HTML is a single file with no external assets — safe to share as-is.
+`replay` accepts a debate id or JSONL path and supports the same `--port`,
+`--no-open`, and `--no-wait` lifecycle flags. It makes zero model calls. The
+exported HTML is a single file with no external assets — safe to share as-is.
 
 ---
 
@@ -170,6 +182,63 @@ printf '%s\n' \
 
 The full contract — commands, event schema, steering semantics, exit codes, and
 expected costs — lives in **[AGENTS.md](AGENTS.md)**.
+
+---
+
+## Create a cited investor persona
+
+TinyIC can build a custom investment-methodology persona from public records.
+The command uses a search-capable **API-key** lane (automatic priority:
+OpenAI → Grok → Google → Kimi), shows a list-price estimate on STDERR, and asks
+for confirmation before making provider calls:
+
+```bash
+# Howard Marks is already built in, so use a distinct slug for a researched variant.
+tinyic persona research "Howard Marks" \
+  --slug howard_marks_researched --max-searches 4 --yes
+
+tinyic persona list
+tinyic persona list --json
+tinyic persona show howard_marks_researched --json
+```
+
+Use `--model provider/model` to choose an exact research model. Without it,
+TinyIC checks the configured and recommended models in the priority above. If
+no eligible API-key lane exists, the command exits `3` with
+`no_search_capable_lane` and points to `tinyic onboard`. The normal search
+budget is 12; Kimi gets 16 total `$web_search` echo rounds. `--max-searches N`
+sets an explicit cap. Non-interactive callers must pass `--yes`.
+
+Research is provider-side: TinyIC does not scrape the cited pages itself. It
+plans six research angles, builds a deduplicated evidence ledger, drafts five
+cited dossier sections and the agent configuration, then runs a second
+fact/quotation verification pass. Fewer than three independent domains cause
+the run to refuse and write nothing; three or four domains produce a prominent
+`LOW-SOURCE` artifact; normal quality requires at least five domains including
+a primary/self-authored source. The final pair is validated, staged together,
+and installed through guarded replacements:
+
+```text
+~/.tinyic/personas/<slug>.agent.json
+~/.tinyic/personas/<slug>.dossier.md
+```
+
+The six built-in slugs are protected and cannot be replaced, even with
+`--force`. An existing user slug also refuses by default; `--force` stages both
+new files, replaces each atomically, and rolls back a detected replacement
+failure. Generated dossiers are educational,
+public-record-only simulations, not endorsements or investment advice.
+
+User personas automatically join the layered registry. Select two to six for a
+single debate with `--personas`, or put a default committee at the **top level**
+of `~/.tinyic/tinyic.toml` (before any TOML table):
+
+```toml
+committee = ["warren_buffett", "howard_marks_researched", "li_lu"]
+```
+
+Resolution is `--personas` → overlay `committee` → the built-in six. Unknown or
+duplicate members fail validation rather than silently changing the committee.
 
 ---
 
@@ -226,43 +295,43 @@ a personal default from the onboarding wizard's model step (persisted to the
 ## Architecture
 
 ```
-                 ┌──────────────────────────────────────┐
-                 │              tinyic engine             │
-                 │  personas · moderator · debate loop    │
-                 │  data pipeline · extraction · MoA memo  │
-                 │      (vendored, forked TinyTroupe)      │
-                 └───────────────┬────────────────────────┘
-   ModelBinding per persona      │  emits typed events
-                                 ▼
-                 ┌──────────────────────────────────────┐
-                 │   EVENT STREAM (append-only JSONL)     │
-                 │   the ONLY engine → renderer channel    │
-                 └──┬───────────┬───────────┬────────────┘
-                    ▼           ▼           ▼
-                ┌───────┐  ┌─────────┐  ┌──────────────┐
-                │  TUI  │  │ headless│  │ HTML / MD     │
-                │Textual│  │ CLI json│  │ replay export │
-                └───────┘  └─────────┘  └──────────────┘
+                 ┌────────────────────────────────────────┐
+                 │              TinyIC engine              │
+                 │ personas · moderator · debate protocol  │
+                 │ data pipeline · extraction · MoA memo   │
+                 └───────────────────┬────────────────────┘
+        ModelBinding per role        │ emits typed events
+                                     ▼
+                 ┌────────────────────────────────────────┐
+                 │    EVENT STREAM (append-only JSONL)     │
+                 │    the ONLY engine → renderer channel   │
+                 └──────┬──────────────┬─────────────┬────┘
+                        ▼              ▼             ▼
+                 ┌────────────┐  ┌──────────┐  ┌───────────┐
+                 │ Web Town   │  │ headless │  │ HTML / MD │
+                 │ Hall/replay│  │ CLI JSONL│  │ exports   │
+                 └────────────┘  └──────────┘  └───────────┘
 ```
 
 **The load-bearing rule:** renderers never read engine internals; they consume
 events. Replay is just re-feeding a recorded log to any renderer. This is what
-makes the TUI, headless mode, and export cheap variants of one product — and it
-is enforced by tests.
+makes the browser, headless mode, and export cheap variants of one product —
+and it is enforced by tests.
 
 ```
 src/
 ├── tinyic/                     # the application
-│   ├── cli.py                  # argparse entry point (tinyic debate|runs|result|export|replay|models|doctor|onboard)
-│   ├── headless.py             # the debate worker + log-follower bridge (interactive vs --json)
+│   ├── cli.py · persona_cli.py # import-light command surface
+│   ├── headless.py             # debate worker + web/headless lifecycle seam
 │   ├── events.py               # EventLog + schema-v1 envelope (the engine↔renderer contract)
 │   ├── result.py · report.py   # result document assembly · HTML/MD renderers
-│   ├── personas/               # 6 investor configs + registry
+│   ├── web/                    # secured loopback server + zero-build Town Hall assets
+│   ├── personas/               # built-ins, layered user registry, cited factory
 │   ├── data/                   # graceful-degradation data pipeline (yfinance, EDGAR, news, sentiment, research)
 │   ├── debate/                 # orchestrator, moderator, steering, extraction, MoA memo, analytics
-│   ├── models/                 # model-agnostic layer: bindings, adapters (×wire-formats), thinking ladder, presets, catalog
+│   ├── models/                 # bindings, adapters, research backends, presets, catalog
 │   ├── auth/                   # profiles, keyring, OAuth/subscription lanes, doctor, live probe
-│   └── tui/                    # Textual Town Hall + onboarding wizard + live follower
+│   └── tui/                    # Textual onboarding + retained report/state helpers; no debate face
 └── tinytroupe/                 # forked Microsoft TinyTroupe (vendored; treat deliberately)
 ```
 
@@ -291,9 +360,10 @@ the network belongs under the `live_api` marker. See
   `--model`, or a lower `--thinking` level all cut both.
 - **Subscription rate windows** can be small relative to a 6×4 debate; the
   usage meter and automatic API-key overflow are there to help.
-- **Scope:** local, single-user tool. No web app, no trading/brokerage, no
-  user-created personas — the six investors are fixed (see
-  [`docs/PRD.md`](docs/PRD.md)).
+- **Scope:** local, single-user tool. The browser Town Hall is loopback-only,
+  not a hosted or multi-user service. There is no trading/brokerage integration.
+  The built-in six remain curated and immutable; custom personas are explicitly
+  public-record methodology simulations (see [`docs/PRD.md`](docs/PRD.md)).
 
 ## License & acknowledgements
 

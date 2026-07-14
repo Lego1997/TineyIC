@@ -261,3 +261,191 @@ The `default` preset (FR-1.4) is now `openai/gpt-5.6-sol` @ `high`; the bundled 
 ### 15.5 Onboarding hub (amends FR-2.4, 2026-07-14)
 
 The wizard's DETECT overview is now the **hub**, replacing the linear provider walk. Every provider is a selectable row (`↑↓`/`1-9` move, `enter` opens) showing its lane statuses and the model its lanes would serve, followed by a closing **Finish & review →** row that opens the summary card. A provider's menu offers its lanes (subscription / API key / local), **Choose the model…** (the §15.3 picker, reachable without first connecting a lane), and a back row; every completed or abandoned action returns to the hub with detection re-run and the same provider highlighted, so individual adjustments stay one keypress away. A verified lane still flows straight into the MODEL step before returning. On an already-working provider the menu's default lands on the harmless back row ("← Back — leave unchanged"), preserving FR-2.4's idempotent verify-and-repair guarantee.
+
+---
+
+## 16. v2.2 amendment (2026-07-14) — Web Town Hall and Persona Factory
+
+> **Status: implemented.** This section amends the implemented v2/v2.1 product;
+> where it conflicts with §§1–15, this section wins. §§1–15 remain unchanged as
+> the historical specification. In particular, the Textual debate face and the
+> prohibition on user-created personas are superseded; the Textual onboarding
+> wizard remains supported.
+
+### 16.1 Product surface and amended requirements
+
+The vision remains one engine with an append-only event stream, but the human
+face is now the **Web Town Hall**. This amends §1, FR-3.2/FR-3.3,
+FR-5.1–FR-5.5, and FR-6.1 as follows:
+
+- `tinyic debate <ticker|company>` starts the engine behind a secured localhost
+  browser viewer by default. `--port N` chooses the loopback port, `--no-open`
+  suppresses browser launch, and `--no-wait` gives automation bounded viewer
+  lifecycle semantics. Existing committee, model, thinking, research,
+  phase-step, headless, JSON, and stdin-steering flags remain.
+- `tinyic replay <id|path>` serves the same browser page in read-only replay
+  mode with zero model calls and the same three web lifecycle flags. HTML and
+  Markdown CLI export remain separate, self-contained artifact paths.
+- The Textual Town Hall, its debate widgets, and its pilot renderer tests are
+  retired. `tinyic onboard` remains the FR-2.4 Textual TUI, including its model
+  selector and verify-and-repair behavior.
+- The v1 non-goal "no web app" now means **no hosted or multi-user web
+  service**. The Web Town Hall is an in-process, loopback-only local capability.
+  The no-trading/brokerage boundary is unchanged.
+
+### 16.2 Web Town Hall architecture and lifecycle
+
+The engine worker continues to append the authoritative JSONL log. A stdlib
+`ThreadingHTTPServer` binds exactly to `127.0.0.1`; every SSE connection tails
+the file independently, so live viewing, reconnect/resume, and replay all read
+the same source of truth. The server has no engine imports: live mode receives
+injected steering/control seams, while replay receives neither.
+
+The user-facing routes are:
+
+| Route | Contract |
+|---|---|
+| `GET /` and `/assets/*` | zero-build HTML/CSS/JS Town Hall assets |
+| `GET /events` | resumable SSE (`Last-Event-ID` over `from_seq`), heartbeat, clean terminal close |
+| `GET /api/meta` | live/completed/error/replay status and high sequence |
+| `GET /api/result?fmt=html|md` | existing report renderers as downloads |
+| `POST /api/steering` | `steer`, `queue`, or `interrupt` through the existing inbox |
+| `POST /api/control` | `pause`, `resume`, `next_phase`, or graceful `stop` |
+
+The server binds before the worker can emit `debate_started`. On a normal live
+run, completion leaves the viewer available until Ctrl-C. With `--no-wait`, a
+browser is given time to attach and its active SSE connection drains before
+shutdown; `--no-open --no-wait` returns after the run when no client is active.
+Shutdown stops accepting requests and gives active handlers a one-second drain.
+Replay is always read-only and rejects steering/control.
+
+The investment-memo page shows the ticker/phase/connection state, streaming
+turns and collapsible reasoning, committee/model roster, scorecard,
+disagreements, and steering acknowledgements. Usage remains available in the
+event log, assembled result, and exports. Its composer targets the
+committee or one persona and distinguishes next-turn steering from next-phase
+queueing. Pause/resume, next phase, confirmed interrupt, confirmed stop,
+reasoning visibility, jump-to-live, and HTML/Markdown export are first-class
+controls. The layout is light-first with a system dark-mode variant and a
+responsive right rail. Event/model text is untrusted: the renderer escapes HTML
+before applying its dependency-free Markdown subset, and unknown event types or
+fields are ignored explicitly.
+
+### 16.3 Local web security requirements
+
+Loopback binding alone is not the trust boundary. Every Web Town Hall instance
+therefore enforces all of the following independently:
+
+1. A fresh 32-byte URL-safe capability token is disclosed only through the
+   launch URL. First navigation exchanges it for an
+   `HttpOnly; SameSite=Strict; Path=/` cookie; Bearer authentication is also
+   accepted for command-line clients.
+2. Literal Host allowlisting (`127.0.0.1`, `localhost`, `[::1]` at the chosen
+   port) blocks DNS rebinding. A present Origin must be the same literal local
+   origin. Invalid values return 403.
+3. State-changing endpoints require exactly `application/json`, are
+   authenticated, reject oversized/non-object bodies, and emit no CORS grant.
+4. All responses use `Cache-Control: no-store`, the CSP
+   `default-src 'self'; img-src 'self' data:`, `nosniff`, and a no-referrer
+   policy. Request logging is suppressed so the first token-bearing URL cannot
+   leak through the stdlib access log.
+
+### 16.4 Persona Factory CLI (extends FR-1.4, FR-4.3, and FR-6.1)
+
+The fixed six are now the protected built-in layer of an extensible persona
+registry. The CLI surface is:
+
+```text
+tinyic persona research NAME [--model REF] [--slug SLUG] [--max-searches N] [--yes] [--force]
+tinyic persona list [--json]
+tinyic persona show SLUG [--json]
+```
+
+`research` resolves and checks the slug **before credential/backend setup**.
+Built-in slugs can never be replaced, including with `--force`; either existing
+user artifact requires `--force` to run the guarded pair replacement. An explicit
+`--model` is exact. Otherwise TinyIC considers configured bindings plus one
+recommended binding per research provider and selects the first usable API-key
+lane in fixed priority `openai → grok → google → kimi`. Subscription and local
+lanes are not search backends. No usable lane exits `3` with the stable reason
+`no_search_capable_lane` and onboarding guidance.
+
+Before any network provider call, the command prints a tool-fee-plus-token cost
+estimate to STDERR. Interactive callers must confirm; non-interactive callers
+must pass `--yes` and are never prompted. Progress remains on STDERR, while the
+success summary reports both paths, source/domain counts, quality, calls, and
+captured actual cost. OpenAI/Grok/Google use a default cap of 12 search calls;
+Kimi uses a run-wide cap of 16 `$web_search` echo rounds. `--max-searches` sets
+an explicit 1–16 cap; the Kimi counter persists across logical queries.
+
+`list` and `show` read metadata without instantiating TinyTroupe agents. Their
+`--json` forms emit one stable schema-versioned document; list output is
+stable-sorted and origin-tagged.
+
+### 16.5 Cited research, verification, and artifact gates
+
+The Persona Factory is an injectable, provider-neutral pipeline:
+
+1. Plan six public-record angles (philosophy, decision process, risk, track
+   record, voice, criticism) and add curated seed hints for canonical names.
+2. Search through provider-side tools only: OpenAI/Grok Responses web search,
+   Gemini Google Search, or Kimi's degraded prose-URL echo lane. TinyIC does not
+   fetch arbitrary cited pages locally. Results become a canonical-URL-deduped
+   evidence ledger.
+3. Draft five dossier sections using only numbered evidence, then synthesize a
+   TinyTroupe-compatible persona plus the TinyIC extension metadata.
+4. Run a second FActScore-lite pass over atomic dossier/persona claims. Claims
+   without ledger support are dropped; quotations must appear verbatim in an
+   evidence excerpt. Kimi additionally relies on the stricter URL visibility
+   checks appropriate to its degraded citation lane.
+5. Gate before writing: fewer than three independent domains raises
+   `insufficient_sources` and writes nothing; three or four domains are marked
+   `thin` with a prominent LOW-SOURCE warning; normal quality requires at least
+   five domains and a primary/self-authored source. Schema validation completes
+   before both files are staged, installed with per-file atomic replacements,
+   and rolled back if a replacement failure is detected.
+
+Successful output lives under `~/.tinyic/personas/` (overridable with
+`TINYIC_PERSONAS_DIR`) as `<slug>.agent.json` plus `<slug>.dossier.md`. Both
+carry public-record-only educational disclaimers; the agent records sources,
+model/date/search metadata, quality, philosophy hook, temperament, decision
+checklist, signals, red flags, and verified quotations. Personal-life content
+and affiliation/endorsement claims are out of scope.
+
+### 16.6 Registry, built-ins, and committee resolution
+
+The registry layers valid user `*.agent.json` files underneath the six shipped
+configs. Built-ins always win: a colliding user file is ignored with a concise
+STDERR warning, and malformed user files are excluded without echoing their
+contents. Built-in configs now expose their epithet, byte-preserved philosophy
+hook, temperament, and sources through the `tinyic` metadata block; debate
+reinforcement reads the hook from the persona object rather than a parallel
+hard-coded map.
+
+Committees resolve in this order:
+
+1. `tinyic debate --personas a,b,c`
+2. top-level `committee = [...]` in the user config overlay
+3. the built-in six
+
+Every committee contains two to six distinct, resolvable registry slugs.
+Invalid overlay members surface through existing persona-error behavior and the
+additive doctor reason `unknown_persona`; TinyIC never silently substitutes a
+different member.
+
+### 16.7 Guarantees unchanged by v2.2
+
+- **Event schema v1 is unchanged:** no new event types, no payload changes, and
+  no changed meanings. The compatibility promises in `event-schema.md` remain
+  authoritative.
+- `--headless --json` keeps its byte/channel contract: only event JSONL on
+  STDOUT; diagnostics on STDERR. The stdin steering protocol, result document,
+  replayability, truncated-log handling, and exit-code families remain.
+- The implementation adds no runtime dependency, Node toolchain, or build
+  step. Browser assets are self-contained; Textual remains only because the
+  onboarding wizard still needs it.
+- No v2.2 work changes `src/tinytroupe/`; the vendored-fork discipline and
+  git-source-only distribution remain.
+- Secrets remain excluded from event logs, exports, generated persona
+  artifacts, HTTP diagnostics, and tests. The browser capability appears only
+  in its intended launch URL/cookie authentication flow.

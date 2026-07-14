@@ -3,7 +3,7 @@
 All nondeterministic provider work is behind ``ResearchBackend``.  This module
 owns the safety properties that must not be delegated to a model: URL
 deduplication, citation checks, quote verification, source-quality gates,
-schema validation, collision handling, and last-stage atomic writes.
+schema validation, collision handling, and guarded last-stage writes.
 """
 
 from __future__ import annotations

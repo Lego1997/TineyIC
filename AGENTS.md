@@ -1,7 +1,7 @@
 # AGENTS.md — driving TinyIC headlessly
 
-TinyIC convenes a six-member AI investment committee (Buffett, Munger, Graham,
-Lynch, Marks, Li Lu) to debate a stock across four phases — opening, cross-examination,
+TinyIC convenes an AI investment committee (the default six are Buffett, Munger,
+Graham, Lynch, Marks, and Li Lu) to debate a stock across four phases — opening, cross-examination,
 rebuttal, verdict — and emits a scorecard, an investment memo, and a disagreement
 analysis. **Every debate is streamed as a machine-readable JSONL event log**, so an
 agent can drive a full debate, steer it mid-flight, and consume the result without a
@@ -48,12 +48,16 @@ Missing auth never blocks on a prompt in headless mode — it exits `3` with a
 
 ---
 
-## The three commands that matter
+## The debate commands that matter
 
 For a human-operated run, `tinyic debate AAPL` starts the secured localhost web
 Town Hall and opens it in the browser. Use `--no-open` to print the capability URL
 without launching a browser, `--port N` to select the loopback port, and `--no-wait`
-to exit after the final SSE client disconnects.
+to exit after the final SSE client disconnects. The viewer binds only to
+`127.0.0.1`, requires its token/cookie plus literal local Host/Origin values, and
+accepts only authenticated JSON for steering/control. It supports next-turn or
+next-phase steering, interrupt, pause/resume, next phase, stop, reasoning toggle,
+and export; replay disables all writes.
 
 ### 1 · Run a debate — `tinyic debate <ticker|company> --headless --json`
 
@@ -66,7 +70,7 @@ STDERR. Useful flags:
 
 | flag | effect |
 |---|---|
-| `--personas a,b,c` | committee by registry name (default: the six members; min 2) |
+| `--personas a,b,c` | committee by built-in/user registry slug (default: overlay committee, then the six built-ins; min 2, max 6) |
 | `--preset NAME` | a named committee preset from `tinyic.toml` |
 | `--model provider/model` | per-debate override for every role (e.g. `openai/gpt-5.6-sol`, `anthropic/claude-opus-4-8`, `grok/grok-4.5`, `kimi/kimi-k2.6`, `ollama/qwen3:32b`) |
 | `--thinking L` | reasoning level: `off·minimal·low·medium·high·xhigh·max` |
@@ -111,6 +115,54 @@ file — no external assets — safe to share as-is. `runs list` enumerates what
 ```bash
 tinyic runs list --json | jq '.runs[] | {debate_id, ticker, status, consensus}'
 ```
+
+---
+
+## Research and inspect custom personas
+
+Persona research is a separate, human-summary command; `list` and `show` have
+stable one-document JSON forms for agents:
+
+```bash
+# Built-in howard_marks is protected, so choose a distinct variant slug.
+tinyic persona research "Howard Marks" \
+  --slug howard_marks_researched --max-searches 4 --yes
+
+tinyic persona list --json
+tinyic persona show howard_marks_researched --json
+```
+
+`research` checks built-in and existing-user collisions before credential or
+backend setup. Built-ins can never be overwritten; replacing an existing user
+persona requires `--force`. Use `--model provider/model` for an exact binding,
+or let TinyIC choose the first usable **API-key** search lane in fixed priority
+`openai → grok → google → kimi`. Configured bindings win within a provider, and
+recommended provider bindings cover credentials not present in an OpenAI-only
+committee preset. Subscription and Ollama lanes are not persona-research lanes.
+
+Before provider calls, the estimate and progress go to STDERR. `--yes` is
+required for non-interactive use; without an eligible lane the command exits
+`3` with `no_search_capable_lane` and onboarding guidance. The default cap is
+12 searches, or 16 total Kimi `$web_search` echo rounds; `--max-searches N`
+sets an explicit 1–16 cap.
+
+Success stages `~/.tinyic/personas/<slug>.agent.json` and
+`<slug>.dossier.md`, then installs each with an atomic replace and rollback on
+a detected replacement failure. Fewer than three independent source domains cause
+`insufficient_sources` and write nothing; three or four domains are marked
+thin; normal quality requires at least five domains including a primary source.
+Every generated claim is ledger-verified, quotations are checked verbatim, and
+the artifacts contain public-record-only educational disclaimers.
+
+Use two to six registry slugs with `--personas`. For a persistent default, put
+this at the top level of `~/.tinyic/tinyic.toml`:
+
+```toml
+committee = ["warren_buffett", "howard_marks_researched", "li_lu"]
+```
+
+Resolution is `--personas` → overlay `committee` → the built-in six. Unknown,
+duplicate, or out-of-range committees fail instead of silently substituting.
 
 ---
 
@@ -170,7 +222,7 @@ printf '%s\n' \
 |---|---|
 | `0` | complete — the debate finished all phases (`debate` / `result`), or the report rendered (`export`) |
 | `2` | partial — some phases ran, then a later stage failed (`debate` / `result`) |
-| `3` | setup/auth error — nothing ran, or the run/credential wasn't found; STDERR carries the reason |
+| `3` | setup/auth/persona error — nothing ran, a run/credential wasn't found, or a persona gate refused; STDERR carries the reason |
 
 Non-interactive runs never prompt: pass `--yes`; missing auth → `3`.
 
@@ -190,6 +242,12 @@ Don't guess at the numbers — every run reports the real ones. `usage` events (
 `cached_tokens` and `cost_usd`. On subscription lanes `cost_usd` is `null`; those emit a
 `usage_window` message-window meter instead.
 
+Persona research reports its estimate before the confirmation gate and its
+captured usage afterward. It performs up to six planned research angles plus
+five dossier syntheses, persona synthesis, and verification; Kimi searches may
+span several echo rounds within the run-wide cap. Budget minutes and verify the
+displayed estimate rather than assuming debate pricing applies.
+
 ---
 
 ## Guarantees you can rely on
@@ -198,6 +256,6 @@ Don't guess at the numbers — every run reports the real ones. `usage` events (
   STDERR.
 - **The schema is stable**: `seq` / `ts` / `type` never change meaning within v1; new
   fields and types are additive. Ignore what you don't recognize.
-- **No secrets** ever appear in events, logs, or exports.
+- **No secrets** ever appear in events, logs, exports, or generated persona artifacts.
 - **Replayable & inspectable offline**: recorded logs replay and export with zero LLM
   calls, so a debate can be produced once and consumed, rendered, or diffed forever after.
