@@ -2,9 +2,9 @@
 
 ``tinyic export <id|path> --html|--md`` — a shareable static rendering of any
 recorded debate (FR-3.2 / FR-6.1). Both renderers are **pure functions over the
-parsed event stream** (the same :class:`~tinyic.tui.events.Event` objects the TUI
-and ``tinyic result`` consume), so an export renders the *same* debate the Town
-Hall does, from the same log, with zero engine imports. This is the load-bearing
+parsed event stream** (the same :class:`~tinyic.tui.events.Event` objects the web
+viewer and ``tinyic result`` consume), so an export renders the *same* debate
+from the same log, with zero engine imports. This is the load-bearing
 rule from the PRD made concrete: the HTML export is a cheap variant of one
 product, not a second renderer.
 
@@ -13,7 +13,7 @@ markup:
 
 * :class:`~tinyic.tui.state.TownHallState` folds events into the transcript
   (phase banners, turns, steering notes, data/error cards) and the live committee
-  snapshot — exactly what the TUI draws.
+  snapshot used by the report renderer.
 * :func:`~tinyic.result.assemble_result` yields the structured tail (scorecard,
   memo, disagreements + collapse metrics, usage rollup) — the ``tinyic result``
   document.
@@ -49,7 +49,7 @@ __all__ = [
 ]
 
 # --------------------------------------------------------------------------- #
-# Presentation constants (mirror the Town Hall renderer's palette / labels).
+# Presentation constants shared with the Town Hall palette / labels.
 # --------------------------------------------------------------------------- #
 
 _PHASE_LABELS: dict[str, str] = {
@@ -86,7 +86,7 @@ def _persona_color(name: str) -> str:
     """A stable display color for a persona.
 
     Delegates to :mod:`tinyic.persona_style` — the single app-level identity
-    source the TUI consumes too (no Textual import involved). The export keeps
+    source the web client mirrors too (no Textual import involved). The export keeps
     the dark set: the report's card styling is self-contained and the dark hues
     are the stable historical output.
     """

@@ -1,6 +1,6 @@
 # TinyIC Event Schema v1
 
-The append-only JSONL event stream is the single channel between the debate engine and every renderer (TUI, headless stdout, HTML export, future notebook widget), the persistence format for replay, and the **public contract for AI agents** consuming TinyIC headlessly. Within schema v1, changes must be additive (new event types / new optional payload fields). Renderers must ignore unknown event types and unknown payload fields.
+The append-only JSONL event stream is the single channel between the debate engine and every renderer (web Town Hall, headless stdout, HTML export, future notebook widget), the persistence format for replay, and the **public contract for AI agents** consuming TinyIC headlessly. Within schema v1, changes must be additive (new event types / new optional payload fields). Renderers must ignore unknown event types and unknown payload fields.
 
 ## Envelope
 

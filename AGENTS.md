@@ -50,6 +50,11 @@ Missing auth never blocks on a prompt in headless mode — it exits `3` with a
 
 ## The three commands that matter
 
+For a human-operated run, `tinyic debate AAPL` starts the secured localhost web
+Town Hall and opens it in the browser. Use `--no-open` to print the capability URL
+without launching a browser, `--port N` to select the loopback port, and `--no-wait`
+to exit after the final SSE client disconnects.
+
 ### 1 · Run a debate — `tinyic debate <ticker|company> --headless --json`
 
 ```bash
@@ -95,7 +100,7 @@ tokens + `cost_usd`). It tolerates a truncated log, reporting `status` = `comple
 ### 3 · Replay or export a recorded debate — `tinyic replay` / `tinyic export`
 
 ```bash
-tinyic replay "$debate_id"                     # re-render in the TUI, zero LLM calls
+tinyic replay "$debate_id"                     # read-only web replay, zero LLM calls
 tinyic export "$debate_id" --html -o aapl.html # one self-contained static HTML page
 tinyic export "$debate_id" --md  > aapl.md     # scorecard/memo/transcript/disagreements
 ```

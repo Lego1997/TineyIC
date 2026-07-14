@@ -525,7 +525,7 @@ def _run_headless(
     steering,
     run_doctor_reason: bool,
 ) -> int:
-    """Run a debate with no TUI, streaming JSONL to STDOUT under ``--json``."""
+    """Run without the web viewer, streaming JSONL to STDOUT under ``--json``."""
     # Import the inbox lazily (its package pulls TinyTroupe, whose import prints);
     # do it under the redirect below so nothing lands on the real STDOUT.
     real_out = out  # the machine channel; captured before we redirect sys.stdout

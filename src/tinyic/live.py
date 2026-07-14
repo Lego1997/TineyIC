@@ -1,16 +1,16 @@
 """Live event source: watch a debate as it happens, renderer-free.
 
-Replay feeds the Town Hall TUI a *recorded* JSONL log; **live** feeds it the
-*same* events as they are produced, over a thread-safe :class:`queue.Queue`. The
-renderer does not change and never learns about the engine — it drains parsed
+Replay reads a *recorded* JSONL log; **live** feeds the same events as they are
+produced over a thread-safe :class:`queue.Queue`. A renderer does not learn
+about the engine — it drains parsed
 :class:`~tinyic.tui.events.Event` objects off the queue exactly as it drains a
 recorded list. The producer may be anything that appends parsed events to the
 queue, on any thread.
 
 Two pieces live here:
 
-* :class:`EventQueueSource` — the **app-side adapter**. Each pump tick the app
-  calls :meth:`EventQueueSource.drain` on its own (render) thread to pull
+* :class:`EventQueueSource` — an **app-side adapter**. Each pump tick a consumer
+  calls :meth:`EventQueueSource.drain` on its own thread to pull
   whatever the producer has queued so far; the producer only ever calls
   ``queue.put`` on its thread, so the queue is the sole synchronization point. A
   sentinel (:data:`QUEUE_SENTINEL`, or ``None``) marks end-of-stream.

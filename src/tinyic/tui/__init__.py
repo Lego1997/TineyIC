@@ -1,10 +1,4 @@
-"""TinyIC Textual TUI package.
-
-Renderers in this package consume the JSONL event stream defined in
-``docs/event-schema.md`` and never import debate-engine internals. The engine
-emits events; the TUI reads them. Replay is re-feeding a recorded log to the
-same renderer.
-"""
+"""Framework-free event helpers plus the Textual onboarding wizard."""
 
 from .events import (
     Event,

@@ -161,7 +161,7 @@ class DebateOrchestrator(TinyWorld):
             # Optional message queue for user steering (set by UI)
             self.message_queue = None  # Optional[queue.Queue] -- items are (message_str, target_agent_name_or_None)
             # Optional engine-backed steering inbox (M6): the headless
-            # ``--steer-stdin`` reader and the live TUI composer push
+            # ``--steer-stdin`` reader and the web composer push
             # SteeringCommands/interrupts here; the loop drains them at turn/phase
             # boundaries and emits the authoritative steering_* / turn_interrupted
             # events. ``None`` keeps the pre-M6 behavior (legacy message_queue only).

@@ -6,14 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 TinyIC — an AI investment committee: 6 investor personas (Buffett, Munger, Graham, Lynch, Marks, Li Lu) debate a stock over 4 phases (opening → cross-exam → rebuttal → verdict) and produce a scorecard, investment memo, and disagreement analysis. Built on a **forked Microsoft TinyTroupe 0.7.0** vendored at `src/tinytroupe/`.
 
-**The v2 revamp (Streamlit → Textual TUI + headless CLI, model-agnostic backend) has landed** (milestones M0–M6), as has the **v2.1 provider-matrix amendment** (PRD §15: providers `openai · anthropic · grok · google · kimi · ollama`, the Grok subscription lane, the model selector). The source of truth for behavior is `docs/PRD.md` (requirements/milestones), `docs/event-schema.md` (the engine↔renderer contract), and `AGENTS.md` (the headless agent contract). `docs/code-review-2026-07-12.md` (33 defects) and `docs/CODEX_KICKOFF.md` are historical records — keep them verbatim.
+**The v2 revamp (Streamlit → browser Town Hall + headless CLI, model-agnostic backend) has landed** (milestones M0–M6), as has the **v2.1 provider-matrix amendment** (PRD §15: providers `openai · anthropic · grok · google · kimi · ollama`, the Grok subscription lane, the model selector). The source of truth for behavior is `docs/PRD.md` (requirements/milestones), `docs/event-schema.md` (the engine↔renderer contract), and `AGENTS.md` (the headless agent contract). `docs/code-review-2026-07-12.md` (33 defects) and `docs/CODEX_KICKOFF.md` are historical records — keep them verbatim.
 
 ## Commands
 
 ```bash
 uv sync                                        # install both workspace packages (uv.lock is committed)
 uv sync --extra cn                             # optional: China A-share/HK data source (akshare; heavy, opt-in)
-tinyic debate AAPL                             # convene the committee in the Town Hall TUI
+tinyic debate AAPL                             # convene the committee in the browser Town Hall
 tinyic debate AAPL --headless --json           # headless: stream the JSONL event log to STDOUT (agent mode)
 tinyic onboard                                 # interactive auth wizard (detect → pick lane → verify → persist)
 tinyic doctor [--json] [--live]                # auth/provider probe; exit 0 = ready, 3 = setup needed
@@ -32,20 +32,21 @@ tinyic doctor --live                           # binding-routed one-token live a
 
 Two-package uv workspace (root `pyproject.toml` lists members `src/tinyic` and `src/tinytroupe`). **One engine, three faces, joined by one event stream.**
 
-- **The event stream is the only engine→renderer channel.** The debate engine emits an append-only **JSONL event log** (`tinyic/events.py`, schema v1 in `docs/event-schema.md`); the TUI, the headless `--json` streamer, the HTML/MD exporter, and replay all *consume that log*, never engine internals. Replay = re-feeding a recorded log to any renderer. This contract is enforced by tests.
+- **The event stream is the only engine→renderer channel.** The debate engine emits an append-only **JSONL event log** (`tinyic/events.py`, schema v1 in `docs/event-schema.md`); the web Town Hall, the headless `--json` streamer, the HTML/MD exporter, and replay all *consume that log*, never engine internals. Replay = re-feeding a recorded log to any renderer. This contract is enforced by tests.
 - **`src/tinytroupe/`** — forked framework: `TinyPerson` (LLM-backed agent, act loop emitting typed THINK/TALK/DONE actions + a `cognitive_state`), `TinyWorld` (run loop), `Session` (registry scoping, M0), `clients/`, `extraction/`. Treat as vendored: change it deliberately (see vendored discipline below).
 - **`src/tinyic/`** — the app:
   - `cli.py` — argparse entry point; subcommands `debate · runs · result · export · replay · models · doctor · onboard`. Heavy imports are lazy so `--help`/`doctor`/`replay` stay import-light.
-  - `headless.py` — the M6 CLI↔engine seam: runs the debate in a worker thread that appends to the event log, then *watches that file* (via `tui/live.py` follower). Interactive attaches the TUI; `--headless`/`--json` streams the log to STDOUT; `--steer-stdin` feeds the engine steering inbox. The whole engine run executes under `redirect_stdout` so STDOUT stays a clean machine channel.
+  - `headless.py` — the CLI↔engine seam: runs the debate in a worker thread that appends to the event log. The default path attaches `web.WebFace`; `--headless`/`--json` streams the log to STDOUT; `--steer-stdin` feeds the engine steering inbox. The whole engine run executes under `redirect_stdout` so STDOUT stays a clean machine channel.
   - `events.py` / `result.py` / `report.py` — the schema-v1 `EventLog` + envelope; result-document assembly (compat promise #3); HTML/MD renderers.
   - `personas/` — `registry.py` maps snake_case names → `configs/*.agent.json`; `InvestorPersona(TinyPerson)` merges the JSON `persona` block.
   - `data/` — `pipeline.build_data_package(ticker)` fans out to independent sources (yfinance, EDGAR, news, xAI sentiment, optional web research); each fails independently → `warnings` surfaced as `data_ready` source statuses.
-  - `debate/` — `run_debate()` drives the protocol; `DebateOrchestrator(TinyWorld)`, `Moderator` (phase gating, caps, DA rotation, steering delivery), `steering.py` (engine-backed steer/queue/interrupt sinks), `extraction.py`/`memo.py` (votes + mixture-of-agents memo over the full transcript), `analytics.py` (collapse metrics).
+  - `debate/` — `run_debate()` drives the protocol; `DebateOrchestrator(TinyWorld)`, `Moderator` (phase gating, caps, DA rotation, steering delivery), `steering.py` (thread-safe steer/queue/interrupt inbox), `control.py` (pause/resume/next/stop), `extraction.py`/`memo.py` (votes + mixture-of-agents memo over the full transcript), `analytics.py` (collapse metrics).
   - `models/` — the model-agnostic layer: `ModelBinding`, adapters per wire format (`openai_chat`, `openai_responses`, `anthropic_messages`, `openai_compatible`, plus the derived `kimi_chat` and `grok_subscription`) + runtimes (`codex_runtime`, `claude_runtime`), the `thinking` ladder, `presets.py` (`tinyic.toml` + the `~/.tinyic/tinyic.toml` user overlay), `catalog.py` (`CatalogService`: static registry catalogs enriched with pinned metadata, merged with explicit-only per-provider live refresh that degrades independently; feeds `tinyic models` and the wizard's model step), usage capture. Providers: `openai · anthropic · grok · google · kimi · ollama`.
   - `auth/` — auth profiles, keyring, OpenAI/Anthropic/Grok subscription lanes (`grok.py`: grok-CLI read-through + RFC 8628 device code), `doctor.py` (reason-coded probe schema v1) + `live_probe.py`.
-  - `tui/` — the Textual Town Hall (`app.py`), the FR-2.4 onboarding wizard (`onboard.py`), and the live log follower (`live.py`).
+  - `web/` — the stdlib loopback server, capability-token security policy, SSE/JSON endpoints, and zero-build browser Town Hall assets.
+  - `tui/` — the FR-2.4 Textual onboarding wizard plus framework-free event/state helpers retained by reports; it is no longer a debate renderer. The renderer-free live follower is `live.py` at package scope.
 
-Threading: the debate loop runs in one worker thread; renderers consume a `queue.Queue`/log follower on the main thread; steering flows through a command queue drained at turn/phase boundaries; stop/interrupt is checked between model calls. No detached daemon threads.
+Threading: the debate loop runs in one worker thread; the loopback server uses daemon request threads and tails the event log per SSE connection; steering flows through a command queue drained at turn/phase boundaries; stop/interrupt is checked between model calls. Server shutdown drains active connections for one second.
 
 ## Critical gotchas
 

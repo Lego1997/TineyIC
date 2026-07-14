@@ -1,12 +1,8 @@
 """Engine-backed steering + interrupt — the moderator-side command channel.
 
-The renderer side (``tinyic.tui.steering``) parses a composer line or a stdin
-JSON line into a :class:`~tinyic.tui.steering.SteeringMessage` /
-:class:`~tinyic.tui.steering.InterruptRequest` and hands it to a *sink*.  Until
-M6 those sinks were inert (replay echo / recording).  This module supplies the
-**engine-backed** sinks the live TUI and the headless ``--steer-stdin`` reader
-use: they push commands into a thread-safe :class:`SteeringInbox` that the
-debate loop drains at turn/phase boundaries, and the *engine* emits the
+The web API and headless ``--steer-stdin`` reader push commands into a
+thread-safe :class:`SteeringInbox` that the debate loop drains at turn/phase
+boundaries, and the *engine* emits the
 authoritative ``steering_submitted`` / ``steering_delivered`` / ``steering_dropped``
 events (and ``turn_interrupted`` for an interrupt).  Nothing here draws or
 imports Textual; nothing on the renderer side imports this.
@@ -34,8 +30,6 @@ __all__ = [
     "SteeringCommand",
     "InterruptCommand",
     "SteeringInbox",
-    "EngineSteeringSink",
-    "EngineControlSink",
 ]
 
 #: The two delivery modes carried by ``steering_submitted`` (schema enum).
@@ -50,7 +44,7 @@ class SteeringCommand:
     mode: str  # "steer" | "queue"
     text: str
     target: str | None = None
-    source: str = "stdin"  # "tui" | "stdin" | "api"
+    source: str = "stdin"  # "stdin" | "api"
 
 
 @dataclass(frozen=True)
@@ -65,8 +59,8 @@ class InterruptCommand:
 class SteeringInbox:
     """Thread-safe engine inbox: producers push, the debate loop drains.
 
-    One inbox serves one debate.  Producers (the stdin reader, the live TUI
-    composer sink, a programmatic API) call :meth:`submit` / :meth:`request_interrupt`
+    One inbox serves one debate. Producers (the stdin reader or web API) call
+    :meth:`submit` / :meth:`request_interrupt`
     from any thread; the orchestrator (the single consumer) calls :meth:`drain`
     / :meth:`take_interrupt` at turn boundaries on the worker thread.  The
     ``steering_submitted`` acknowledgement is emitted **inside** the inbox lock so
@@ -128,7 +122,7 @@ class SteeringInbox:
                 source=source,
             )
             self._pending.append(command)
-            # Ack eagerly when the log is already open (the real-time stdin/TUI
+            # Ack eagerly when the log is already open (the real-time stdin/API
             # path); otherwise defer to drain/close so a pre-start submit is still
             # acknowledged before it is delivered or dropped.
             if getattr(self._event_log, "started", False):
@@ -253,45 +247,3 @@ class SteeringInbox:
             log.emit(event_type, payload)
         except Exception:  # pragma: no cover - defensive, non-load-bearing
             pass
-
-
-class EngineSteeringSink:
-    """Adapt renderer :class:`SteeringMessage` submissions onto a live inbox.
-
-    Implements the :class:`~tinyic.tui.steering.SteeringSink` protocol, so the
-    live TUI composer submits real steering through the same seam replay used for
-    its echo — but now the *engine* acknowledges and delivers it.
-    """
-
-    def __init__(self, inbox: SteeringInbox, *, source: str = "tui") -> None:
-        self._inbox = inbox
-        self._source = source
-
-    def submit(self, message) -> None:
-        self._inbox.submit(
-            message.mode,
-            message.text,
-            target=getattr(message, "target", None),
-            source=self._source,
-        )
-
-
-class EngineControlSink:
-    """Adapt renderer :class:`InterruptRequest`\\ s onto a live inbox.
-
-    Implements the :class:`~tinyic.tui.steering.ControlSink` protocol; this is
-    the engine-backed replacement for ``RecordingControlSink`` in live mode
-    (FR-5.3): an ``esc`` interrupt cancels/discards the in-flight turn and the
-    engine emits the authoritative ``turn_interrupted``.
-    """
-
-    def __init__(self, inbox: SteeringInbox, *, source: str = "tui") -> None:
-        self._inbox = inbox
-        self._source = source
-
-    def interrupt(self, request) -> None:
-        self._inbox.request_interrupt(
-            text=getattr(request, "text", None),
-            target=getattr(request, "target", None),
-            source=self._source,
-        )
