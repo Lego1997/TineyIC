@@ -7,6 +7,7 @@ import hashlib
 import importlib
 import json
 import subprocess
+import tarfile
 import tomllib
 from pathlib import Path
 from zipfile import ZipFile
@@ -21,6 +22,7 @@ PERSONA_CONFIG_FILES = {
     "peter_lynch.agent.json",
     "warren_buffett.agent.json",
 }
+WEB_ASSET_FILES = {"app.js", "index.html", "style.css"}
 PRIVATE_CLASSIFIER = "Private :: Do Not Upload"
 # Pinned manifest of the vendored subtree. To regenerate after adding a file to
 # VENDORED_DIVERGENCES (the documented procedure), recompute the aggregate over
@@ -189,7 +191,7 @@ def test_tinyic_console_entry_point_help(capsys):
     assert "usage:" in output
 
 
-def test_tinyic_sdist_rebuilds_wheel_with_persona_configs(tmp_path):
+def test_tinyic_sdist_rebuilds_wheel_with_package_data(tmp_path):
     """FR-0.3: the published artifact remains buildable and self-contained."""
     result = subprocess.run(
         [
@@ -207,7 +209,19 @@ def test_tinyic_sdist_rebuilds_wheel_with_persona_configs(tmp_path):
         text=True,
     )
 
-    assert result.returncode == 0, result.stdout + result.stderr
+    build_output = result.stdout + result.stderr
+    assert result.returncode == 0, build_output
+    assert "Package 'tinyic.web.assets' is absent" not in build_output
+
+    sdists = list(tmp_path.glob("tinyic-*.tar.gz"))
+    assert len(sdists) == 1
+    with tarfile.open(sdists[0]) as sdist:
+        members = {member.name for member in sdist.getmembers()}
+        root = sdists[0].name.removesuffix(".tar.gz")
+        expected_assets = {
+            f"{root}/web/assets/{filename}" for filename in WEB_ASSET_FILES
+        }
+        assert expected_assets <= members
 
     wheels = list(tmp_path.glob("tinyic-*.whl"))
     assert len(wheels) == 1
@@ -218,6 +232,10 @@ def test_tinyic_sdist_rebuilds_wheel_with_persona_configs(tmp_path):
             for filename in PERSONA_CONFIG_FILES
         }
         assert expected <= members
+        expected_assets = {
+            f"tinyic/web/assets/{filename}" for filename in WEB_ASSET_FILES
+        }
+        assert expected_assets <= members
         for config_path in expected:
             config = json.loads(wheel.read(config_path))
             assert config["persona"]["name"]
