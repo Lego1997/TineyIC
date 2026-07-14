@@ -94,6 +94,7 @@ _KNOWN_REASONS = frozenset(
         "unsupported_thinking_level",
         "policy_disabled",
         "runtime_unavailable",
+        "network_unreachable",
         "lane_incompatible",
         "subscription_required",
         "usage_limited",

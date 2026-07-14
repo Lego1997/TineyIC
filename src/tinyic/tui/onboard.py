@@ -192,6 +192,7 @@ REASON_HINTS: dict[str, str] = {
     "expired": "The credential is expired.",
     "probe_failed": "The verification check did not pass.",
     "runtime_unavailable": "The required runtime is unavailable — is it installed and signed in?",
+    "network_unreachable": "Couldn't reach the sign-in endpoint — check your network or proxy, then retry.",
     "policy_disabled": "This lane is disabled by policy_guard.",
     "usage_limited": "The credential is usage-limited right now.",
     "subscription_required": "This route needs a subscription profile.",
@@ -359,6 +360,21 @@ def _reason_str(value: object) -> str:
     reason = getattr(value, "reason", value)
     reason = getattr(reason, "value", reason)
     return reason if isinstance(reason, str) and reason else "probe_failed"
+
+
+def _login_failure_reason(error: BaseException, provider: str | None) -> str:
+    """Map a login-session failure to a truthful, secret-free reason code.
+
+    Reason-coded errors (``GrokTokenError``-style, carrying ``.reason``) speak
+    for themselves.  For anything else: the OpenAI lane keeps
+    ``runtime_unavailable`` (its login is delegated to the local Codex
+    runtime), while the Grok device-code lane needs only the network, so a
+    bare failure there is ``network_unreachable`` — never a runtime complaint.
+    """
+
+    if getattr(error, "reason", None) is not None:
+        return _reason_str(error)
+    return "network_unreachable" if provider == "grok" else "runtime_unavailable"
 
 
 def _default_openai_login_factory():
@@ -821,9 +837,9 @@ class OnboardController:
                 return ("navigate", None)
             try:
                 self.start_subscription_login()
-            except Exception:
+            except Exception as error:
                 self._close_login()
-                plan.error = "runtime_unavailable"
+                plan.error = _login_failure_reason(error, plan.provider)
                 return ("navigate", None)
             return ("device", None)
         return ("navigate", None)
@@ -1011,8 +1027,8 @@ class OnboardController:
         try:
             result = session.wait(challenge)
             reason = _reason_str(result)
-        except Exception:
-            reason = "runtime_unavailable"
+        except Exception as error:
+            reason = _login_failure_reason(error, plan.provider)
         finally:
             self._close_login()
         if reason != "ok":
