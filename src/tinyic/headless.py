@@ -1,4 +1,4 @@
-"""Drive a ``tinyic debate`` run — interactive Town Hall or headless agent mode.
+"""Drive a ``tinyic debate`` run — web Town Hall or headless agent mode.
 
 This is the M6 seam between the CLI verb and the engine.  It runs the debate in a
 worker thread that appends to the JSONL event log, and then *watches that file*
@@ -8,10 +8,9 @@ JSON stream both consume the file, never engine internals.
 
 Two faces:
 
-* **Interactive (a TTY, no** ``--headless``/``--json``\\ **):** attach the Town
-  Hall TUI to a live follower of the log, wiring the composer/`esc` to the
-  engine-backed steering inbox so a human can steer and interrupt.
-* **Headless (**``--headless``\\ **, or** ``--json``\\ **, or a non-TTY stdout):**
+* **Web (the default):** serve the localhost Town Hall, wiring JSON POSTs to the
+  engine-backed steering/run-control seams and SSE to the log.
+* **Headless (**``--headless``\\ ** or** ``--json``\\ **):**
   with ``--json``, stream each event-log line to STDOUT verbatim *as it is
   written*; without it, run quietly.  Either way human-readable progress goes to
   STDERR only, and **STDOUT carries nothing but event JSONL** — the agent
@@ -379,21 +378,15 @@ def _emit_setup_reason(
 
 
 # --------------------------------------------------------------------------- #
-# Headless + interactive entry points
+# Headless + web entry points
 # --------------------------------------------------------------------------- #
 
-def _should_use_tui(
+def _should_use_web(
     interactive: bool | None, headless: bool, json_mode: bool, out: TextIO
 ) -> bool:
     if interactive is not None:
         return interactive
-    if headless or json_mode:
-        return False
-    isatty = getattr(out, "isatty", None)
-    try:
-        return bool(isatty()) if callable(isatty) else False
-    except Exception:  # pragma: no cover - exotic stream
-        return False
+    return not (headless or json_mode)
 
 
 def run_debate_command(
@@ -410,6 +403,9 @@ def run_debate_command(
     phase_step: bool = False,
     steer_stdin: bool = False,
     yes: bool = False,
+    port: int = 0,
+    no_open: bool = False,
+    no_wait: bool = False,
     out: TextIO | None = None,
     err: TextIO | None = None,
     stdin: TextIO | None = None,
@@ -420,6 +416,7 @@ def run_debate_command(
     credentials=None,
     config_path=None,
     steering=None,
+    browser_opener=None,
     interactive: bool | None = None,
 ) -> int:
     """Run ``tinyic debate`` and return its process exit code.
@@ -454,13 +451,13 @@ def run_debate_command(
         preset = "default"
 
     deep_research = not no_research
-    use_tui = _should_use_tui(interactive, headless, json_mode, out)
+    use_web = _should_use_web(interactive, headless, json_mode, out)
     # The doctor-style enrichment on failure is only meaningful for a real,
     # config-resolved run — never when a test injects a committee/transports.
     run_doctor_reason = committee is None and transport_factory is None
 
-    if use_tui:
-        return _run_interactive(
+    if use_web:
+        return _run_web(
             ticker=ticker,
             persona_names=persona_names,
             preset=preset,
@@ -477,6 +474,10 @@ def run_debate_command(
             config_path=config_path,
             steering=steering,
             run_doctor_reason=run_doctor_reason,
+            port=port,
+            no_open=no_open,
+            no_wait=no_wait,
+            browser_opener=browser_opener,
         )
     return _run_headless(
         ticker=ticker,
@@ -589,8 +590,7 @@ def _run_headless(
         config_path=config_path,
     )
 
-
-def _run_interactive(
+def _run_web(
     *,
     ticker: str,
     persona_names: list[str],
@@ -608,24 +608,24 @@ def _run_interactive(
     config_path,
     steering,
     run_doctor_reason: bool,
+    port: int,
+    no_open: bool,
+    no_wait: bool,
+    browser_opener,
 ) -> int:
-    """Run the debate in a worker and watch it live in the Town Hall TUI."""
-    # Pre-import the engine + Textual with STDOUT swallowed so TinyTroupe's
-    # one-time import banner never corrupts the alternate-screen TUI. From here
-    # the engine's own logs already go to STDERR (M6 vendored fix).
+    """Run a debate worker behind the secured localhost web face."""
     with contextlib.redirect_stdout(err):
-        from tinyic.debate.steering import (
-            EngineControlSink,
-            EngineSteeringSink,
-            SteeringInbox,
-        )
-        from tinyic.tui.app import TownHallApp
-        from tinyic.live import attach_event_log_follower
+        from tinyic.debate.control import RunControl
+        from tinyic.debate.steering import SteeringInbox
+        from tinyic.web import WebFace
 
     log = EventLog(make_debate_id(ticker))
     inbox = steering if steering is not None else SteeringInbox()
     inbox.bind_event_log(log)
-    phase_gate = threading.Event() if phase_step else None
+    control = RunControl(paused=phase_step)
+    if phase_step:
+        # Opening runs immediately; subsequent phases park until next/resume.
+        control.next_phase()
 
     result_holder: dict = {}
     worker_done = threading.Event()
@@ -647,28 +647,51 @@ def _run_interactive(
             transport_factory=transport_factory,
             credentials=credentials,
             config_path=config_path,
-            phase_gate=phase_gate,
+            phase_gate=control,
             result_holder=result_holder,
             done=worker_done,
         ),
         daemon=True,
     )
-    worker.start()
-
-    follower = attach_event_log_follower(log.path)
-    app = TownHallApp.live(
-        follower.queue,
-        sink=EngineSteeringSink(inbox),
-        control=EngineControlSink(inbox),
+    face = WebFace.live(
+        log,
+        inbox=inbox,
+        control=control,
+        port=port,
+        browser_opener=browser_opener,
+        open_browser=not no_open,
+        stderr=err,
+        run_done=worker_done,
     )
-    if phase_step:
-        # Start parked at each phase boundary (the between-phases reflection).
-        app.paused = True
+    interrupted = False
     try:
-        app.run()
+        face.start()  # bind before the worker can emit debate_started
+        worker.start()
+        try:
+            _stream_log(log.path, None, err, worker_done, poll_interval=0.1)
+            worker.join()
+        except KeyboardInterrupt:
+            interrupted = True
+            control.stop()
+            inbox.request_interrupt(source="api")
+            worker.join(timeout=1.0)
+        finally:
+            face.mark_run_finished()
+
+        if not no_wait and not interrupted:
+            _progress(
+                err,
+                f"debate complete — viewer still at {face.base_url}, Ctrl-C to exit",
+            )
+            try:
+                while not face.wait(0.5):
+                    pass
+            except KeyboardInterrupt:
+                pass
+        elif no_wait:
+            face.wait_for_sse_disconnect(timeout=1.0)
     finally:
-        follower.stop()
-        worker.join()
+        face.shutdown(timeout=1.0)
 
     return _finalize(
         log,

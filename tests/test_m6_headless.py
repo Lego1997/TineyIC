@@ -510,6 +510,10 @@ def test_cli_debate_dispatches_all_flags_to_the_runner(monkeypatch):
             "high",
             "--da",
             "charlie_munger",
+            "--port",
+            "8765",
+            "--no-open",
+            "--no-wait",
         ]
     )
     assert code == 0
@@ -522,6 +526,8 @@ def test_cli_debate_dispatches_all_flags_to_the_runner(monkeypatch):
     assert captured["model"] == "openai/gpt-5.2"
     assert captured["thinking"] == "high"
     assert captured["da"] == "charlie_munger"
+    assert captured["port"] == 8765
+    assert captured["no_open"] and captured["no_wait"]
 
 
 def test_cli_runs_list_and_result_json(binding_mocks, capsys):
@@ -613,26 +619,38 @@ def test_stream_log_stops_when_worker_finishes_without_a_terminal_event(tmp_path
     assert json.loads(lines[0])["type"] == "debate_started"
 
 
-def test_interactive_path_wires_engine_sinks_and_finalizes(binding_mocks, monkeypatch):
-    # Exercise the interactive branch end to end minus Textual: a stub app stands
-    # in for the Town Hall, so the worker + follower + finalize wiring is covered
-    # and the engine-backed steering/control sinks are the ones passed in.
-    import tinyic.tui.app as tui_app_module
-    from tinyic.debate.steering import EngineControlSink, EngineSteeringSink
+def test_web_path_wires_engine_controls_and_finalizes(binding_mocks, monkeypatch):
+    # Exercise the default web branch with the server lifecycle stubbed. The
+    # debate worker remains real and consumes the same JSONL log as production.
+    from tinyic.debate.control import RunControl
+    from tinyic.debate.steering import SteeringInbox
+    from tinyic.web import WebFace
 
     captured: dict = {}
 
-    class _StubApp:
-        def run(self):
-            captured["ran"] = True
+    class _StubFace:
+        base_url = "http://127.0.0.1:4567"
 
-    def fake_live(event_queue, *, sink=None, control=None, **_kwargs):
-        captured["queue"] = event_queue
-        captured["sink"] = sink
+        def start(self):
+            captured["started"] = True
+
+        def mark_run_finished(self):
+            captured["finished"] = True
+
+        def wait_for_sse_disconnect(self, timeout=None):
+            captured["disconnect_timeout"] = timeout
+            return True
+
+        def shutdown(self, *, timeout=None):
+            captured["shutdown_timeout"] = timeout
+
+    def fake_live(log, *, inbox=None, control=None, **_kwargs):
+        captured["log"] = log
+        captured["inbox"] = inbox
         captured["control"] = control
-        return _StubApp()
+        return _StubFace()
 
-    monkeypatch.setattr(tui_app_module.TownHallApp, "live", staticmethod(fake_live))
+    monkeypatch.setattr(WebFace, "live", staticmethod(fake_live))
 
     code = run_debate_command(
         "AAPL",
@@ -640,13 +658,17 @@ def test_interactive_path_wires_engine_sinks_and_finalizes(binding_mocks, monkey
         committee=_fake_committee(),
         data_package=_mock_data_package(),
         interactive=True,
+        no_open=True,
+        no_wait=True,
         out=io.StringIO(),
         err=io.StringIO(),
     )
     assert code == 0
-    assert captured.get("ran") is True
-    assert isinstance(captured["sink"], EngineSteeringSink)
-    assert isinstance(captured["control"], EngineControlSink)
+    assert captured.get("started") is True
+    assert captured.get("finished") is True
+    assert isinstance(captured["inbox"], SteeringInbox)
+    assert isinstance(captured["control"], RunControl)
+    assert captured["shutdown_timeout"] == 1.0
 
 
 def test_assemble_result_reports_truncated_log_as_incomplete(tmp_path):

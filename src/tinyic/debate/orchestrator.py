@@ -844,8 +844,11 @@ class DebateOrchestrator(TinyWorld):
     def run_debate(self) -> None:
         """Run the full debate: inject context, then execute all phases."""
         self.inject_context()
-        # If phase_gate is set, signal it for the first phase
-        if self.phase_gate is not None:
+        # Legacy Event gates start released for the opening phase. ``RunControl``
+        # owns its own pause/step budget and deliberately has no ``set`` method.
+        if self.phase_gate is not None and not callable(
+            getattr(self.phase_gate, "wait_for_phase", None)
+        ):
             self.phase_gate.set()
         self.run(
             steps=len(self.PHASE_ORDER),

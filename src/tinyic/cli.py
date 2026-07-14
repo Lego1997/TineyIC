@@ -94,8 +94,8 @@ def _add_debate_parser(subparsers) -> None:
         "debate",
         help="Convene the investment committee on a ticker or company.",
         description=(
-            "Run a four-phase investment-committee debate. In a terminal this "
-            "opens the live Town Hall TUI; with --headless/--json it runs as a "
+            "Run a four-phase investment-committee debate. By default this "
+            "opens the localhost Town Hall; with --headless/--json it runs as a "
             "headless agent, streaming the event log to STDOUT."
         ),
     )
@@ -123,7 +123,7 @@ def _add_debate_parser(subparsers) -> None:
     debate.add_argument(
         "--headless",
         action="store_true",
-        help="Never launch the TUI (agent/CI mode).",
+        help="Do not start the web viewer (agent/CI mode).",
     )
     debate.add_argument(
         "--json",
@@ -149,7 +149,39 @@ def _add_debate_parser(subparsers) -> None:
         help="Assume yes / never prompt (non-interactive runs).",
     )
     debate.add_argument("--config", help="Path to tinyic.toml.")
+    _add_web_flags(debate)
     debate.set_defaults(func=_cmd_debate)
+
+
+def _port_number(value: str) -> int:
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("port must be an integer") from exc
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return port
+
+
+def _add_web_flags(parser: argparse.ArgumentParser) -> None:
+    """Add the shared localhost viewer lifecycle flags without importing it."""
+    parser.add_argument(
+        "--port",
+        type=_port_number,
+        default=0,
+        metavar="N",
+        help="Bind the localhost viewer to port N (default: an ephemeral port).",
+    )
+    parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Print the viewer URL without opening a browser.",
+    )
+    parser.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="Exit after the run and any active SSE viewer disconnect.",
+    )
 
 
 def _add_runs_parser(subparsers) -> None:
@@ -319,6 +351,9 @@ def _cmd_debate(args: argparse.Namespace) -> int:
         phase_step=args.phase_step,
         steer_stdin=args.steer_stdin,
         yes=args.yes,
+        port=args.port,
+        no_open=args.no_open,
+        no_wait=args.no_wait,
         config_path=args.config,
     )
 
