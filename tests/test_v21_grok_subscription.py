@@ -11,13 +11,18 @@ from __future__ import annotations
 import json
 import os
 import stat
+import urllib.error
 from pathlib import Path
 
 import pytest
 
+from tinyic.auth import grok as grok_mod
 from tinyic.auth.grok import (
     GROK_AUTH_FILE_KEY,
     GROK_AUTH_FILE_LEGACY_KEY,
+    GROK_DEVICE_AUTHORIZATION_URL,
+    GROK_DISCOVERY_URL,
+    GROK_TOKEN_URL,
     GrokAuthReason,
     GrokDeviceCodeFlow,
     GrokDeviceLoginSession,
@@ -1287,4 +1292,197 @@ def test_wizard_device_denial_surfaces_the_reason_without_persisting(tmp_path):
     controller.activate()  # device
     assert controller.finish_subscription_login() is False
     assert controller.plans[0].error == "invalid_credential"
+    assert controller.store.get("grok:supergrok") is None
+
+
+# --------------------------------------------------------------------------
+# device endpoint resolution (the /oauth2/device/code regression)
+# --------------------------------------------------------------------------
+
+
+def test_device_authorization_default_matches_the_published_endpoint():
+    # auth.x.ai's discovery document names /oauth2/device/code; the old
+    # conventional /oauth2/device/authorization guess 404s, which surfaced in
+    # the wizard as a bogus runtime_unavailable.
+    assert GROK_DEVICE_AUTHORIZATION_URL == "https://auth.x.ai/oauth2/device/code"
+
+
+def test_device_flow_prefers_discovery_endpoints():
+    oauth = ScriptedOAuth(
+        _START,
+        [{"access_token": "a", "refresh_token": "r", "expires_in": 60}],
+    )
+    fetched: list[str] = []
+
+    def getter(url):
+        fetched.append(url)
+        return {
+            "device_authorization_endpoint": "https://auth.x.ai/custom/device",
+            "token_endpoint": "https://auth.x.ai/custom/token",
+        }
+
+    flow = GrokDeviceCodeFlow(http_post=oauth, http_get=getter, clock=lambda: NOW)
+    flow.start()
+    flow.poll()
+    assert fetched == [GROK_DISCOVERY_URL]
+    assert oauth.calls[0][0] == "https://auth.x.ai/custom/device"
+    assert oauth.calls[1][0] == "https://auth.x.ai/custom/token"
+
+
+def test_device_flow_keeps_defaults_when_discovery_fails(tmp_path):
+    def unreachable(_url):
+        raise GrokTokenError(
+            GrokAuthReason.NETWORK_UNREACHABLE, "discovery down"
+        )
+
+    oauth = ScriptedOAuth(_START, [])
+    flow = GrokDeviceCodeFlow(
+        http_post=oauth, http_get=unreachable, clock=lambda: NOW
+    )
+    flow.start()
+    assert oauth.calls[0][0] == GROK_DEVICE_AUTHORIZATION_URL
+
+
+def test_device_flow_ignores_off_issuer_discovery_endpoints():
+    oauth = ScriptedOAuth(
+        _START,
+        [{"access_token": "a", "refresh_token": "r", "expires_in": 60}],
+    )
+    flow = GrokDeviceCodeFlow(
+        http_post=oauth,
+        http_get=lambda _url: {
+            "device_authorization_endpoint": "https://evil.example/device",
+            "token_endpoint": "http://auth.x.ai/oauth2/token",  # not https
+        },
+        clock=lambda: NOW,
+    )
+    flow.start()
+    flow.poll()
+    assert oauth.calls[0][0] == GROK_DEVICE_AUTHORIZATION_URL
+    assert oauth.calls[1][0] == GROK_TOKEN_URL
+
+
+def test_device_flow_without_a_getter_performs_no_discovery():
+    oauth = ScriptedOAuth(_START, [])
+    flow = GrokDeviceCodeFlow(http_post=oauth, clock=lambda: NOW)
+    flow.start()
+    assert [url for url, _form in oauth.calls] == [GROK_DEVICE_AUTHORIZATION_URL]
+
+
+def test_default_post_maps_connection_failure_to_network_unreachable(
+    monkeypatch,
+):
+    def refuse(*_args, **_kwargs):
+        raise urllib.error.URLError("no route to host")
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    with pytest.raises(GrokTokenError) as excinfo:
+        grok_mod._default_http_post(GROK_DEVICE_AUTHORIZATION_URL, {"a": "b"})
+    assert excinfo.value.reason is GrokAuthReason.NETWORK_UNREACHABLE
+
+
+def test_default_get_maps_connection_failure_to_network_unreachable(
+    monkeypatch,
+):
+    def refuse(*_args, **_kwargs):
+        raise urllib.error.URLError("no route to host")
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    with pytest.raises(GrokTokenError) as excinfo:
+        grok_mod._default_http_get(GROK_DISCOVERY_URL)
+    assert excinfo.value.reason is GrokAuthReason.NETWORK_UNREACHABLE
+
+
+def test_production_login_session_wires_discovery_into_the_flow():
+    session = GrokDeviceLoginSession()
+    with session:
+        assert session._flow is not None
+        assert session._flow._http_get is grok_mod._default_http_get
+
+
+# --------------------------------------------------------------------------
+# wizard reason mapping for device-lane failures
+# --------------------------------------------------------------------------
+
+
+class _StartFailingGrokSession:
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def start(self, _mode):
+        raise self._error
+
+
+def test_wizard_maps_grok_start_network_failure_to_network_unreachable(
+    tmp_path,
+):
+    from tinyic.tui.onboard import REASON_HINTS
+
+    controller = _wizard(
+        tmp_path,
+        grok_login_factory=lambda: _StartFailingGrokSession(
+            OSError("connection refused")
+        ),
+    )
+    controller.activate()  # -> CHOOSE
+    controller.activate()  # -> CONNECT_SUB menu
+    kind, payload = controller.activate()  # device
+    assert (kind, payload) == ("navigate", None)
+    assert controller.plans[0].error == "network_unreachable"
+    assert "network_unreachable" in REASON_HINTS
+
+
+def test_wizard_passes_reason_coded_start_failures_through(tmp_path):
+    controller = _wizard(
+        tmp_path,
+        grok_login_factory=lambda: _StartFailingGrokSession(
+            GrokTokenError(
+                GrokAuthReason.NETWORK_UNREACHABLE,
+                "Grok OAuth endpoint is unreachable",
+            )
+        ),
+    )
+    controller.activate()
+    controller.activate()
+    controller.activate()  # device
+    assert controller.plans[0].error == "network_unreachable"
+
+
+def test_wizard_maps_grok_wait_network_failure_to_network_unreachable(
+    tmp_path,
+):
+    class WaitFailingGrokSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def start(self, _mode):
+            from tinyic.auth.grok import GrokDeviceChallenge
+
+            return GrokDeviceChallenge(
+                verification_url="https://auth.x.ai/activate",
+                user_code="ABCD-1234",
+                interval=5.0,
+                expires_at=None,
+            )
+
+        def wait(self, _challenge):
+            raise OSError("connection reset")
+
+    controller = _wizard(
+        tmp_path, grok_login_factory=WaitFailingGrokSession
+    )
+    controller.activate()
+    controller.activate()
+    controller.activate()  # device
+    assert controller.finish_subscription_login() is False
+    assert controller.plans[0].error == "network_unreachable"
     assert controller.store.get("grok:supergrok") is None

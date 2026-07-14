@@ -55,9 +55,11 @@ GROK_ISSUER = "https://auth.x.ai"
 GROK_DISCOVERY_URL = f"{GROK_ISSUER}/.well-known/openid-configuration"
 GROK_AUTHORIZE_URL = f"{GROK_ISSUER}/oauth2/authorize"
 GROK_TOKEN_URL = f"{GROK_ISSUER}/oauth2/token"
-#: Conventional RFC 8628 endpoint; the issuer's discovery document
-#: (``GROK_DISCOVERY_URL``) is authoritative and may override this default.
-GROK_DEVICE_AUTHORIZATION_URL = f"{GROK_ISSUER}/oauth2/device/authorization"
+#: The issuer's published device endpoint — its discovery document names
+#: ``/oauth2/device/code``, not the conventional RFC 8628
+#: ``/device/authorization`` path.  Discovery stays authoritative:
+#: :meth:`GrokDeviceCodeFlow.start` re-reads it and overrides this default.
+GROK_DEVICE_AUTHORIZATION_URL = f"{GROK_ISSUER}/oauth2/device/code"
 #: The official CLI's *public* desktop client id — an OAuth public-client
 #: identifier, not a secret.
 GROK_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
@@ -88,6 +90,9 @@ GROK_ENTITLEMENT_MARKERS = (
 #: raised, so the callers can drive the RFC 8628 state machine.
 HttpPostForm = Callable[[str, Mapping[str, str]], Mapping[str, Any]]
 
+#: Injectable ``url -> parsed-JSON-mapping`` GET seam (discovery documents).
+HttpGetJson = Callable[[str], Mapping[str, Any]]
+
 
 class GrokAuthReason(str, Enum):
     """Stable reason codes returned by the Grok subscription probes."""
@@ -97,6 +102,7 @@ class GrokAuthReason(str, Enum):
     EXPIRED = "expired"
     INVALID_CREDENTIAL = "invalid_credential"
     SUBSCRIPTION_INACTIVE = "subscription_inactive"
+    NETWORK_UNREACHABLE = "network_unreachable"
 
 
 @dataclass(frozen=True)
@@ -339,7 +345,7 @@ def _default_http_post(url: str, form: Mapping[str, str]) -> Mapping[str, Any]:
         ) from None
     except Exception:
         raise GrokTokenError(
-            GrokAuthReason.INVALID_CREDENTIAL,
+            GrokAuthReason.NETWORK_UNREACHABLE,
             "Grok OAuth endpoint is unreachable",
         ) from None
     try:
@@ -352,6 +358,42 @@ def _default_http_post(url: str, form: Mapping[str, str]) -> Mapping[str, Any]:
             "Grok OAuth endpoint returned an invalid response",
         )
     return parsed
+
+
+def _default_http_get(url: str) -> Mapping[str, Any]:
+    """GET returning the parsed JSON body; sanitized errors like the POST seam."""
+
+    request = urllib.request.Request(
+        url, headers={"accept": "application/json"}, method="GET"
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = response.read().decode("utf-8", errors="replace")
+    except Exception:
+        raise GrokTokenError(
+            GrokAuthReason.NETWORK_UNREACHABLE,
+            "Grok OAuth discovery endpoint is unreachable",
+        ) from None
+    try:
+        parsed = json.loads(body)
+    except (TypeError, ValueError):
+        parsed = None
+    if not isinstance(parsed, Mapping):
+        raise GrokTokenError(
+            GrokAuthReason.INVALID_CREDENTIAL,
+            "Grok OAuth discovery returned an invalid response",
+        )
+    return parsed
+
+
+def _is_issuer_url(url: object) -> bool:
+    """True only for an https URL on x.ai or a subdomain (discovery hygiene)."""
+
+    if not isinstance(url, str) or not url:
+        return False
+    parsed = urllib.parse.urlsplit(url)
+    host = parsed.hostname or ""
+    return parsed.scheme == "https" and (host == "x.ai" or host.endswith(".x.ai"))
 
 
 def refresh_grok_tokens(
@@ -644,36 +686,67 @@ def _pkce_pair() -> tuple[str, str]:
 class GrokDeviceCodeFlow:
     """The wizard-facing device-code state machine (pure logic, no I/O).
 
-    All network happens through the injected ``http_post`` seam.  States:
-    ``idle`` → :meth:`start` → ``pending`` → :meth:`poll` … →
+    All network happens through the injected ``http_post``/``http_get`` seams.
+    States: ``idle`` → :meth:`start` → ``pending`` → :meth:`poll` … →
     ``complete`` | ``denied`` | ``expired``.  ``poll`` returns ``None`` while
     authorization is pending and honors ``slow_down`` by widening the
     interval; terminal failures raise reason-coded :class:`GrokTokenError`.
+
+    ``http_get``, when provided, fetches the issuer's discovery document at
+    :meth:`start` and its ``device_authorization_endpoint``/``token_endpoint``
+    override the built-in defaults (issuer-host https URLs only); with no
+    getter the flow performs no discovery, keeping ``http_post``-only test
+    doubles hermetic.
     """
 
     def __init__(
         self,
         *,
         http_post: HttpPostForm | None = None,
+        http_get: HttpGetJson | None = None,
         clock: Callable[[], float] | None = None,
         client_id: str = GROK_CLIENT_ID,
         scope: str = GROK_OAUTH_SCOPE,
         device_authorization_url: str = GROK_DEVICE_AUTHORIZATION_URL,
         token_url: str = GROK_TOKEN_URL,
+        discovery_url: str = GROK_DISCOVERY_URL,
         use_pkce: bool = True,
     ) -> None:
         self._http_post = http_post or _default_http_post
+        self._http_get = http_get
         self._clock = clock or time.time
         self._client_id = client_id
         self._scope = scope
         self._device_authorization_url = device_authorization_url
         self._token_url = token_url
+        self._discovery_url = discovery_url
         self._use_pkce = bool(use_pkce)
         self._state = "idle"
         self._device_code: str | None = None
         self._verifier: str | None = None
         self._interval = 5.0
         self._expires_at: float | None = None
+
+    def _resolve_endpoints(self) -> None:
+        """Best-effort endpoint resolution from the issuer's discovery document.
+
+        The published document is authoritative for the device/token paths;
+        any failure (unreachable, malformed, off-issuer hosts) silently keeps
+        the built-in defaults so the flow can still be attempted.
+        """
+
+        if self._http_get is None or not self._discovery_url:
+            return
+        try:
+            document = self._http_get(self._discovery_url)
+        except Exception:
+            return
+        device = document.get("device_authorization_endpoint")
+        token = document.get("token_endpoint")
+        if _is_issuer_url(device):
+            self._device_authorization_url = device
+        if _is_issuer_url(token):
+            self._token_url = token
 
     @property
     def state(self) -> str:
@@ -686,6 +759,7 @@ class GrokDeviceCodeFlow:
     def start(self) -> GrokDeviceChallenge:
         if self._state != "idle":
             raise RuntimeError("Grok device flow was already started")
+        self._resolve_endpoints()
         form = {"client_id": self._client_id, "scope": self._scope}
         if self._use_pkce:
             self._verifier, challenge = _pkce_pair()
@@ -834,7 +908,11 @@ class GrokDeviceLoginSession:
         flow_factory: Callable[[], GrokDeviceCodeFlow] | None = None,
         sleep: Callable[[float], None] | None = None,
     ) -> None:
-        self._flow_factory = flow_factory or GrokDeviceCodeFlow
+        # The production flow gets the real GET seam so the issuer's discovery
+        # document can override the built-in endpoint defaults.
+        self._flow_factory = flow_factory or (
+            lambda: GrokDeviceCodeFlow(http_get=_default_http_get)
+        )
         self._sleep = sleep or time.sleep
         self._flow: GrokDeviceCodeFlow | None = None
 
