@@ -1154,7 +1154,14 @@ def _grok_report(*, subscription_ok: bool = False):
     )
 
 
-def _wizard(tmp_path, *, report=None, grok_login_factory=None, **manager_kwargs):
+def _wizard(
+    tmp_path,
+    *,
+    report=None,
+    grok_login_factory=None,
+    browser_opener=None,
+    **manager_kwargs,
+):
     from tinyic.tui.onboard import OnboardController
 
     manager = AuthManager(_store(tmp_path), environ={}, **manager_kwargs)
@@ -1163,6 +1170,7 @@ def _wizard(tmp_path, *, report=None, grok_login_factory=None, **manager_kwargs)
         report_factory=lambda: report if report is not None else _grok_report(),
         verify_probe=lambda _binding, _candidate: "ok",
         grok_login_factory=grok_login_factory,
+        browser_opener=browser_opener,
     )
     controller.start()
     return controller
@@ -1524,3 +1532,142 @@ def test_device_wait_screen_names_the_provider_being_signed_into(tmp_path):
     assert "ChatGPT" not in body
     # The OpenAI device flow really does sign into ChatGPT — unchanged.
     assert device_heading("openai") == "Sign in with ChatGPT"
+
+
+class _PendingDeviceGrokSession:
+    """start() yields a pending device challenge; the test never wait()s."""
+
+    VERIFICATION_URL = "https://accounts.x.ai/oauth2/device?user_code=GMWD-JJWS"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def start(self, _mode):
+        from tinyic.auth.grok import GrokDeviceChallenge
+
+        return GrokDeviceChallenge(
+            verification_url=self.VERIFICATION_URL,
+            user_code="GMWD-JJWS",
+            interval=5.0,
+            expires_at=None,
+        )
+
+
+def _recording_opener(opened):
+    def _open(url):
+        opened.append(url)
+        return True
+
+    return _open
+
+
+def test_device_login_auto_opens_the_verification_url_once(tmp_path):
+    # Copy/paste out of a TUI is painful, so entering device_wait launches the
+    # browser at the verification URL (which pre-fills the code) exactly once.
+    from tinyic.tui.onboard import OnboardApp
+
+    opened: list[str] = []
+    controller = _wizard(
+        tmp_path,
+        grok_login_factory=_PendingDeviceGrokSession,
+        browser_opener=_recording_opener(opened),
+    )
+    controller.activate()
+    controller.activate()
+    controller.activate()  # device -> device_wait (+ auto-open)
+    assert controller.sub_stage == "device_wait"
+    assert opened == [_PendingDeviceGrokSession.VERIFICATION_URL]
+
+    # Re-rendering the device screen must not re-open the browser.
+    app = OnboardApp(controller, threaded_verify=False)
+    body = app.render_body().plain
+    app.render_body()
+    assert opened == [_PendingDeviceGrokSession.VERIFICATION_URL]
+    # The screen and the status bar both advertise the manual re-open key.
+    assert "press o to reopen" in body
+    assert "o open browser" in app._render_status().plain
+
+
+def test_open_verification_url_reopens_only_while_pending(tmp_path):
+    opened: list[str] = []
+    controller = _wizard(
+        tmp_path,
+        grok_login_factory=_PendingDeviceGrokSession,
+        browser_opener=_recording_opener(opened),
+    )
+    # No pending challenge yet: nothing to open.
+    assert controller.open_verification_url() is False
+    assert opened == []
+
+    controller.activate()
+    controller.activate()
+    controller.activate()  # device_wait (auto-open #1)
+    assert controller.open_verification_url() is True  # the `o` binding
+    assert opened == [_PendingDeviceGrokSession.VERIFICATION_URL] * 2
+
+    # Cancelling the login clears the challenge; `o` becomes a no-op again.
+    assert controller.back() is True
+    assert controller.open_verification_url() is False
+    assert opened == [_PendingDeviceGrokSession.VERIFICATION_URL] * 2
+
+
+def test_non_https_verification_url_is_never_auto_opened(tmp_path):
+    class _HttpChallengeSession(_PendingDeviceGrokSession):
+        VERIFICATION_URL = "http://accounts.x.ai/oauth2/device"
+
+    opened: list[str] = []
+    controller = _wizard(
+        tmp_path,
+        grok_login_factory=_HttpChallengeSession,
+        browser_opener=_recording_opener(opened),
+    )
+    controller.activate()
+    controller.activate()
+    controller.activate()
+    assert controller.sub_stage == "device_wait"  # sign-in itself still works
+    assert opened == []
+
+
+def test_browser_opener_failure_never_breaks_the_device_screen(tmp_path):
+    from tinyic.tui.onboard import OnboardApp
+
+    def _exploding_opener(_url):
+        raise RuntimeError("no browser on this box")
+
+    controller = _wizard(
+        tmp_path,
+        grok_login_factory=_PendingDeviceGrokSession,
+        browser_opener=_exploding_opener,
+    )
+    controller.activate()
+    controller.activate()
+    controller.activate()
+    assert controller.sub_stage == "device_wait"
+    body = OnboardApp(controller, threaded_verify=False).render_body().plain
+    assert "GMWD-JJWS" in body  # manual URL + code remain the fallback
+
+
+def test_default_browser_opener_routes_through_webbrowser(no_real_browser):
+    # The conftest guard replaces webbrowser.open with a recorder, which both
+    # proves the default opener's wiring and keeps the offline suite from ever
+    # popping a real browser tab.
+    from tinyic.tui.onboard import _default_browser_opener
+
+    assert _default_browser_opener("https://example.invalid/device") is True
+    assert no_real_browser == ["https://example.invalid/device"]
+
+
+def test_default_wizard_auto_open_is_absorbed_by_the_suite_guard(
+    tmp_path, no_real_browser
+):
+    # A controller built WITHOUT an injected opener (production default) must
+    # hit the webbrowser seam — and nothing else — when it enters device_wait.
+    controller = _wizard(tmp_path, grok_login_factory=_PendingDeviceGrokSession)
+    controller.activate()
+    controller.activate()
+    controller.activate()
+    assert controller.sub_stage == "device_wait"
+    assert no_real_browser == [_PendingDeviceGrokSession.VERIFICATION_URL]

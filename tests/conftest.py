@@ -39,6 +39,27 @@ def isolate_tinyic_run_logs(tmp_path, monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def no_real_browser(monkeypatch):
+    """Never launch a real browser from the offline suite.
+
+    The onboarding wizard auto-opens device-code verification URLs via
+    :mod:`webbrowser`; tests that reach the device-wait stage without
+    injecting their own opener must record, not open.  Returns the list of
+    URLs that would have been opened.
+    """
+    import webbrowser
+
+    opened: list[str] = []
+
+    def _record(url, *args, **kwargs):
+        opened.append(url)
+        return True
+
+    monkeypatch.setattr(webbrowser, "open", _record)
+    return opened
+
+
 @pytest.fixture
 def has_api_key():
     """Check if OPENAI_API_KEY is available, skip if not."""

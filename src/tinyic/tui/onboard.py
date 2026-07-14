@@ -403,6 +403,16 @@ def _default_grok_login_factory():
     return GrokDeviceLoginSession()
 
 
+def _default_browser_opener(url: str) -> bool:
+    """Best-effort launch of the user's default browser (never raises)."""
+    import webbrowser
+
+    try:
+        return bool(webbrowser.open(url))
+    except Exception:
+        return False
+
+
 # --------------------------------------------------------------------------- #
 # The controller — the pure, Textual-free state machine
 # --------------------------------------------------------------------------- #
@@ -417,6 +427,9 @@ class OnboardController:
     * ``verify_probe(binding, candidate)`` → a reason code (VERIFY gate).
     * ``openai_login_factory()`` → a context-managed login session exposing
       ``start(mode)`` / ``wait(challenge)`` (the OpenAI device-code CONNECT).
+    * ``browser_opener(url)`` → best-effort launch of the user's browser for a
+      device-code verification URL (defaults to :mod:`webbrowser`; the URL and
+      code stay on screen either way, so a failed open degrades to manual).
 
     Credentials are only ever persisted through ``manager.store``; the wizard
     never writes a credential file itself and never keeps or echoes a secret.
@@ -432,6 +445,7 @@ class OnboardController:
         openai_login_factory: Callable[[], object] | None = None,
         grok_login_factory: Callable[[], object] | None = None,
         catalog_factory: Callable[[], object] | None = None,
+        browser_opener: Callable[[str], object] | None = None,
     ) -> None:
         self.manager = manager
         self.store = manager.store
@@ -442,6 +456,7 @@ class OnboardController:
         self.verify_probe = verify_probe or live_token_probe
         self.openai_login_factory = openai_login_factory or _default_openai_login_factory
         self.grok_login_factory = grok_login_factory or _default_grok_login_factory
+        self.browser_opener = browser_opener or _default_browser_opener
         # The MODEL step's catalog seam: static snapshots are offline; only the
         # explicit refresh action queries a provider's live model listing.
         self.catalog_factory = catalog_factory or self._default_catalog_service
@@ -1025,7 +1040,27 @@ class OnboardController:
         self._login_session = session
         self._challenge = challenge
         self._sub_stage = "device_wait"
+        # Hands-free hop into the browser: TUIs make copy/paste painful, so the
+        # verification URL (which usually pre-fills the code) is opened for the
+        # user.  Best-effort only — the on-screen URL/code remain the source of
+        # truth, and ``o`` re-opens it.
+        self.open_verification_url()
         return challenge
+
+    def open_verification_url(self) -> bool:
+        """Open the pending device-code verification URL in the browser.
+
+        Returns ``False`` (and does nothing) unless a device challenge is
+        pending and carries an ``https://`` URL; opener failures are swallowed
+        so a headless/odd environment can never break the sign-in screen.
+        """
+        url = getattr(self._challenge, "verification_url", None)
+        if not isinstance(url, str) or not url.startswith("https://"):
+            return False
+        try:
+            return bool(self.browser_opener(url))
+        except Exception:
+            return False
 
     def finish_subscription_login(self) -> bool:
         """Wait for the device-code login to complete, then verify + persist."""
@@ -1580,6 +1615,10 @@ class OnboardApp(App):
         code = getattr(challenge, "user_code", None) or "…"
         text.append(f"    {code}\n\n", style=f"bold {theme.semantic('success', dark=dark)}")
         text.append(
+            "Your browser should have opened this page — press o to reopen it.\n\n",
+            style=theme.muted(dark=dark),
+        )
+        text.append(
             "Waiting for authorization…  ", style=theme.semantic("warning", dark=dark)
         )
         text.append("esc to cancel", style=theme.muted(dark=dark))
@@ -1750,7 +1789,7 @@ class OnboardApp(App):
                 "waiting for authorization…",
                 style=f"bold {theme.semantic('warning', dark=dark)}",
             )
-            text.append("  ·  esc cancel", style=dim)
+            text.append("  ·  o open browser · esc cancel", style=dim)
             return text
         text.append("↑↓ move", style="bold")
         if screen is OnboardScreen.DETECT:
@@ -1800,6 +1839,8 @@ class OnboardApp(App):
             return
         elif char is not None and char.isdigit() and char != "0":
             self.controller.select_index(int(char) - 1)
+        elif char == "o" and self.controller.sub_stage == "device_wait":
+            self.controller.open_verification_url()
         elif char == "d":
             # Cycle the registered tinyic-dark/tinyic-light theme; re-render so
             # Rich content built through the theme style seam tracks it.
