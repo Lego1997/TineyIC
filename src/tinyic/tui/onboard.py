@@ -234,6 +234,18 @@ def provider_label(provider: str) -> str:
     return PROVIDER_LABELS.get(provider, provider)
 
 
+#: Device-wait screen headings: the *account* being signed into, which is not
+#: always the provider label (OpenAI's device flow signs into ChatGPT).
+_DEVICE_HEADINGS = {
+    "openai": "Sign in with ChatGPT",
+    "grok": "Sign in with Grok",
+}
+
+
+def device_heading(provider: str) -> str:
+    return _DEVICE_HEADINGS.get(provider, f"Sign in with {provider_label(provider)}")
+
+
 def best_for(provider: str, lane: str) -> str:
     text = BEST_FOR.get((provider, lane))
     if text:
@@ -1544,7 +1556,7 @@ class OnboardApp(App):
         if plan is None:
             return text
         if self.controller.sub_stage == "device_wait":
-            return self._render_device()
+            return self._render_device(plan.provider)
         text.append(
             f"Connect {provider_label(plan.provider)} subscription\n",
             style="bold underline",
@@ -1554,13 +1566,15 @@ class OnboardApp(App):
         text.append_text(self._error_line(plan))
         return text
 
-    def _render_device(self) -> Text:
+    def _render_device(self, provider: str) -> Text:
         dark = theme.is_dark(self)
         challenge = self.controller.challenge
         text = Text()
-        text.append("Sign in with ChatGPT\n", style="bold underline")
+        text.append(f"{device_heading(provider)}\n", style="bold underline")
         text.append("\nGo to ", style="none")
-        url = getattr(challenge, "verification_url", None) or "(the URL shown by Codex)"
+        url = getattr(challenge, "verification_url", None) or (
+            "(the URL shown by the sign-in flow)"
+        )
         text.append(url, style=theme.accent(dark=dark))
         text.append("\nand enter the code:\n\n", style="none")
         code = getattr(challenge, "user_code", None) or "…"

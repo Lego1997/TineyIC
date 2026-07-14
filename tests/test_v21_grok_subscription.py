@@ -1486,3 +1486,41 @@ def test_wizard_maps_grok_wait_network_failure_to_network_unreachable(
     assert controller.finish_subscription_login() is False
     assert controller.plans[0].error == "network_unreachable"
     assert controller.store.get("grok:supergrok") is None
+
+
+def test_device_wait_screen_names_the_provider_being_signed_into(tmp_path):
+    # The device-wait screen was hardcoded "Sign in with ChatGPT", which on
+    # the Grok lane made a healthy xAI device code look like a wrong-account
+    # flow.
+    from tinyic.tui.onboard import OnboardApp, device_heading
+
+    class PendingGrokSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def start(self, _mode):
+            from tinyic.auth.grok import GrokDeviceChallenge
+
+            return GrokDeviceChallenge(
+                verification_url=(
+                    "https://accounts.x.ai/oauth2/device?user_code=GMWD-JJWS"
+                ),
+                user_code="GMWD-JJWS",
+                interval=5.0,
+                expires_at=None,
+            )
+
+    controller = _wizard(tmp_path, grok_login_factory=PendingGrokSession)
+    controller.activate()
+    controller.activate()
+    controller.activate()  # device -> device_wait
+    assert controller.sub_stage == "device_wait"
+    body = OnboardApp(controller, threaded_verify=False).render_body().plain
+    assert "Sign in with Grok" in body
+    assert "GMWD-JJWS" in body
+    assert "ChatGPT" not in body
+    # The OpenAI device flow really does sign into ChatGPT — unchanged.
+    assert device_heading("openai") == "Sign in with ChatGPT"
