@@ -732,6 +732,9 @@ class TestFetchSocialSentiment:
         assert result is not None
         assert result.query == "$AAPL Apple Inc."
         assert "Bullish" in result.summary or "bullish" in result.summary
+        request = mock_client.responses.create.call_args.kwargs
+        assert request["tools"] == [{"type": "x_search"}]
+        assert request["model"] == "grok-4.3"
 
     @patch.dict(os.environ, {}, clear=True)
     def test_fetch_social_no_key(self):

@@ -12,6 +12,8 @@ Public surface::
 
 from __future__ import annotations
 
+from typing import Any
+
 from .action_stream import StreamingActionScanner
 from .binding import ModelBinding, ModelRefError, parse_model_ref
 from .binding_client import (
@@ -86,6 +88,34 @@ from .types import (
     WireFormat,
     is_retryable,
 )
+
+# Research backends depend on the persona-factory value objects, whose package
+# also imports TinyTroupe. Keep the ordinary model layer import-light and expose
+# this optional surface lazily only when a caller explicitly requests it.
+_RESEARCH_EXPORTS = frozenset(
+    {
+        "GeminiResearchBackend",
+        "GrokResearchBackend",
+        "KimiResearchBackend",
+        "NoSearchCapableLaneError",
+        "OpenAIResearchBackend",
+        "RESEARCH_PROVIDER_PRIORITY",
+        "ResearchResponseError",
+        "UnsupportedResearchProviderError",
+        "make_research_backend",
+        "select_research_backend",
+    }
+)
+
+
+def __getattr__(name: str) -> Any:
+    if name not in _RESEARCH_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from . import research
+
+    value = getattr(research, name)
+    globals()[name] = value
+    return value
 
 __all__ = [
     # binding
@@ -163,4 +193,15 @@ __all__ = [
     "Committee",
     "CommitteeTransportFactory",
     "build_committee",
+    # cited persona-research backends (lazy imports; see __getattr__)
+    "GeminiResearchBackend",
+    "GrokResearchBackend",
+    "KimiResearchBackend",
+    "NoSearchCapableLaneError",
+    "OpenAIResearchBackend",
+    "RESEARCH_PROVIDER_PRIORITY",
+    "ResearchResponseError",
+    "UnsupportedResearchProviderError",
+    "make_research_backend",
+    "select_research_backend",
 ]
