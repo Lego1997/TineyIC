@@ -24,7 +24,6 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from .security import (
     CACHE_CONTROL,
-    CAPABILITY_COOKIE,
     CSP_POLICY,
     AuthStatus,
     SecurityPolicy,
@@ -266,7 +265,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Location", "/")
         self.send_header(
             "Set-Cookie",
-            f"{CAPABILITY_COOKIE}={self.web.token}; HttpOnly; SameSite=Strict; Path=/",
+            f"{self.web.security.cookie_name}={self.web.token}; "
+            "HttpOnly; SameSite=Strict; Path=/",
         )
         self.send_header("Content-Length", "0")
         self.end_headers()

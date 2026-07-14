@@ -31,6 +31,11 @@ CAPABILITY_COOKIE = "tinyic_token"
 CSP_POLICY = "default-src 'self'; img-src 'self' data:"
 
 
+def _generate_capability_cookie_name() -> str:
+    """Return a browser-cookie name unique to one server instance."""
+    return f"{CAPABILITY_COOKIE}_{secrets.token_hex(8)}"
+
+
 def generate_capability_token() -> str:
     """Return a fresh 32-byte URL-safe capability token."""
     return secrets.token_urlsafe(32)
@@ -79,7 +84,7 @@ class SecurityPolicy:
 
     port: int
     token: str = field(default_factory=generate_capability_token, repr=False)
-    cookie_name: str = CAPABILITY_COOKIE
+    cookie_name: str = field(default_factory=_generate_capability_cookie_name)
 
     def __post_init__(self) -> None:
         if not isinstance(self.port, int) or isinstance(self.port, bool):
@@ -93,6 +98,18 @@ class SecurityPolicy:
             for character in self.token
         ):
             raise ValueError("token must contain only URL-safe token characters")
+        cookie_name_characters = frozenset(
+            "!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        )
+        if (
+            not isinstance(self.cookie_name, str)
+            or not self.cookie_name
+            or any(
+                character not in cookie_name_characters
+                for character in self.cookie_name
+            )
+        ):
+            raise ValueError("cookie_name must be a valid HTTP cookie name")
 
     @property
     def hosts(self) -> frozenset[str]:

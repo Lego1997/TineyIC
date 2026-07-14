@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import http.client
+import http.cookiejar
 import io
 import json
 import threading
 import time
 from pathlib import Path
+from urllib.request import HTTPCookieProcessor, build_opener
 
 import pytest
 
@@ -50,9 +52,10 @@ def servers():
     running: list[WebServer] = []
 
     def make(path: Path, **kwargs) -> WebServer:
+        token = kwargs.pop("token", "test-token")
         server = WebServer(
             path,
-            token="test-token",
+            token=token,
             open_browser=False,
             asset_loader=_assets,
             stderr=io.StringIO(),
@@ -138,7 +141,7 @@ def test_token_cookie_handoff_and_security_headers(tmp_path, servers):
     assert status == 302
     assert headers["Location"] == "/"
     cookie = headers["Set-Cookie"]
-    assert "tinyic_token=test-token" in cookie
+    assert f"{server.security.cookie_name}=test-token" in cookie
     assert "HttpOnly" in cookie and "SameSite=Strict" in cookie and "Path=/" in cookie
 
     status, _, body = _request(
@@ -146,6 +149,32 @@ def test_token_cookie_handoff_and_security_headers(tmp_path, servers):
     )
     assert status == 200
     assert b"TinyIC" in body
+
+
+def test_two_servers_keep_independent_capability_cookies(tmp_path, servers):
+    first_path = tmp_path / "first.jsonl"
+    second_path = tmp_path / "second.jsonl"
+    _write_log(first_path, [])
+    _write_log(second_path, [])
+    first = servers(first_path, replay=True, token="first-token")
+    second = servers(second_path, replay=True, token="second-token")
+
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = build_opener(HTTPCookieProcessor(cookie_jar))
+    with opener.open(first.launch_url, timeout=3) as response:
+        assert response.status == 200
+    with opener.open(second.launch_url, timeout=3) as response:
+        assert response.status == 200
+
+    assert first.security.cookie_name != second.security.cookie_name
+    assert {cookie.name for cookie in cookie_jar} == {
+        first.security.cookie_name,
+        second.security.cookie_name,
+    }
+    with opener.open(f"{first.base_url}/api/meta", timeout=3) as response:
+        assert response.status == 200
+    with opener.open(f"{second.base_url}/api/meta", timeout=3) as response:
+        assert response.status == 200
 
 
 def test_host_origin_and_json_only_rejections(tmp_path, servers):
