@@ -264,15 +264,20 @@ def test_grok_uses_responses_and_merges_flat_and_inline_citations() -> None:
 
 def test_grok_hard_caps_one_remaining_turn_and_trusts_billed_tool_usage() -> None:
     wire = {
-        # Attempt rows are not billing authority when xAI supplies its
+        # Attempt rows are not billing authority when xAI supplies its nested
         # successful server-side usage count.
         "output": [
             {"type": "web_search_call", "status": "completed"},
             {"type": "web_search_call", "status": "failed"},
+            {"type": "web_search_call", "status": "failed"},
         ],
         "citations": ["https://example.com/cited"],
-        "server_side_tool_usage": {"web_search": 1},
-        "usage": {"input_tokens": 10, "output_tokens": 5},
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "num_server_side_tools_used": 1,
+            "server_side_tool_usage_details": {"web_search_calls": 1},
+        },
     }
     http = ScriptedTransport(wire)
     backend = GrokResearchBackend(
@@ -290,7 +295,56 @@ def test_grok_hard_caps_one_remaining_turn_and_trusts_billed_tool_usage() -> Non
     assert http.sent[0].body["parallel_tool_calls"] is False
     assert result.usage is not None
     assert result.usage.search_calls == 1
+    assert result.usage.cost_usd == pytest.approx(0.00505)
     assert result.budget_exhausted is True
+
+
+def test_grok_preserves_authoritative_zero_successful_searches() -> None:
+    wire = {
+        "output": [{"type": "web_search_call", "status": "failed"}],
+        # Even returned citations must not turn xAI's authoritative zero into
+        # a billable search invocation.
+        "citations": ["https://example.com/cited"],
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "num_server_side_tools_used": 0,
+            "server_side_tool_usage_details": {"web_search_calls": 0},
+        },
+    }
+    http = ScriptedTransport(wire)
+    backend = GrokResearchBackend(
+        ModelBinding("grok/grok-4.5"), credentials(), http=http
+    )
+
+    result = backend.search(request(remaining_searches=1))
+
+    assert result.usage is not None
+    assert result.usage.search_calls == 0
+    assert result.usage.cost_usd == pytest.approx(0.00005)
+    assert result.budget_exhausted is False
+
+
+def test_grok_falls_back_to_successful_output_rows_when_usage_count_absent() -> None:
+    wire = {
+        "output": [
+            {"type": "web_search_call", "status": "completed"},
+            {"type": "web_search_call", "status": "failed"},
+            {"type": "web_search_call", "status": "completed"},
+        ],
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    }
+    http = ScriptedTransport(wire)
+    backend = GrokResearchBackend(
+        ModelBinding("grok/grok-4.5"), credentials(), http=http
+    )
+
+    result = backend.search(request(remaining_searches=3))
+
+    assert result.usage is not None
+    assert result.usage.search_calls == 2
+    assert result.usage.cost_usd == pytest.approx(0.01005)
+    assert result.budget_exhausted is False
 
 
 def test_gemini_interactions_google_search_uses_grounding_rows_and_annotations() -> None:

@@ -135,6 +135,19 @@ class GrokResearchBackend(_ResponsesResearchBackend):
 
     @staticmethod
     def _reported_tool_calls(data: Mapping[str, Any]) -> int:
+        usage = data.get("usage")
+        if isinstance(usage, Mapping):
+            details = usage.get("server_side_tool_usage_details")
+            if isinstance(details, Mapping):
+                raw_count = details.get("web_search_calls")
+                if isinstance(raw_count, int) and not isinstance(raw_count, bool):
+                    # This is xAI's documented successful, billable web-search
+                    # count.  Preserve an explicit zero rather than inferring a
+                    # charge from attempted output rows or returned citations.
+                    return max(0, raw_count)
+
+        # Preserve compatibility with the pre-release response shape used by
+        # older xAI clients, while preferring the documented usage nesting.
         raw = data.get("server_side_tool_usage")
         reported: list[int] = []
         if isinstance(raw, Mapping):
@@ -150,10 +163,15 @@ class GrokResearchBackend(_ResponsesResearchBackend):
                         reported.append(max(0, value))
         # xAI bills successful server-side tool use. Its explicit usage count
         # is therefore authoritative over attempted call rows in ``output``;
-        # older responses without that metric fall back to completed rows.
+        # responses without that metric fall back to successful output rows.
         if reported:
             return max(reported)
-        return len(response_web_search_calls(data))
+        return sum(
+            1
+            for call in response_web_search_calls(data)
+            if call.get("status") is None
+            or str(call.get("status")).casefold() == "completed"
+        )
 
     def search(self, request: SearchRequest) -> SearchResponse:
         body = self._body_params()
@@ -186,9 +204,6 @@ class GrokResearchBackend(_ResponsesResearchBackend):
                 ),
             )
         tool_calls = self._reported_tool_calls(data)
-        # A citations-only response still proves that a server-side search ran.
-        if tool_calls == 0 and collector.evidence:
-            tool_calls = 1
         usage = self._usage(
             usage_from_responses(data.get("usage")),
             purpose=PURPOSE_SEARCH,
