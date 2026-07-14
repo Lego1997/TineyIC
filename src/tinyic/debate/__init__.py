@@ -9,6 +9,7 @@ from tinyic import __version__ as tinyic_version
 from tinyic.events import EventLog, make_debate_id
 from .models import DebatePhase, VoteChoice, Confidence, Vote, Scorecard, DebateResult
 from .models import InvestmentMemo, MemoSection, DisagreementAnalysis, Disagreement
+from .control import DebateStopRequested
 from .moderator import Moderator
 from .orchestrator import CANONICAL_PHASE_NAMES, DebateOrchestrator
 from .extraction import extract_votes, build_scorecard
@@ -480,8 +481,8 @@ def run_debate(
             with an explicit ``steering_dropped`` before the terminal event.
         message_queue: Optional legacy ``queue.Queue`` of ``(text, target)`` tuples
             (pre-M6 steering path), delivered without steering events.
-        phase_gate: Optional ``threading.Event`` for inter-phase pausing (the TUI
-            pause/step control); ``None`` runs straight through.
+        phase_gate: Optional ``RunControl`` (pause/step/stop) or legacy
+            ``threading.Event`` (inter-phase step gate); ``None`` runs through.
 
     Returns:
         DebateResult with scorecard, transcript, and phase history.
@@ -827,17 +828,20 @@ def run_debate(
                             ),
                         ),
                     )
+                stopped_by_user = isinstance(exc, DebateStopRequested)
                 active_event_log.emit(
                     "debate_error",
                     {
-                        "stage": stage,
+                        "stage": "stopped" if stopped_by_user else stage,
                         # Raw provider/auth exceptions can contain request or
                         # credential material. The detailed exception remains
                         # in application logs, never in the public event file.
                         "message": (
-                            f"{type(exc).__name__} while running {stage}"
+                            "Debate stopped by user"
+                            if stopped_by_user
+                            else f"{type(exc).__name__} while running {stage}"
                         ),
-                        "recoverable": False,
+                        "recoverable": stopped_by_user,
                     },
                 )
             except Exception:

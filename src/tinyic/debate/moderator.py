@@ -239,8 +239,17 @@ class Moderator:
     # ------------------------------------------------------------------
 
     def gate_phase(self, phase_gate) -> None:
-        """Block until ``phase_gate`` is released, then re-arm it for next phase."""
+        """Apply the configured phase-boundary control.
+
+        The web face passes a ``RunControl`` with ``wait_for_phase``. A plain
+        ``threading.Event`` remains supported for programmatic callers using the
+        pre-v2.2 pause/step seam.
+        """
         if phase_gate is not None:
+            wait_for_phase = getattr(phase_gate, "wait_for_phase", None)
+            if callable(wait_for_phase):
+                wait_for_phase()
+                return
             phase_gate.wait()
             phase_gate.clear()
 

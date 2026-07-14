@@ -166,8 +166,9 @@ class DebateOrchestrator(TinyWorld):
             # boundaries and emits the authoritative steering_* / turn_interrupted
             # events. ``None`` keeps the pre-M6 behavior (legacy message_queue only).
             self.steering_inbox = None  # Optional[tinyic.debate.steering.SteeringInbox]
-            # Optional phase gate for inter-phase pausing (set by UI)
-            self.phase_gate = None     # Optional[threading.Event] -- if set, _step waits for it before proceeding
+            # Optional phase/run controller. A legacy ``threading.Event`` still
+            # works; the web face supplies ``RunControl`` for pause/step/stop.
+            self.phase_gate = None
 
             # Devil's-advocate rotation is owned by the moderator (persisted
             # per-install counter, B8 fix); the orchestrator only caches the
@@ -633,6 +634,7 @@ class DebateOrchestrator(TinyWorld):
         first_turn_of_phase = True
         for _exchange in range(rounds):
             for agent in self.agents:
+                self._check_control_stop()
                 # Drain user steering before each agent acts. The legacy tuple
                 # message_queue keeps its pre-M6 semantics; the engine inbox
                 # additionally emits steering_submitted/delivered and honors the
@@ -673,6 +675,9 @@ class DebateOrchestrator(TinyWorld):
                         self.on_agent_start(agent.name, phase.value)
 
                     outcome = self._run_turn(agent, phase, turn_id)
+                    # A stop cannot pre-empt a provider call safely. Discard its
+                    # uncommitted output as soon as the call returns instead.
+                    self._check_control_stop()
 
                     # Only the first attempt can be interrupted; an interrupt that
                     # arrives during the retake is left in the inbox for the next
@@ -733,6 +738,12 @@ class DebateOrchestrator(TinyWorld):
             self.current_phase = DebatePhase.COMPLETE
 
         return agents_actions
+
+    def _check_control_stop(self) -> None:
+        """Honor a web stop request at the nearest safe engine checkpoint."""
+        check = getattr(self.phase_gate, "check_stop", None)
+        if callable(check):
+            check()
 
     def _run_turn(self, agent, phase, turn_id) -> dict:
         """Execute one persona turn, streaming its deltas; return commit inputs.
