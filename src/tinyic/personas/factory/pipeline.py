@@ -61,7 +61,7 @@ _TRACKING_QUERY_KEYS = frozenset(
 )
 _CITATION_RE = re.compile(r"\[(\d+)\]")
 _QUOTE_RE = re.compile(
-    r'''(?:"([^"\n]{2,})"|“([^”\n]{2,})”|‘([^’\n]{2,})’|(?<![\w])'([^'\n]{2,})'(?![\w]))'''
+    r'''(?:["“]([^"”\n]{2,})["”]|(?<![\w])['‘]([^'’\n]{2,})['’](?![\w]))'''
 )
 _SLUG_RE = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
 

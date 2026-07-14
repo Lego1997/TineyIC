@@ -370,8 +370,24 @@ def test_fewer_than_three_domains_refuses_without_writes(tmp_path):
 
 @pytest.mark.parametrize(
     "delimiters",
-    [('"', '"'), ('‘', '’'), ("'", "'")],
-    ids=("double", "curly-single", "straight-single"),
+    [
+        ('"', '"'),
+        ('“', '"'),
+        ('"', '”'),
+        ('‘', '’'),
+        ("'", "'"),
+        ('‘', "'"),
+        ("'", '’'),
+    ],
+    ids=(
+        "double",
+        "curly-open-double",
+        "curly-close-double",
+        "curly-single",
+        "straight-single",
+        "curly-open-single",
+        "curly-close-single",
+    ),
 )
 def test_unverifiable_quotes_are_dropped_from_both_artifacts(
     tmp_path, delimiters
