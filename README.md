@@ -5,6 +5,7 @@ Buffett, Munger, Graham, Lynch, Marks, and Li Lu—or a committee you
 configure—to debate a public company in a secured local Town Hall.
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
+[![Node.js 22.14+](https://img.shields.io/badge/node-%3E%3D22.14-339933.svg)](https://nodejs.org/)
 [![TinyIC 2.2](https://img.shields.io/badge/TinyIC-2.2-6f42c1.svg)](src/tinyic/pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Interfaces: web · JSONL · replay](https://img.shields.io/badge/interfaces-web%20·%20JSONL%20·%20replay-8a63d2.svg)](AGENTS.md)
@@ -23,12 +24,10 @@ investment memo, disagreement analysis, and measured usage.
 
 ## Quick start
 
-TinyIC is distributed from Git source, not PyPI. You need Python 3.12+,
-[uv](https://docs.astral.sh/uv/), and one usable model lane: an API key, a
-supported subscription runtime, or local Ollama.
-
-Node.js and npm are not part of the current installation path. The Town Hall is
-a zero-build web interface whose assets ship with the Python package.
+Until the first verified npm release owns the `tinyic` registry name, install
+from Git source. You need [uv](https://docs.astral.sh/uv/getting-started/installation/)
+and one usable model lane: an API key, a supported subscription runtime, or
+local Ollama. `uv` selects or downloads Python 3.12 as needed.
 
 ```bash
 git clone https://github.com/Lego1997/TineyIC.git
@@ -55,6 +54,31 @@ uv run tinyic models --json
 queries provider catalogs. The commands above use only local configuration and
 the shipped static catalog.
 
+### npm package (pending first release)
+
+> [!IMPORTANT]
+> The official npm registry currently returns `E404` for `tinyic`. Do not
+> install that name until this repository announces the first release; an
+> unowned package name can be claimed by someone else.
+
+After the verified release, the install will be:
+
+```bash
+npm install --global tinyic
+
+tinyic onboard
+tinyic debate AAPL
+```
+
+The npm path requires a supported [Node.js 22.14+](https://nodejs.org/) release
+and `uv` 0.7.12+ (the current minimum validated launcher version). It has zero
+npm/JavaScript dependencies and no install lifecycle hooks, but it is not a
+self-contained Python binary: the first `tinyic` command
+may download Python 3.12 plus roughly 284 locked Python packages and can take a
+few minutes. The launcher caches that runtime outside `node_modules`; later
+commands reuse it. A project-local install uses `npm install tinyic` followed
+by `npx tinyic`.
+
 For a one-shot command from a clone:
 
 ```bash
@@ -66,6 +90,9 @@ Or run directly from the Git repository:
 ```bash
 uvx --from 'git+https://github.com/Lego1997/TineyIC.git#subdirectory=src/tinyic' tinyic --help
 ```
+
+The examples below use the current Git-source form, `uv run tinyic`. After the
+npm release, you can use the shorter `tinyic` command instead.
 
 ## Interface preview
 
@@ -331,8 +358,10 @@ The repository is a two-package uv workspace:
 
 ```bash
 uv sync
+npm test
 uv run pytest tests/
 uv lock --check --offline
+npm pack --dry-run
 ```
 
 The default test suite is offline: LLM and network surfaces use fixtures or
@@ -349,6 +378,7 @@ Before changing the code, read [CLAUDE.md](CLAUDE.md). Useful references:
 | [AGENTS.md](AGENTS.md) | Headless installation, steering, events, costs, and exit codes |
 | [docs/event-schema.md](docs/event-schema.md) | Frozen JSONL schema-v1 contract |
 | [docs/PRD.md](docs/PRD.md) | Product requirements and amendments |
+| [docs/npm-release.md](docs/npm-release.md) | npm account setup, release checks, and first-publish runbook |
 | [src/tinytroupe/FORK.md](src/tinytroupe/FORK.md) | Vendored fork history and allowed divergences |
 
 For bugs or documentation gaps, [open a GitHub issue](https://github.com/Lego1997/TineyIC/issues).
