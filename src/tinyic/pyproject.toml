@@ -42,5 +42,12 @@ packages = ["tinyic", "tinyic.auth", "tinyic.personas", "tinyic.personas.factory
 tinyic = "."
 
 [tool.setuptools.package-data]
-"tinyic.personas" = ["configs/*.agent.json"]
+"tinyic.personas" = [
+    "configs/benjamin_graham.agent.json",
+    "configs/charlie_munger.agent.json",
+    "configs/howard_marks.agent.json",
+    "configs/li_lu.agent.json",
+    "configs/peter_lynch.agent.json",
+    "configs/warren_buffett.agent.json",
+]
 "tinyic.web" = ["assets/*.html", "assets/*.js", "assets/*.css"]

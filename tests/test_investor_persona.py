@@ -8,9 +8,9 @@ from tinyic.personas.base import InvestorPersona
 from tinytroupe.agent import TinyPerson
 
 
-# Path to the test persona config
-CONFIGS_DIR = Path(__file__).parent.parent / "src" / "tinyic" / "personas" / "configs"
-TEST_CONFIG_PATH = CONFIGS_DIR / "test_investor.agent.json"
+# Test-only personas belong with the fixtures, never in the distributable
+# built-in persona directory.
+TEST_CONFIG_PATH = Path(__file__).parent / "fixtures" / "test_investor.agent.json"
 
 
 @pytest.fixture(autouse=True)

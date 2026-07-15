@@ -247,6 +247,13 @@ def test_tinyic_sdist_rebuilds_wheel_with_package_data(tmp_path):
             for filename in PERSONA_CONFIG_FILES
         }
         assert expected <= members
+        packaged_personas = {
+            member
+            for member in members
+            if member.startswith("tinyic/personas/configs/")
+            and member.endswith(".agent.json")
+        }
+        assert packaged_personas == expected
         expected_assets = {
             f"tinyic/web/assets/{filename}" for filename in WEB_ASSET_FILES
         }

@@ -17,7 +17,7 @@ from tinyic.personas.registry import (
 def _write_persona(slug: str, name: str) -> Path:
     root = Path(os.environ["TINYIC_PERSONAS_DIR"])
     root.mkdir(parents=True, exist_ok=True)
-    source = Path("src/tinyic/personas/configs/test_investor.agent.json")
+    source = Path(__file__).parent / "fixtures" / "test_investor.agent.json"
     spec = json.loads(source.read_text(encoding="utf-8"))
     spec["persona"]["name"] = name
     spec["tinyic"] = {
