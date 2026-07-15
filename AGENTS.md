@@ -218,6 +218,10 @@ a turn; a no-op interrupt emits no event.
   or an unknown target makes it expire immediately with one WARNING on STDERR
   and no event. It never waits or falls back to broadcast. A matching interrupt
   cancels the turn (or discards it on arrival) and lets the speaker retake.
+  Each speaker gets at most one retake; an interrupt consumed during that
+  bounded retake is warned and ignored rather than waiting or retaking again.
+  Deltas already streamed by the discarded attempt remain visible as an
+  interrupted audit record, but never enter peer memories or result synthesis.
 
 End-to-end, feeding steering from a script:
 
