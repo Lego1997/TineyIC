@@ -304,6 +304,26 @@ def test_fresh_writer_rejects_a_log_for_another_debate_id(tmp_path):
             pass
 
 
+def test_reader_and_resumed_writer_reject_sequence_not_starting_at_one(tmp_path):
+    _, EventLog, read_event_log = _events_api()
+    path = tmp_path / f"{DEBATE_ID}.jsonl"
+    envelope = {
+        "v": 1,
+        "seq": 2,
+        "ts": FIXED_NOW.isoformat().replace("+00:00", "Z"),
+        "debate_id": DEBATE_ID,
+        "type": "debate_started",
+        "payload": _started_payload(),
+    }
+    path.write_text(json.dumps(envelope) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="begin at 1"):
+        read_event_log(path)
+    with pytest.raises(ValueError, match="begin at 1"):
+        with EventLog(DEBATE_ID, path=path, clock=lambda: FIXED_NOW):
+            pass
+
+
 def test_event_log_defaults_to_private_run_directory(tmp_path, monkeypatch):
     """Without an override, persistence follows the documented home path."""
     fake_home = tmp_path / "home"
@@ -485,10 +505,18 @@ def test_camel_case_credentials_and_content_are_structurally_redacted_with_alias
     values = {
         "accessToken": "opaque-access-value",
         "refreshToken": "opaque-refresh-value",
+        "sessionToken": "opaque-session-value",
+        "IDToken": "opaque-uppercase-id-value",
         "clientSecret": "opaque-client-value",
+        "signingSecret": "opaque-signing-value",
+        "dbPassword": "opaque-password-value",
+        "proxyAuthorization": "opaque-authorization-value",
         "idToken": "opaque-id-value",
         "oauthToken": "opaque-oauth-value",
         "fullPrompt": "opaque-full-prompt-value",
+        "userPrompt": "opaque-user-prompt-value",
+        "chatMessages": "opaque-chat-messages-value",
+        "modelOutput": "opaque-model-output-value",
     }
     with _new_log(tmp_path) as event_log:
         event_log.emit("debate_started", _started_payload())
@@ -500,6 +528,9 @@ def test_camel_case_credentials_and_content_are_structurally_redacted_with_alias
                 "recoverable": False,
                 "details": values,
                 "aliases": list(values.values()),
+                "alias_map": {
+                    value: "ordinary" for value in values.values()
+                },
             },
         )
 
@@ -512,6 +543,7 @@ def test_camel_case_credentials_and_content_are_structurally_redacted_with_alias
     assert terminal["payload"]["aliases"] == [
         "[REDACTED]" for _value in values.values()
     ]
+    assert terminal["payload"]["alias_map"] == {"[REDACTED]": "ordinary"}
     persisted = event_log.path.read_text(encoding="utf-8")
     assert not any(value in persisted for value in values.values())
 
@@ -521,8 +553,12 @@ def test_camel_case_redaction_does_not_match_benign_related_fields(tmp_path):
         "tokenCount": 17,
         "accessTokenCount": 3,
         "clientSecretary": "public role",
+        "passwordPolicy": "minimum length 12",
+        "secretRotation": "every 90 days",
+        "authorizationStatus": "configured",
         "fullPromptCount": 2,
         "promptTemplate": "Discuss valuation without private context.",
+        "responseTime": "120ms",
     }
     with _new_log(tmp_path) as event_log:
         event_log.emit("debate_started", _started_payload())

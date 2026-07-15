@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from tinyic.cli import main
-from tinyic.result import assemble_result
+from tinyic.result import assemble_result, list_runs
 from tinyic.tui.events import Event
 
 
@@ -144,3 +146,70 @@ def test_result_cli_emits_one_incomplete_document_and_exit_3_for_malformed_jsonl
     assert document["phases_completed"] == []
     assert document["error"]["stage"] == "result"
     assert captured.err == ""
+
+
+def test_result_rejects_valid_envelopes_with_broken_stream_invariants(
+    tmp_path, capsys
+):
+    events = [
+        _event(1, "debate_started", _started_payload()),
+        _event(3, "debate_completed", _completed_payload()),
+    ]
+    path = tmp_path / "sequence-gap.jsonl"
+    path.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "v": event.v,
+                    "seq": event.seq,
+                    "ts": event.ts,
+                    "debate_id": event.debate_id,
+                    "type": event.type,
+                    "payload": event.payload,
+                }
+            )
+            + "\n"
+            for event in events
+        ),
+        encoding="utf-8",
+    )
+
+    assert main(["result", str(path), "--json"]) == 3
+    document = json.loads(capsys.readouterr().out)
+    assert document["status"] == "incomplete"
+    assert document["error"]["stage"] == "result"
+    assert list_runs(tmp_path)[0]["status"] == "incomplete"
+
+
+@pytest.mark.parametrize("corruption", ["reordered", "junk", "torn_tail"])
+def test_result_cli_never_certifies_corrupt_file_order_or_tail(
+    tmp_path, capsys, corruption
+):
+    started = _event(1, "debate_started", _started_payload())
+    completed = _event(2, "debate_completed", _completed_payload())
+
+    def line(event):
+        return json.dumps(
+            {
+                "v": event.v,
+                "seq": event.seq,
+                "ts": event.ts,
+                "debate_id": event.debate_id,
+                "type": event.type,
+                "payload": event.payload,
+            }
+        ) + "\n"
+
+    if corruption == "reordered":
+        content = line(completed) + line(started)
+    elif corruption == "junk":
+        content = line(started) + line(completed) + "not-json\n"
+    else:
+        content = line(started) + line(completed) + '{"v":1,"seq":3'
+    path = tmp_path / f"{corruption}.jsonl"
+    path.write_text(content, encoding="utf-8")
+
+    assert main(["result", str(path), "--json"]) == 3
+    document = json.loads(capsys.readouterr().out)
+    assert document["status"] == "incomplete"
+    assert document["error"]["stage"] == "result"

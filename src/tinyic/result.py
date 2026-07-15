@@ -15,10 +15,11 @@ writes to, so listing and result assembly never diverge from where debates land.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
-from tinyic.events import EventEnvelope
+from tinyic.events import EventEnvelope, read_event_log
 from tinyic.tui.events import Event, read_events
 
 __all__ = [
@@ -139,7 +140,81 @@ def _validated_events(events: list[Event]) -> tuple[list[Event], int]:
                 line_index=getattr(event, "line_index", 0),
             )
         )
+
+    # Individual envelopes can all validate while the stream itself is still
+    # corrupt (mixed debate ids, duplicate/gapped sequence numbers, a missing
+    # opening event, or records after a terminal). Never let such a log claim a
+    # successful result. Keep the valid records for best-effort diagnostics,
+    # but count the broken stream as malformed so assembly forces exit 3.
+    if valid:
+        stream_invalid = valid[0].type != "debate_started" or valid[0].seq != 1
+        line_indices = [
+            getattr(event, "line_index", 0) for event in valid
+        ]
+        if len(set(line_indices)) > 1 and line_indices != sorted(line_indices):
+            stream_invalid = True
+        debate_id = valid[0].debate_id
+        expected_seq = 1
+        terminal_seen = False
+        for index, event in enumerate(valid):
+            if (
+                event.debate_id != debate_id
+                or event.seq != expected_seq
+                or terminal_seen
+                or (index > 0 and event.type == "debate_started")
+            ):
+                stream_invalid = True
+            expected_seq += 1
+            terminal_seen = event.type in {"debate_completed", "debate_error"}
+        if stream_invalid:
+            rejected += 1
     return valid, rejected
+
+
+def _invalid_trailing_fragment(path: Path) -> bool:
+    """Whether a non-newline tail is not one complete schema-v1 envelope."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return True
+    if not data or data.endswith((b"\n", b"\r")):
+        return False
+    fragment = data.rsplit(b"\n", 1)[-1].rstrip(b"\r")
+    try:
+        EventEnvelope.model_validate(json.loads(fragment.decode("utf-8")))
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+        return True
+    return False
+
+
+def _read_result_events(path: Path) -> tuple[list, bool]:
+    """Read tolerant events while retaining strict file-integrity evidence.
+
+    A torn final record after a nonterminal prefix is the documented crash case
+    and remains an ordinary incomplete result. Junk or a torn record after a
+    terminal event, malformed complete lines, mixed ids, or broken ordering are
+    corruption and must never be certified complete.
+    """
+    strict_events = None
+    integrity_error = False
+    try:
+        strict_events = read_event_log(path)
+    except (OSError, TypeError, ValueError):
+        integrity_error = True
+
+    trailing_invalid = _invalid_trailing_fragment(path)
+    if trailing_invalid and (
+        not strict_events
+        or strict_events[-1].type in {"debate_completed", "debate_error"}
+    ):
+        integrity_error = True
+
+    try:
+        events = read_events(path)
+    except (OSError, UnicodeError):
+        integrity_error = True
+        events = list(strict_events or [])
+    return events, integrity_error
 
 
 def _usage_rollup(events: list[Event]) -> dict:
@@ -311,8 +386,11 @@ def load_result(id_or_path: str) -> dict:
     path = resolve_run_path(id_or_path)
     if not path.is_file():
         raise FileNotFoundError(f"no debate run found for {id_or_path!r} (looked at {path})")
-    events = read_events(path)
+    events, integrity_error = _read_result_events(path)
     document = assemble_result(events)
+    if integrity_error:
+        document["status"] = "incomplete" if events else "error"
+        document["error"] = dict(_MALFORMED_LOG_ERROR)
     if not document.get("debate_id"):
         document["debate_id"] = path.stem
     return document
@@ -332,23 +410,37 @@ def list_runs(directory: str | Path | None = None) -> list[dict]:
     summaries: list[tuple[float, dict]] = []
     for path in base.glob("*.jsonl"):
         try:
-            events = read_events(path)
+            events, integrity_error = _read_result_events(path)
         except Exception:  # pragma: no cover - defensive against unreadable files
             events = []
-        started = next((e for e in events if e.type == "debate_started"), None)
-        scorecard_event = next((e for e in events if e.type == "scorecard"), None)
+            integrity_error = True
+        valid_events, rejected = _validated_events(events)
+        malformed = integrity_error or bool(rejected)
+        started = next(
+            (e for e in valid_events if e.type == "debate_started"), None
+        )
+        scorecard_event = next(
+            (e for e in valid_events if e.type == "scorecard"), None
+        )
         debate_id = next((e.debate_id for e in events if e.debate_id), path.stem)
+        if malformed:
+            status = "incomplete" if valid_events else "error"
+        else:
+            status = debate_status(valid_events)
+        started_at = valid_events[0].ts if valid_events else None
+        if hasattr(started_at, "isoformat"):
+            started_at = started_at.isoformat()
         summary = {
             "debate_id": debate_id,
             "path": str(path),
             "ticker": started.payload.get("ticker") if started else None,
             "company_name": started.payload.get("company_name") if started else None,
             "preset": started.payload.get("preset") if started else None,
-            "status": debate_status(events),
+            "status": status,
             "phases_completed": sum(
-                1 for e in events if e.type == "phase_completed"
+                1 for e in valid_events if e.type == "phase_completed"
             ),
-            "started_at": events[0].ts if events else None,
+            "started_at": started_at,
             "consensus": (
                 scorecard_event.payload.get("consensus")
                 if scorecard_event is not None
