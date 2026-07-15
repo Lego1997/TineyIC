@@ -28,7 +28,9 @@ __all__ = [
 
 CACHE_CONTROL = "no-store"
 CAPABILITY_COOKIE = "tinyic_token"
-CSP_POLICY = "default-src 'self'; img-src 'self' data:"
+CSP_POLICY = (
+    "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
+)
 
 
 def _generate_capability_cookie_name() -> str:

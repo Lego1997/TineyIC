@@ -172,6 +172,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
         # BaseHTTPRequestHandler fallback responses for unsupported methods.
         self.send_header("Cache-Control", CACHE_CONTROL)
         self.send_header("Content-Security-Policy", CSP_POLICY)
+        self.send_header("X-Frame-Options", "DENY")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         super().end_headers()

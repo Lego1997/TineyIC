@@ -135,19 +135,23 @@ def test_token_cookie_handoff_and_security_headers(tmp_path, servers):
     assert status == 401
     assert headers["Cache-Control"] == "no-store"
     assert headers["Content-Security-Policy"] == CSP_POLICY
+    assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
+    assert headers["X-Frame-Options"] == "DENY"
 
     assert _request(server, "GET", "/?token=wrong")[0] == 403
     status, headers, _ = _request(server, "GET", "/?token=test-token")
     assert status == 302
     assert headers["Location"] == "/"
+    assert headers["X-Frame-Options"] == "DENY"
     cookie = headers["Set-Cookie"]
     assert f"{server.security.cookie_name}=test-token" in cookie
     assert "HttpOnly" in cookie and "SameSite=Strict" in cookie and "Path=/" in cookie
 
-    status, _, body = _request(
+    status, headers, body = _request(
         server, "GET", "/", headers={"Cookie": cookie.split(";", 1)[0]}
     )
     assert status == 200
+    assert headers["X-Frame-Options"] == "DENY"
     assert b"TinyIC" in body
 
 
