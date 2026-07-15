@@ -28,6 +28,7 @@ dropped explicitly with a ``steering_dropped`` event — never silently.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from collections.abc import Collection
 from dataclasses import dataclass
@@ -40,6 +41,7 @@ __all__ = [
 
 #: The two delivery modes carried by ``steering_submitted`` (schema enum).
 _STEERING_MODES = frozenset({"steer", "queue"})
+_STEERING_SOURCES = frozenset({"tui", "stdin", "api"})
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +55,7 @@ def _normalize_name(name: object | None) -> str | None:
     """
     if not isinstance(name, str) or not name:
         return None
-    normalized = name.strip().casefold().replace(" ", "_")
+    normalized = re.sub(r"[\s_-]+", "_", name.strip().casefold())
     return normalized or None
 
 
@@ -96,6 +98,11 @@ class SteeringInbox:
         self._interrupt: InterruptCommand | None = None
         self._counter = 0
         self._closed = False
+        # Every accepted id stays reserved for this inbox's lifetime.  A
+        # caller-supplied id must never collide with another command (or with a
+        # later generated id), otherwise one submitted acknowledgement could
+        # incorrectly terminate as two deliveries.
+        self._known_ids: set[str] = set()
         #: msg_ids already acknowledged with a ``steering_submitted`` event. The
         #: ack is emitted eagerly at submit when the log is open, else deferred to
         #: delivery/drop — so a command submitted before ``debate_started`` (a
@@ -125,36 +132,56 @@ class SteeringInbox:
         is not ``steer``/``queue``, or the text is blank — a malformed producer
         line never corrupts the stream.
         """
-        if mode not in _STEERING_MODES:
+        if mode not in _STEERING_MODES or not isinstance(text, str):
             return None
-        body = (text or "").strip()
+        if target is not None and (
+            not isinstance(target, str) or not target.strip()
+        ):
+            return None
+        if not isinstance(source, str) or source.strip() not in _STEERING_SOURCES:
+            return None
+        if msg_id is not None and (
+            not isinstance(msg_id, str) or not msg_id.strip()
+        ):
+            return None
+        body = text.strip()
         if not body:
             return None
         with self._lock:
             if self._closed:
                 return None
-            self._counter += 1
-            resolved_id = msg_id or f"{self._id_prefix}-{self._counter:04d}"
+            if msg_id is not None:
+                resolved_id = msg_id.strip()
+                if resolved_id in self._known_ids:
+                    return None
+            else:
+                # Custom ids may occupy a generated-looking value, so advance
+                # until an actually unused id is found.
+                while True:
+                    self._counter += 1
+                    resolved_id = f"{self._id_prefix}-{self._counter:04d}"
+                    if resolved_id not in self._known_ids:
+                        break
             command = SteeringCommand(
                 msg_id=resolved_id,
                 mode=mode,
                 text=body,
-                target=(target or None),
-                source=source,
+                target=(target.strip() or None) if target is not None else None,
+                source=source.strip(),
             )
-            self._pending.append(command)
             # Ack eagerly when the log is already open (the real-time stdin/API
             # path); otherwise defer to drain/close so a pre-start submit is still
             # acknowledged before it is delivered or dropped.
-            if getattr(self._event_log, "started", False):
-                self._ack(command)
+            if getattr(self._event_log, "started", False) and not self._ack(command):
+                return None
+            self._known_ids.add(resolved_id)
+            self._pending.append(command)
         return resolved_id
 
-    def _ack(self, command: SteeringCommand) -> None:
+    def _ack(self, command: SteeringCommand) -> bool:
         """Emit ``steering_submitted`` for a command once (idempotent, under lock)."""
         if command.msg_id in self._acked:
-            return
-        self._acked.add(command.msg_id)
+            return True
         payload: dict[str, object] = {
             "msg_id": command.msg_id,
             "mode": command.mode,
@@ -163,7 +190,10 @@ class SteeringInbox:
         }
         if command.target:
             payload["target_persona"] = command.target
-        self._safe_emit("steering_submitted", payload)
+        if not self._safe_emit("steering_submitted", payload):
+            return False
+        self._acked.add(command.msg_id)
+        return True
 
     def request_interrupt(
         self,
@@ -177,12 +207,22 @@ class SteeringInbox:
         The latest request wins (a second interrupt before the first is consumed
         replaces it).  Returns ``False`` when the inbox is already closed.
         """
-        clean = (text or "").strip() or None
+        if text is not None and not isinstance(text, str):
+            return False
+        if target is not None and not isinstance(target, str):
+            return False
+        if not isinstance(source, str) or source.strip() not in _STEERING_SOURCES:
+            return False
+        clean = text.strip() or None if text is not None else None
+        # Preserve a provided blank target long enough for ``take_interrupt``
+        # to classify and diagnose it as unknown instead of turning it into an
+        # untargeted destructive request.
+        clean_target = target if target is not None else None
         with self._lock:
             if self._closed:
                 return False
             self._interrupt = InterruptCommand(
-                text=clean, target=target, source=source
+                text=clean, target=clean_target, source=source.strip()
             )
         return True
 
@@ -214,19 +254,16 @@ class SteeringInbox:
                 else None
             )
             upcoming = _normalize_name(upcoming_speaker)
-            ready: list[SteeringCommand] = []
-            remaining: list[SteeringCommand] = []
-            for command in self._pending:
+            for index, command in enumerate(self._pending):
                 if self._is_ready(command, phase_boundary, upcoming, known):
-                    ready.append(command)
-                else:
-                    remaining.append(command)
-            self._pending = remaining
-            # Acknowledge (once) each command as it leaves the inbox, so a
-            # deferred ack strictly precedes its steering_delivered.
-            for command in ready:
-                self._ack(command)
-            return ready
+                    # A deferred acknowledgement must be durably emitted before
+                    # the command can leave the inbox.  This also enforces the
+                    # frozen one-command-per-boundary delivery contract.
+                    if not self._ack(command):
+                        return []
+                    del self._pending[index]
+                    return [command]
+            return []
 
     @staticmethod
     def _is_ready(
@@ -262,11 +299,11 @@ class SteeringInbox:
                 return
             if self._closed:
                 for command in commands:
-                    self._ack(command)
-                    self._safe_emit(
-                        "steering_dropped",
-                        {"msg_id": command.msg_id, "reason": "debate_ended"},
-                    )
+                    if self._ack(command):
+                        self._safe_emit(
+                            "steering_dropped",
+                            {"msg_id": command.msg_id, "reason": "debate_ended"},
+                        )
                 return
             self._pending[:0] = list(commands)
 
@@ -320,10 +357,12 @@ class SteeringInbox:
         with self._lock:
             return self._interrupt is not None
 
-    def emit_delivered(self, msg_id: str, *, before_turn_id: str) -> None:
+    def emit_delivered(self, msg_id: str, *, before_turn_id: str) -> bool:
         """Emit the authoritative ``steering_delivered`` for a delivered command."""
         with self._lock:
-            self._safe_emit(
+            if msg_id not in self._acked:
+                return False
+            return self._safe_emit(
                 "steering_delivered",
                 {"msg_id": msg_id, "delivered_before_turn_id": before_turn_id},
             )
@@ -339,18 +378,19 @@ class SteeringInbox:
             if self._closed:
                 return
             self._closed = True
+            self._interrupt = None
             pending = self._pending
             self._pending = []
             for command in pending:
                 # Keep the contract: an explicit drop is still preceded by its ack.
-                self._ack(command)
-                self._safe_emit(
-                    "steering_dropped", {"msg_id": command.msg_id, "reason": reason}
-                )
+                if self._ack(command):
+                    self._safe_emit(
+                        "steering_dropped", {"msg_id": command.msg_id, "reason": reason}
+                    )
 
     # -- internals ---------------------------------------------------------- #
 
-    def _safe_emit(self, event_type: str, payload: dict) -> None:
+    def _safe_emit(self, event_type: str, payload: dict) -> bool:
         """Emit an event, tolerating a not-yet-started or already-terminal log.
 
         A steering event that cannot legally be written (the debate has not
@@ -359,8 +399,10 @@ class SteeringInbox:
         """
         log = self._event_log
         if log is None:
-            return
+            return False
         try:
             log.emit(event_type, payload)
+            return True
         except Exception:  # pragma: no cover - defensive, non-load-bearing
-            pass
+            logger.warning("Could not persist %s steering event", event_type)
+            return False

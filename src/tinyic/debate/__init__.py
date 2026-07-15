@@ -579,6 +579,11 @@ def run_debate(
     run_started_at = None
     stage = "setup"
     research_usage: dict = {}
+    research_binding_usage: dict = {}
+    research_binding_billable: dict | None = None
+    research_binding_cached = 0
+    research_binding_model_ref: str | None = None
+    research_usage_windows: list = []
     research_usage_emitted = False
 
     try:
@@ -670,6 +675,43 @@ def run_debate(
                 data_kwargs["deep_research"] = False
             if callable(data_checkpoint):
                 data_kwargs["checkpoint"] = data_checkpoint
+            if resolved_credentials is not None:
+                data_kwargs["credentials"] = resolved_credentials
+
+            research_aggregator = None
+            research_binding_before: dict = {}
+            research_cached_before = 0
+            research_usage_cursor = 0
+            previous_window_sink = None
+            if resolved_committee is not None:
+                research_aggregator = resolved_committee.aggregator
+                data_kwargs["aggregator_client"] = research_aggregator
+                research_binding_model_ref = (
+                    resolved_committee.aggregator_binding.model_ref
+                )
+                research_binding_before = snapshot_cost_counters(
+                    research_aggregator
+                )
+                research_cached_before = _client_cached_tokens(
+                    research_aggregator
+                )
+                usage_cursor_getter = getattr(
+                    research_aggregator, "usage_cursor", None
+                )
+                if callable(usage_cursor_getter):
+                    research_usage_cursor = usage_cursor_getter()
+                previous_window_sink = getattr(
+                    research_aggregator, "on_usage_window", None
+                )
+
+                def collect_research_usage_window(snapshot) -> None:
+                    research_usage_windows.append(snapshot)
+                    if previous_window_sink is not None:
+                        previous_window_sink(snapshot)
+
+                research_aggregator.on_usage_window = (
+                    collect_research_usage_window
+                )
             try:
                 data_package = _build_data_package(ticker, **data_kwargs)
             finally:
@@ -679,6 +721,22 @@ def run_debate(
                 research_usage = diff_cost_counters(
                     research_after, research_before
                 )
+                if research_aggregator is not None:
+                    research_aggregator.on_usage_window = previous_window_sink
+                    research_binding_after = snapshot_cost_counters(
+                        research_aggregator
+                    )
+                    research_binding_usage = diff_cost_counters(
+                        research_binding_after, research_binding_before
+                    )
+                    research_binding_cached = max(
+                        0,
+                        _client_cached_tokens(research_aggregator)
+                        - research_cached_before,
+                    )
+                    research_binding_billable = _billable_usage_since(
+                        research_aggregator, research_usage_cursor
+                    )
 
         run_started_at = active_event_log.now()
         active_event_log.emit(
@@ -695,11 +753,22 @@ def run_debate(
         active_event_log.emit(
             "data_ready", _data_ready_payload(data_package)
         )
+        for snapshot in research_usage_windows:
+            active_event_log.emit("usage_window", snapshot.as_payload())
         _emit_aggregate_usage(
             active_event_log,
             purpose="research",
             usage_delta=research_usage,
         )
+        if research_binding_model_ref is not None:
+            _emit_aggregate_usage(
+                active_event_log,
+                purpose="research",
+                usage_delta=research_binding_usage,
+                model_ref=research_binding_model_ref,
+                cached_tokens=research_binding_cached,
+                billable_usage_delta=research_binding_billable,
+            )
         research_usage_emitted = True
         # Defer the post-research check until after its cost-bearing work and
         # usage are durably represented in the event stream.
@@ -916,9 +985,6 @@ def run_debate(
             )
         if not active_event_log.terminal:
             try:
-                if steering is not None:
-                    # Drop undelivered steering before the terminal error event.
-                    steering.close(reason="debate_error")
                 if not active_event_log.started:
                     failed_ticker = str(
                         getattr(data_package, "ticker", None) or ticker
@@ -950,12 +1016,30 @@ def run_debate(
                             ),
                         ),
                     )
+                if steering is not None:
+                    # The lifecycle must start before close emits the deferred
+                    # submitted+dropped acknowledgement pair for any preloaded
+                    # commands.  The terminal error remains last.
+                    steering.close(reason="debate_error")
                 if not research_usage_emitted:
+                    for snapshot in research_usage_windows:
+                        active_event_log.emit(
+                            "usage_window", snapshot.as_payload()
+                        )
                     _emit_aggregate_usage(
                         active_event_log,
                         purpose="research",
                         usage_delta=research_usage,
                     )
+                    if research_binding_model_ref is not None:
+                        _emit_aggregate_usage(
+                            active_event_log,
+                            purpose="research",
+                            usage_delta=research_binding_usage,
+                            model_ref=research_binding_model_ref,
+                            cached_tokens=research_binding_cached,
+                            billable_usage_delta=research_binding_billable,
+                        )
                     research_usage_emitted = True
                 active_event_log.emit(
                     "debate_error",

@@ -31,6 +31,7 @@ slot) stays reserved for the memo-request duty that arrives with FR-4.5, so
 from __future__ import annotations
 
 import queue as _queue
+import re
 from collections.abc import Iterable, Mapping
 
 from tinyic import state
@@ -74,6 +75,13 @@ DA_ROTATION_COUNTER = "da_rotation"
 
 class ModeratorError(ValueError):
     """An out-of-bounds cap or an unresolvable devil's-advocate override."""
+
+
+def _normalize_persona_name(value: object) -> str:
+    """Normalize display names and registry slugs to the same lookup key."""
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"[\s_-]+", "_", value.strip().casefold())
 
 
 def resolve_caps(caps: Mapping[str, int] | None) -> dict[str, int]:
@@ -287,12 +295,25 @@ class Moderator:
         broadcasts. Shared by the legacy tuple queue (:meth:`deliver_steering`)
         and the M6 engine inbox, so both deliver identically.
         """
-        if target and target in name_to_agent:
-            target_agent = name_to_agent[target]
-            target_agent.listen(f"[Moderator to {target}]: {text}")
+        canonical_target = None
+        if target:
+            wanted = _normalize_persona_name(target)
+            canonical_target = next(
+                (
+                    name
+                    for name in name_to_agent
+                    if _normalize_persona_name(name) == wanted
+                ),
+                None,
+            )
+        if canonical_target is not None:
+            target_agent = name_to_agent[canonical_target]
+            target_agent.listen(f"[Moderator to {canonical_target}]: {text}")
             for agent in agents:
-                if agent.name != target:
-                    agent.listen(f"[Moderator asked {target}]: {text}")
+                if agent.name != canonical_target:
+                    agent.listen(
+                        f"[Moderator asked {canonical_target}]: {text}"
+                    )
         else:
             broadcast(f"[Moderator]: {text}")
 

@@ -35,12 +35,15 @@ from __future__ import annotations
 
 import codecs
 import contextlib
+import io
 import json
+import os
+import select
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import TextIO
+from typing import Callable, TextIO
 
 from .constants import MAX_PERSONAS, MIN_PERSONAS
 from .events import EventLog, make_debate_id
@@ -182,6 +185,7 @@ def _stream_log(
     worker_done: threading.Event,
     *,
     poll_interval: float = 0.02,
+    on_interrupt: Callable[[], None] | None = None,
 ) -> None:
     """Tail the actively-written log; echo each complete line verbatim to ``out``.
 
@@ -191,23 +195,31 @@ def _stream_log(
     newline-terminated line to ``out`` exactly as written — no re-serialization —
     and a human progress note to ``err``. Stops after a terminal event or once the
     worker has finished and every flushed line has been echoed. A truncated
-    trailing line (a crash between bytes) is left unwritten.
+    trailing line (a crash between bytes) is left unwritten. When
+    ``on_interrupt`` is supplied, Ctrl-C invokes it and tailing resumes from the
+    same byte offset so graceful-stop usage and terminal events still reach the
+    JSONL stream without duplicates.
     """
     decoder = codecs.getincrementaldecoder("utf-8")()
     buffer = ""
     position = 0
     while True:
-        if not path.exists():
-            if worker_done.is_set():
-                return  # the debate ended before ever opening a log
-            worker_done.wait(poll_interval)
-            continue
-        with path.open("rb") as handle:
-            handle.seek(position)
-            chunk = handle.read()
-            position = handle.tell()
-        if chunk:
-            buffer += decoder.decode(chunk)
+        try:
+            if not path.exists():
+                if worker_done.is_set():
+                    return  # the debate ended before ever opening a log
+                worker_done.wait(poll_interval)
+                continue
+            with path.open("rb") as handle:
+                handle.seek(position)
+                chunk = handle.read()
+                position = handle.tell()
+            if chunk:
+                buffer += decoder.decode(chunk)
+            # Process previously buffered complete lines even when this poll
+            # read no new bytes. A caught Ctrl-C can occur after one line was
+            # removed/written while later lines from the same chunk remain;
+            # they must drain before worker_done permits return.
             while "\n" in buffer:
                 raw, buffer = buffer.split("\n", 1)
                 if not raw.strip():
@@ -222,11 +234,16 @@ def _stream_log(
                         _progress(err, note)
                     if event.is_terminal:
                         return
-            continue
-        # No new bytes right now.
-        if worker_done.is_set():
-            return  # worker flushed + closed the log before signalling done
-        worker_done.wait(poll_interval)
+            if chunk:
+                continue
+            # No new bytes right now.
+            if worker_done.is_set():
+                return  # worker flushed + closed the log before signalling done
+            worker_done.wait(poll_interval)
+        except KeyboardInterrupt:
+            if on_interrupt is None:
+                raise
+            on_interrupt()
 
 
 # --------------------------------------------------------------------------- #
@@ -253,7 +270,50 @@ def _steer_stdin_reader(
         if stop_event.is_set() or time.monotonic() > deadline:
             return
         stop_event.wait(0.02)
-    for line in stdin:
+    def lines_until_stopped():
+        """Yield lines without leaving a blocking stdin read behind at shutdown."""
+        try:
+            fd = stdin.fileno()
+        except (AttributeError, OSError, ValueError):
+            # In-memory streams used by programmatic callers are finite and do
+            # not block; retain their normal iterator semantics.
+            if not isinstance(stdin, io.StringIO):
+                _progress(
+                    err,
+                    "  steer-stdin: input stream is not pollable; reader disabled",
+                )
+                return
+            for buffered_line in stdin:
+                if stop_event.is_set():
+                    return
+                yield buffered_line
+            return
+
+        encoding = getattr(stdin, "encoding", None) or "utf-8"
+        decoder = codecs.getincrementaldecoder(encoding)(errors="replace")
+        buffer = ""
+        while not stop_event.is_set():
+            try:
+                ready, _, _ = select.select([fd], [], [], 0.1)
+            except (OSError, ValueError):
+                return
+            if not ready:
+                continue
+            try:
+                chunk = os.read(fd, 4096)
+            except OSError:
+                return
+            if not chunk:
+                buffer += decoder.decode(b"", final=True)
+                if buffer:
+                    yield buffer
+                return
+            buffer += decoder.decode(chunk)
+            while "\n" in buffer:
+                buffered_line, buffer = buffer.split("\n", 1)
+                yield buffered_line
+
+    for line in lines_until_stopped():
         if stop_event.is_set():
             return
         text = line.strip()
@@ -270,8 +330,24 @@ def _steer_stdin_reader(
         target = obj.get("target")
         body = obj.get("text")
         if kind in ("steer", "queue"):
-            inbox.submit(kind, body or "", target=target, source="stdin")
+            if (
+                not isinstance(body, str)
+                or not body.strip()
+                or (
+                    target is not None
+                    and (not isinstance(target, str) or not target.strip())
+                )
+            ):
+                _progress(err, f"  steer-stdin: ignoring malformed {kind!r} command")
+                continue
+            inbox.submit(kind, body, target=target, source="stdin")
         elif kind == "interrupt":
+            if (
+                (body is not None and not isinstance(body, str))
+                or (target is not None and not isinstance(target, str))
+            ):
+                _progress(err, "  steer-stdin: ignoring malformed 'interrupt' command")
+                continue
             inbox.request_interrupt(text=body, target=target, source="stdin")
         else:
             _progress(err, f"  steer-stdin: ignoring unknown type {kind!r}")
@@ -559,11 +635,13 @@ def _run_headless(
     worker_done = threading.Event()
 
     with contextlib.redirect_stdout(err):
+        from tinyic.debate.control import RunControl
         from tinyic.debate.steering import SteeringInbox
 
         log = EventLog(make_debate_id(ticker))
         inbox = steering if steering is not None else SteeringInbox()
         inbox.bind_event_log(log)
+        control = RunControl()
 
         worker = threading.Thread(
             name="tinyic-debate-worker",
@@ -583,30 +661,59 @@ def _run_headless(
                 transport_factory=transport_factory,
                 credentials=credentials,
                 config_path=config_path,
-                phase_gate=None,
+                phase_gate=control,
                 result_holder=result_holder,
                 done=worker_done,
             ),
-            daemon=True,
+            daemon=False,
         )
         worker.start()
 
         stop_stdin = threading.Event()
+        reader = None
         if steer_stdin:
             reader = threading.Thread(
                 name="tinyic-steer-stdin",
                 target=_steer_stdin_reader,
                 args=(stdin, inbox, log, err, stop_stdin),
-                daemon=True,
+                daemon=False,
             )
             reader.start()
 
         # Tail the log: echo verbatim to the real STDOUT under --json, and always
         # surface human progress on STDERR. The worker sets ``worker_done`` from
         # its finally, so this returns even if no terminal event was ever written.
-        _stream_log(log.path, real_out if json_mode else None, err, worker_done)
-        worker.join()
-        stop_stdin.set()
+        def request_worker_stop() -> None:
+            control.stop()
+            inbox.request_interrupt(source="stdin")
+
+        try:
+            _stream_log(
+                log.path,
+                real_out if json_mode else None,
+                err,
+                worker_done,
+                on_interrupt=request_worker_stop,
+            )
+            while worker.is_alive():
+                try:
+                    worker.join(timeout=0.1)
+                except KeyboardInterrupt:
+                    request_worker_stop()
+        finally:
+            # Any renderer/output failure must not orphan the now non-daemon
+            # debate worker. Ask it to stop, retain the original exception, and
+            # keep the log/redirect alive until its final flush completes.
+            if worker.is_alive():
+                request_worker_stop()
+                while worker.is_alive():
+                    try:
+                        worker.join(timeout=0.1)
+                    except KeyboardInterrupt:
+                        request_worker_stop()
+            stop_stdin.set()
+            if reader is not None:
+                reader.join()
 
     return _finalize(
         log,
@@ -678,7 +785,7 @@ def _run_web(
                 result_holder=result_holder,
                 done=worker_done,
             ),
-            daemon=True,
+            daemon=False,
         )
         face = WebFace.live(
             log,
@@ -705,8 +812,24 @@ def _run_web(
                 interrupted = True
                 control.stop()
                 inbox.request_interrupt(source="api")
-                worker.join(timeout=1.0)
+                # Provider calls are not safely pre-emptible. Keep the face,
+                # stdout redirect, and event log alive until the worker reaches
+                # its next checkpoint and writes the terminal event. Repeated
+                # Ctrl-C presses remain harmless while we wait.
+                while worker.is_alive():
+                    try:
+                        worker.join(timeout=0.1)
+                    except KeyboardInterrupt:
+                        control.stop()
             finally:
+                if worker.is_alive():
+                    control.stop()
+                    inbox.request_interrupt(source="api")
+                    while worker.is_alive():
+                        try:
+                            worker.join(timeout=0.1)
+                        except KeyboardInterrupt:
+                            control.stop()
                 face.mark_run_finished()
 
             if not no_wait and not interrupted:

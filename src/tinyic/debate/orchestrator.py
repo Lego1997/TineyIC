@@ -1,5 +1,7 @@
 """DebateOrchestrator -- a TinyWorld subclass for structured investment debates."""
 
+import logging
+
 from tinytroupe import config_manager
 from tinytroupe.agent import TinyPerson
 from tinytroupe.environment.tiny_world import TinyWorld
@@ -25,6 +27,9 @@ from .prompts import (
     ROLE_RELEASE_PROMPT,
     temperament_clause,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 CANONICAL_PHASE_NAMES: dict[DebatePhase, str] = {
@@ -387,7 +392,6 @@ class DebateOrchestrator(TinyWorld):
             binding_client.on_think = None
 
         latest = agent.pop_latest_actions()
-        self._handle_actions(agent, latest)
         binding_usage = self._aggregate_turn_usage(
             turn_usages, binding_client.binding.model_ref
         )
@@ -504,7 +508,7 @@ class DebateOrchestrator(TinyWorld):
         actions: list,
         committed_actions,
         usage_delta: dict,
-        binding_usage: dict | None = None,
+        binding_usage: dict | None,
     ) -> None:
         """Emit the completed action parts and state for one committed turn."""
         if self.event_log is None:
@@ -538,10 +542,35 @@ class DebateOrchestrator(TinyWorld):
             )
         self._emit_event("cognitive_state", state_payload)
 
-        usage_ref = None
+        usage_ref = self._emit_turn_usage(
+            agent=agent,
+            turn_id=turn_id,
+            usage_delta=usage_delta,
+            binding_usage=binding_usage,
+        )
+
+        canonical_phase = self._canonical_phase(phase)
+        self._emit_event(
+            "turn_completed",
+            {
+                "turn_id": turn_id,
+                "persona": agent.name,
+                "phase": canonical_phase,
+                "interrupted": False,
+                "usage_ref": usage_ref,
+            },
+        )
+
+    def _emit_turn_usage(
+        self,
+        *,
+        agent,
+        turn_id: str,
+        usage_delta: dict,
+        binding_usage: dict | None,
+    ) -> int | None:
+        """Persist paid-call usage before any stop/interrupt can discard output."""
         if binding_usage is not None:
-            # Binding-routed turn: native per-call usage from the adapter,
-            # replacing the M1 snapshot-delta interim for this turn.
             usage_ref = self._emit_binding_usage(agent, turn_id, binding_usage)
         elif any(
             usage_delta.get(field, 0)
@@ -570,21 +599,38 @@ class DebateOrchestrator(TinyWorld):
             if cost is not None:
                 usage_payload["cost_usd"] = round(cost, 8)
             usage_event = self._emit_event("usage", usage_payload)
-            if usage_event is not None:
-                usage_ref = usage_event.seq
+            usage_ref = usage_event.seq if usage_event is not None else None
+        else:
+            usage_ref = None
         self.turn_usage_refs[turn_id] = usage_ref
+        return usage_ref
 
-        canonical_phase = self._canonical_phase(phase)
-        self._emit_event(
-            "turn_completed",
-            {
-                "turn_id": turn_id,
-                "persona": agent.name,
-                "phase": canonical_phase,
-                "interrupted": False,
-                "usage_ref": usage_ref,
-            },
-        )
+    def _snapshot_uncommitted_turn(self, agent):
+        """Capture mutable speaker state when output may need to be discarded."""
+        if self.steering_inbox is None and not callable(
+            getattr(self.phase_gate, "check_stop", None)
+        ):
+            return None
+        encoder = getattr(agent, "encode_complete_state", None)
+        if not callable(encoder):
+            raise RuntimeError(
+                f"persona {getattr(agent, 'name', '?')!r} cannot isolate an "
+                "interruptible turn"
+            )
+        return encoder()
+
+    @staticmethod
+    def _restore_uncommitted_turn(agent, snapshot) -> None:
+        """Roll back a speaker attempt without modifying the vendored engine."""
+        if snapshot is None:
+            return
+        decoder = getattr(agent, "decode_complete_state", None)
+        if not callable(decoder):
+            raise RuntimeError(
+                f"persona {getattr(agent, 'name', '?')!r} cannot restore an "
+                "interrupted turn"
+            )
+        decoder(snapshot)
 
     # ------------------------------------------------------------------
     # Step override (replaces TinyWorld._step entirely)
@@ -663,6 +709,7 @@ class DebateOrchestrator(TinyWorld):
                 # let the speaker retake. At most one retake keeps this bounded.
                 latest = None
                 for attempt in range(2):
+                    turn_snapshot = self._snapshot_uncommitted_turn(agent)
                     turn_id = self._next_turn_id()
                     turn_count += 1
                     self._emit_event(
@@ -682,20 +729,41 @@ class DebateOrchestrator(TinyWorld):
                     outcome = self._run_turn(agent, phase, turn_id)
                     # A stop cannot pre-empt a provider call safely. Discard its
                     # uncommitted output as soon as the call returns instead.
-                    self._check_control_stop()
+                    try:
+                        self._check_control_stop()
+                    except BaseException:
+                        try:
+                            self._emit_turn_usage(
+                                agent=agent,
+                                turn_id=turn_id,
+                                usage_delta=outcome["usage_delta"],
+                                binding_usage=outcome["binding_usage"],
+                            )
+                        finally:
+                            self._restore_uncommitted_turn(agent, turn_snapshot)
+                        raise
 
-                    # Only the first attempt can be interrupted; an interrupt that
-                    # arrives during the retake is left in the inbox for the next
-                    # turn rather than consumed here (bounded, at most one retake).
-                    interrupt = (
-                        self.steering_inbox.take_interrupt(
+                    # Inspect the latest-wins slot after every attempt.  A
+                    # request aimed at another in-flight persona expires here;
+                    # it never waits for a later speaker.  The one permitted
+                    # retake is final, so a matching second interrupt is
+                    # consumed and diagnosed but cannot recursively retake.
+                    interrupt = None
+                    if self.steering_inbox is not None:
+                        interrupt = self.steering_inbox.take_interrupt(
                             in_flight=agent.name,
                             known_targets=set(self.name_to_agent),
                         )
-                        if (self.steering_inbox is not None and attempt == 0)
-                        else None
-                    )
-                    if interrupt is not None:
+                    if interrupt is not None and attempt == 0:
+                        try:
+                            self._emit_turn_usage(
+                                agent=agent,
+                                turn_id=turn_id,
+                                usage_delta=outcome["usage_delta"],
+                                binding_usage=outcome["binding_usage"],
+                            )
+                        finally:
+                            self._restore_uncommitted_turn(agent, turn_snapshot)
                         self._emit_event(
                             "turn_interrupted",
                             {
@@ -707,8 +775,18 @@ class DebateOrchestrator(TinyWorld):
                         )
                         self._land_interrupt_message(agent, interrupt)
                         continue
+                    if interrupt is not None:
+                        logger.warning(
+                            "Ignoring interrupt for %r during bounded retake; "
+                            "the retake is being committed",
+                            agent.name,
+                        )
 
                     latest = outcome["latest"]
+                    # TinyPerson.act persists the speaker's action locally.  Do
+                    # not broadcast it to peers until the interrupt/stop decision
+                    # above has committed this attempt.
+                    self._handle_actions(agent, latest)
                     agents_actions[agent.name] = latest
                     self._emit_committed_turn(
                         agent=agent,
@@ -780,7 +858,6 @@ class DebateOrchestrator(TinyWorld):
         usage_before = self._usage_snapshot()
         committed_actions = agent.act(return_actions=True)
         latest = agent.pop_latest_actions()
-        self._handle_actions(agent, latest)
         usage_after = self._usage_snapshot()
         usage_delta = (
             diff_cost_counters(usage_after, usage_before)
@@ -828,10 +905,16 @@ class DebateOrchestrator(TinyWorld):
                     name_to_agent=self.name_to_agent,
                     broadcast=self.broadcast,
                 )
+                if not inbox.emit_delivered(
+                    command.msg_id, before_turn_id=before_turn_id
+                ):
+                    raise RuntimeError(
+                        f"could not persist delivery acknowledgement for "
+                        f"{command.msg_id!r}"
+                    )
             except BaseException:
                 inbox.requeue(commands[index:])
                 raise
-            inbox.emit_delivered(command.msg_id, before_turn_id=before_turn_id)
 
     def _land_interrupt_message(self, agent, interrupt) -> None:
         """Land an interrupt's accompanying steering message on the speaker.
