@@ -5,6 +5,7 @@ from __future__ import annotations
 import configparser
 import hashlib
 import importlib
+import importlib.util
 import json
 import subprocess
 import tarfile
@@ -94,6 +95,20 @@ def test_workspace_packages_fail_safe_against_registry_uploads():
     for project_path in package_projects:
         project = _load_toml(project_path)
         assert PRIVATE_CLASSIFIER in project["project"]["classifiers"], project_path
+
+
+def test_tinyic_declares_httpx_with_socks_extra():
+    """TIC-008: tinyic imports httpx directly (models/adapters/_http.py) and must
+    declare it with the ``socks`` extra so SOCKS-proxy environments work across
+    every wire surface (debate, data pipeline, doctor, persona research) instead
+    of free-riding on the vendored tinytroupe's httpx dependency."""
+    project = _load_toml(ROOT / "src" / "tinyic" / "pyproject.toml")
+    dependencies = project["project"]["dependencies"]
+    assert any(
+        dep.replace(" ", "").startswith("httpx[socks]") for dep in dependencies
+    ), dependencies
+    # A lock regression that drops the pure-Python socks backend fails loudly.
+    assert importlib.util.find_spec("socksio") is not None
 
 
 def test_uv_lock_is_not_ignored():
