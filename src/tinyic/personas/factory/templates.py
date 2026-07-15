@@ -27,6 +27,8 @@ LOW_SOURCE_WARNING = (
     "public record directly."
 )
 
+_MARKDOWN_INLINE_PUNCTUATION = "\\`*_{}[]()#!|"
+
 DOSSIER_SECTIONS: tuple[tuple[str, str, str], ...] = (
     (
         "philosophy",
@@ -74,6 +76,27 @@ def _markdown_source_label(value: str) -> str:
         .replace("(", r"\(")
         .replace(")", r"\)")
     )
+
+
+def _markdown_plain_text(value: str) -> str:
+    """Render untrusted heading text as inert Markdown-visible text."""
+
+    visible = "".join(
+        (
+            " "
+            if unicodedata.category(character) in {"Cc", "Cf", "Cs"}
+            else character
+        )
+        for character in str(value)
+    )
+    visible = html_escape(" ".join(visible.split()), quote=False)
+    escapes = str.maketrans(
+        {
+            character: "\\" + character
+            for character in _MARKDOWN_INLINE_PUNCTUATION
+        }
+    )
+    return visible.translate(escapes)
 
 
 def _markdown_destination(value: str) -> str:
@@ -141,7 +164,10 @@ def render_dossier(
     cost_usd: float | None,
 ) -> str:
     """Render the final cited Markdown dossier from verified content."""
-    title = f"# {investor_name} — {epithet}\n\n"
+    title = (
+        f"# {_markdown_plain_text(investor_name)} — "
+        f"{_markdown_plain_text(epithet)}\n\n"
+    )
     output = [title, f"> **Disclaimer:** {DISCLAIMER}\n"]
     if quality == "thin":
         output.append(f"\n> {LOW_SOURCE_WARNING}\n")

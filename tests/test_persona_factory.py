@@ -342,6 +342,65 @@ def test_dossier_source_markdown_escapes_label_and_angle_destination():
     assert "](<https://example.com/a%3E%5Cpath%01>)" in dossier
 
 
+def test_dossier_heading_escapes_untrusted_name_and_epithet():
+    dossier = render_dossier(
+        investor_name='<img src=x onerror="alert(1)"> [profile](javascript:alert(1))',
+        epithet='<svg onload="alert(2)"></svg> ![pixel](https://evil.example)',
+        sections={"philosophy": ("Evidence-backed principle. [1]",)},
+        evidence=(
+            Evidence("https://example.com/source", "Source", "Excerpt"),
+        ),
+        quality="normal",
+        model_ref="openai/test",
+        generated_date="2026-07-14",
+        search_calls=1,
+        cost_usd=0.0,
+    )
+
+    heading = dossier.splitlines()[0]
+    assert "<img" not in heading and "<svg" not in heading
+    assert "](javascript:" not in heading
+    assert "](https://evil.example)" not in heading
+    assert "&lt;img" in heading and "&lt;svg" in heading
+    assert r"\[profile\]\(javascript:alert\(1\)\)" in heading
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        '<img src=x onerror="alert(1)"> Supported principle. [1]',
+        '<svg onload="alert(1)"></svg> Supported principle. [1]',
+        '<a href="javascript:alert(1)">click</a> Supported principle. [1]',
+        "[click](javascript:alert(1)) Supported principle. [1]",
+        "![track](https://evil.example/pixel) Supported principle. [1]",
+        "[details][unsafe] Supported principle. [1]",
+        "Supported principle. [1]\n[unsafe]: javascript:alert(1)",
+        "Supported principle. [1]\n[1]: https://evil.example/override",
+    ],
+    ids=(
+        "html-img",
+        "html-svg",
+        "html-link",
+        "markdown-link",
+        "markdown-image",
+        "markdown-reference-link",
+        "markdown-reference-definition",
+        "numeric-reference-definition",
+    ),
+)
+def test_dossier_drops_active_html_and_markdown_but_keeps_numeric_citations(
+    tmp_path, statement
+):
+    result = _factory(
+        FakeBackend(_evidence(), voice_addendum=statement)
+    ).run(ResearchRequest("Markup Safety", tmp_path))
+
+    dossier = result.dossier_path.read_text(encoding="utf-8")
+    assert statement not in dossier
+    assert "The public voice emphasizes" in dossier
+    assert "[1]" in dossier
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -631,7 +690,7 @@ def test_single_character_quote_is_verified(tmp_path):
         ("<q>This fabricated quotation was never in the source.</q> [1]", False),
         (
             '<q class="citation">Buy only with a margin of safety</q> [1]',
-            True,
+            False,
         ),
     ],
     ids=(
@@ -664,7 +723,7 @@ def test_markdown_blockquotes_require_verbatim_evidence(
     if retained:
         assert statement in dossier
     else:
-        assert "This fabricated quotation was never in the source" not in dossier
+        assert statement not in dossier
 
 
 @pytest.mark.parametrize(
@@ -737,15 +796,9 @@ def test_reporting_sources_reject_bare_uppercase_code_tokens(
         "The table shows `P/B`. [1]",
         "The record reported `13F`. [1]",
         "The report stated `model_ref`. [1]",
-        "The report stated <code>EV/EBITDA</code>. [1]",
-        "The filing disclosed <tt>price/book ratio</tt>. [1]",
-        "The table shows <kbd>P/B</kbd>. [1]",
-        "The record reported <samp>13F</samp>. [1]",
-        "The report stated <code>model_ref</code>. [1]",
-        "The ratio is <code>FAKE</code>. [1]",
     ],
 )
-def test_reporting_sources_keep_structured_technical_code(
+def test_reporting_sources_keep_structured_markdown_code(
     tmp_path, statement
 ):
     backend = FakeBackend(_evidence(), voice_addendum=statement)
@@ -877,7 +930,7 @@ def test_exact_quoted_inline_code_remains_verifiable(tmp_path, delimiter):
 
 
 @pytest.mark.parametrize("tag", ["code", "tt"])
-def test_html_inline_code_uses_the_same_technical_grammar(tmp_path, tag):
+def test_html_inline_code_is_excluded_from_dossier(tmp_path, tag):
     statement = f"The ratio uses <{tag}>EV/EBITDA</{tag}>. [1]"
     backend = FakeBackend(_evidence(), voice_addendum=statement)
 
@@ -885,7 +938,7 @@ def test_html_inline_code_uses_the_same_technical_grammar(tmp_path, tag):
         ResearchRequest("HTML Technical Code", tmp_path)
     )
 
-    assert statement in result.dossier_path.read_text()
+    assert statement not in result.dossier_path.read_text()
 
 
 @pytest.mark.parametrize(
@@ -2451,6 +2504,103 @@ def test_factory_rejects_unknown_model_fields_without_writes(tmp_path):
     assert "tinyic.private_notes" in message
     assert "root.unverified_blob" in message
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(
+    ("phrase", "category"),
+    [
+        ("He is 76 years old. [1]", "age"),
+        ("His dau\u200bghter manages the family trust. [1]", "family"),
+        ("She was diagnosed with cancer. [1]", "health"),
+        ("He currently lives at 123 Main Street. [1]", "residence"),
+        (
+            "This persona is officially endorsed by the represented investor. [1]",
+            "affiliation or endorsement",
+        ),
+    ],
+)
+def test_dossier_scope_gate_rejects_excluded_personal_content_before_persona(
+    tmp_path, phrase, category
+):
+    backend = FakeBackend(_evidence(), voice_addendum=phrase)
+
+    with pytest.raises(SchemaValidationError) as error:
+        _factory(backend).run(ResearchRequest("Scoped Dossier", tmp_path))
+
+    assert f"dossier.voice[1] contains excluded {category} content" in str(error.value)
+    assert backend.persona_requests == []
+    assert not list(tmp_path.iterdir())
+
+
+_MODEL_GENERATED_CLAIM_PATHS = (
+    ("persona", "occupation", "title"),
+    ("persona", "occupation", "organization"),
+    ("persona", "style"),
+    ("persona", "beliefs", 0),
+    ("persona", "skills", 0),
+    ("persona", "other_facts", 0),
+    ("persona", "personality", "traits", 0),
+    ("persona", "behaviors", "general", 0),
+    ("persona", "preferences", "interests", 0),
+    ("persona", "preferences", "likes", 0),
+    ("persona", "preferences", "dislikes", 0),
+    ("tinyic", "epithet"),
+    ("tinyic", "philosophy_hook"),
+    ("tinyic", "decision_checklist", 0),
+    ("tinyic", "signal_rules", 0),
+    ("tinyic", "red_flags", 0),
+    ("tinyic", "famous_quotes", 0, "text"),
+)
+
+
+def _set_model_generated_claim(specification, path, value):
+    parent = specification
+    for part in path[:-1]:
+        parent = parent[part]
+    parent[path[-1]] = value
+    if path == ("tinyic", "epithet"):
+        specification["persona"]["occupation"]["description"] = value
+
+
+@pytest.mark.parametrize(
+    "path",
+    _MODEL_GENERATED_CLAIM_PATHS,
+    ids=lambda path: ".".join(map(str, path)),
+)
+def test_persona_scope_gate_covers_every_model_generated_claim_surface(
+    tmp_path, path
+):
+    class PrivateClaimBackend(FakeBackend):
+        def synthesize_persona(self, request):
+            response = super().synthesize_persona(request)
+            _set_model_generated_claim(
+                response.specification,
+                path,
+                "His daughter manages the family trust.",
+            )
+            return response
+
+    with pytest.raises(SchemaValidationError) as error:
+        _factory(PrivateClaimBackend(_evidence())).run(
+            ResearchRequest("Scoped Persona", tmp_path)
+        )
+
+    assert "contains excluded family content" in str(error.value)
+    assert not list(tmp_path.iterdir())
+
+
+def test_scope_gate_keeps_investment_context_with_overlapping_words(tmp_path):
+    statement = (
+        "The family-owned business maintains healthy margins, serves "
+        "retirement-age customers, owns residential real estate, and management "
+        "endorsed disciplined capital allocation. [1]"
+    )
+
+    result = _factory(
+        FakeBackend(_evidence(), voice_addendum=statement)
+    ).run(ResearchRequest("Conservative Scope", tmp_path))
+
+    assert statement in result.dossier_path.read_text(encoding="utf-8")
 
 
 def test_factory_owns_identity_and_neutral_temperament(tmp_path):

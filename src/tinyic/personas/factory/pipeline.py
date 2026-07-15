@@ -151,21 +151,69 @@ _MARKDOWN_FENCE_RE = re.compile(
     r"(?:`{3,}|~{3,})",
     flags=re.MULTILINE,
 )
-_HTML_QUOTE_RE = re.compile(
-    r"<(blockquote|q)\b[^>]*>(.*?)</\1\s*>", flags=re.IGNORECASE | re.DOTALL
-)
-_HTML_QUOTE_TAG_RE = re.compile(r"</?(?:blockquote|q)\b", flags=re.IGNORECASE)
-_HTML_RAW_CONTAINER_TAG_RE = re.compile(
-    r"</?(?:pre|xmp|listing|textarea|plaintext|script|style|iframe|"
-    r"noembed|noframes|title)\b",
+_RAW_HTML_OR_AUTOLINK_RE = re.compile(
+    r"<(?:/?[A-Za-z][^<>]*|!--[\s\S]*?--|![A-Z][^<>]*|\?[^<>]*)>",
     flags=re.IGNORECASE,
 )
-_HTML_INLINE_CODE_RE = re.compile(
-    r"<(code|kbd|samp|tt)\b([^>]*)>(.*?)</\1\s*>",
-    flags=re.IGNORECASE | re.DOTALL,
+_MARKDOWN_LINK_END_RE = re.compile(r"]\s*(?:\(|\[)")
+_MARKDOWN_IMAGE_START_RE = re.compile(r"!\s*\[")
+_MARKDOWN_REFERENCE_DEFINITION_RE = re.compile(
+    r"^[ \t]{0,3}\[[^\]\r\n]+\]:", flags=re.MULTILINE
 )
-_HTML_INLINE_CODE_TAG_RE = re.compile(
-    r"</?(?:code|kbd|samp|tt)\b", flags=re.IGNORECASE
+
+_PUBLIC_RECORD_SCOPE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "age",
+        re.compile(
+            r"\bdate of birth\b|"
+            r"\b(?:he|she|they)\s+(?:is|are|was|were)\s+(?:now\s+)?"
+            r"\d{1,3}(?:\s|-)+years?(?:\s|-)+old\b|"
+            r"\b\d{1,3}(?:\s|-)+years?(?:\s|-)+old\b|"
+            r"\bborn\s+(?:in\s+\d{4}|on\s+[a-z]+\s+\d{1,2})\b"
+        ),
+    ),
+    (
+        "family",
+        re.compile(
+            r"\b(?:his|her|their)\s+(?:"
+            r"family(?!\s+(?:office|business|company|firm|fund|investment|enterprise))|"
+            r"wife|husband|spouse|son|daughter|children?|mother|father|parents?|"
+            r"brother|sister)\b|"
+            r"\bfamily\s+(?:life|background|history|members?)\b|"
+            r"(?:^|[.!?]\s+)(?:married|divorced|widowed)\b"
+        ),
+    ),
+    (
+        "health",
+        re.compile(
+            r"\b(?:his|her|their)\s+(?:health|illness|disease|diagnosis|"
+            r"medical\s+(?:history|condition|treatment))\b|"
+            r"\b(?:he|she|they)\s+(?:(?:is|are|was|were|has been|have been)\s+)?"
+            r"(?:diagnosed\s+with|hospitalized\s+for|treated\s+for|suffers?\s+from)\b|"
+            r"^(?:diagnosed\s+with|hospitalized\s+for|treated\s+for)\b"
+        ),
+    ),
+    (
+        "residence",
+        re.compile(
+            r"\b(?:his|her|their)\s+(?:residence|home address|street address|"
+            r"residential address|phone number|email address)\b|"
+            r"\b(?:he|she|they)\s+(?:currently\s+)?(?:lives|resides)\s+(?:at|in)\b|"
+            r"^(?:currently\s+)?(?:lives|resides)\s+(?:at|in)\b|"
+            r"\b(?:home|street|residential|email)\s+address\b|"
+            r"\bpersonal\s+(?:phone|email)\b"
+        ),
+    ),
+    (
+        "affiliation or endorsement",
+        re.compile(
+            r"\b(?:tinyic|(?:this|the)\s+(?:persona|profile|simulation|dossier))\b"
+            r".{0,48}\b(?:endorsed|approved|authorized|affiliated|associated)\b|"
+            r"\b(?:endorsed|approved|authorized|affiliated|associated)\b"
+            r".{0,48}\b(?:tinyic|(?:this|the)\s+(?:persona|profile|simulation|dossier))\b|"
+            r"\bofficial(?:ly\s+authorized)?\s+(?:persona|profile|simulation|dossier)\b"
+        ),
+    ),
 )
 _LEADING_APOSTROPHE_WORDS = frozenset(
     {"bout", "cause", "em", "n", "round", "til", "tis", "twas"}
@@ -930,9 +978,60 @@ def _draft_paragraphs(text: str, source_count: int) -> tuple[str, ...]:
             for line in block.splitlines()
             if not line.lstrip().startswith("#")
         ).strip("\r\n")
-        if paragraph and _citation_numbers(paragraph, source_count):
+        if (
+            paragraph
+            and _citation_numbers(paragraph, source_count)
+            and not _paragraph_has_unsafe_markup(paragraph)
+        ):
             kept.append(paragraph)
     return tuple(kept)
+
+
+def _normalize_public_record_text(value: str) -> str:
+    """Normalize model prose for conservative deterministic scope checks."""
+
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    cleaned: list[str] = []
+    for character in normalized:
+        category = unicodedata.category(character)
+        if category == "Cf":
+            # Format controls must not split a high-signal private-life phrase.
+            continue
+        cleaned.append(" " if category in {"Cc", "Cs"} else character)
+    return " ".join("".join(cleaned).split())
+
+
+def _assert_public_record_scope(entries: Iterable[tuple[str, str]]) -> None:
+    """Reject high-confidence personal-life or false-affiliation claims.
+
+    This is intentionally narrower than a general keyword filter. Professional
+    phrases such as ``family office``, ``portfolio health``, and a manager who
+    endorsed an investment method remain in scope; biographical age, relatives,
+    health, residence/contact details, and claims that this artifact is official
+    do not.
+    """
+
+    issues: list[str] = []
+    for path, value in entries:
+        normalized = _normalize_public_record_text(value)
+        for category, pattern in _PUBLIC_RECORD_SCOPE_PATTERNS:
+            if pattern.search(normalized) is not None:
+                issues.append(f"{path} contains excluded {category} content")
+                break
+    if issues:
+        # Reuse the existing safe, path-only validation diagnostic. Never echo
+        # the provider-generated personal content itself.
+        raise SchemaValidationError(issues)
+
+
+def _format_claim_path(path: Sequence[str | int]) -> str:
+    rendered = ""
+    for part in path:
+        if isinstance(part, int):
+            rendered += f"[{part}]"
+        else:
+            rendered += ("." if rendered else "") + part
+    return rendered
 
 
 def _persona_claims(specification: Mapping[str, Any]) -> list[AtomicClaim]:
@@ -1948,6 +2047,26 @@ def _list_item_has_code_padding(line: str) -> bool:
     return False
 
 
+def _paragraph_has_unsafe_markup(paragraph: str) -> bool:
+    """Reject active Markdown/HTML while preserving plain ``[1]`` citations."""
+
+    # Decode character references before inspection so an alternate Markdown
+    # renderer cannot turn entity-obfuscated markup into an active construct.
+    text = html_unescape(paragraph)
+    for match in _RAW_HTML_OR_AUTOLINK_RE.finditer(text):
+        if not _is_markdown_escaped(text, match.start()):
+            return True
+    for pattern in (_MARKDOWN_LINK_END_RE, _MARKDOWN_IMAGE_START_RE):
+        for match in pattern.finditer(text):
+            if not _is_markdown_escaped(text, match.start()):
+                return True
+    for match in _MARKDOWN_REFERENCE_DEFINITION_RE.finditer(text):
+        label_start = text.find("[", match.start(), match.end())
+        if label_start >= 0 and not _is_markdown_escaped(text, label_start):
+            return True
+    return False
+
+
 def _paragraph_has_commonmark_code(paragraph: str) -> bool:
     """Reject fenced and standalone indented code in generated prose."""
 
@@ -1972,7 +2091,7 @@ def _paragraph_quotes_are_verbatim(
 ) -> bool:
     if (
         _paragraph_has_commonmark_code(paragraph)
-        or _HTML_RAW_CONTAINER_TAG_RE.search(paragraph) is not None
+        or _paragraph_has_unsafe_markup(paragraph)
     ):
         return False
     blockquotes: list[str] = []
@@ -1999,38 +2118,10 @@ def _paragraph_quotes_are_verbatim(
         if not _quote_is_verbatim(blockquote, citations, evidence):
             return False
 
-    html_quotes = list(_HTML_QUOTE_RE.finditer(paragraph))
-    unmatched_html = _HTML_QUOTE_RE.sub("", paragraph)
-    if _HTML_QUOTE_TAG_RE.search(unmatched_html):
-        return False
-    for match in html_quotes:
-        content = re.sub(r"<[^>]+>", " ", match.group(2))
-        content = html_unescape(_CITATION_RE.sub(" ", content))
-        content = " ".join(content.split())
-        if not _quote_is_verbatim(content, citations, evidence):
-            return False
-
-    html_inline_code = list(_HTML_INLINE_CODE_RE.finditer(paragraph))
-    unmatched_inline_code = _HTML_INLINE_CODE_RE.sub("", paragraph)
-    if _HTML_INLINE_CODE_TAG_RE.search(unmatched_inline_code):
-        return False
-    for match in html_inline_code:
-        if match.group(2).strip():
-            # Retained markup must not carry unchecked attributes.
-            return False
-        raw_content = match.group(3)
-        if "<" in raw_content or ">" in raw_content:
-            return False
-        content = " ".join(html_unescape(raw_content).split())
-        if _inline_code_is_quote_like(
-            paragraph, match.start(), match.end() - 1, content
-        ):
-            return False
     # Markdown renderers decode named and numeric character references before
     # displaying punctuation; scan the decoded form so ``&ldquo;`` cannot
     # disguise a quotation.
-    scan_text = re.sub(r"<[^>]*>", " ", paragraph)
-    spans = _quoted_spans(html_unescape(scan_text))
+    spans = _quoted_spans(html_unescape(paragraph))
     if spans is None:
         return False
     return all(
@@ -2404,6 +2495,10 @@ class PersonaFactory:
                 paragraphs = (
                     f"The public record does not establish a sufficiently specific {title.casefold()} profile. [1]",
                 )
+            _assert_public_record_scope(
+                (f"dossier.{key}[{index}]", paragraph)
+                for index, paragraph in enumerate(paragraphs)
+            )
             draft_sections[key] = paragraphs
 
         self.progress("distilling_persona")
@@ -2442,6 +2537,11 @@ class PersonaFactory:
             specification["tinyic"]["sources"] = [dict(item) for item in source_records]
             specification["tinyic"]["generation"] = dict(generation)
         validate_agent_spec(specification)
+        persona_claims = _persona_claims(specification)
+        _assert_public_record_scope(
+            (_format_claim_path(claim.path), claim.text)
+            for claim in persona_claims
+        )
 
         dossier_claims: list[AtomicClaim] = []
         for key, paragraphs in draft_sections.items():
@@ -2460,7 +2560,6 @@ class PersonaFactory:
                         quote=False,
                     )
                 )
-        persona_claims = _persona_claims(specification)
         all_claims = tuple(dossier_claims + persona_claims)
         self.progress("verifying")
         verification = self.backend.verify(
