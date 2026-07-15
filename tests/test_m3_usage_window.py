@@ -5,7 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from tinyic.auth.usage_window import RollingUsageMeter
+from tinyic.debate.control import DebateStopRequested, RunControl
 from tinyic.events import EventEnvelope, EventLog, read_event_log
 from tinyic.models import BindingClient, ModelBinding
 from tinyic.models.types import FinalMessage, Usage, UsageWindow
@@ -337,6 +340,175 @@ def test_subscription_aggregate_usage_never_gets_platform_dollar_cost(tmp_path):
     event = read_event_log(log.path)[1]
     assert event.type == "usage"
     assert "cost_usd" not in event.payload
+    log.close()
+
+
+def _synthesis_artifacts():
+    section = SimpleNamespace(
+        content="memo", contributing_personas=[], supporting_data=[]
+    )
+    memo = SimpleNamespace(
+        **{key: section for key in debate_module._MEMO_SECTION_KEYS}
+    )
+    analysis = SimpleNamespace(collapse_summary=None, disagreements=[])
+    return memo, analysis
+
+
+class _SynthesisUsageTransport:
+    def __init__(self, usages):
+        self.usages = iter(usages)
+
+    def generate(self, _request):
+        usage = next(self.usages)
+        yield usage
+        yield FinalMessage("{}", usage=usage)
+        if usage.lane == "subscription":
+            yield UsageWindow(usage.auth_profile or "subscription", 1, 100)
+
+
+def _run_synthesis_usage_case(tmp_path, monkeypatch, usages):
+    binding = ModelBinding(
+        "openai/gpt-5.2", auth_profile="openai:chatgpt"
+    )
+    prior_windows = []
+    prior_sink = prior_windows.append
+    aggregator = BindingClient(
+        binding,
+        _SynthesisUsageTransport(usages),
+        on_usage_window=prior_sink,
+    )
+    committee = SimpleNamespace(
+        aggregator=aggregator,
+        aggregator_binding=binding,
+    )
+    memo, analysis = _synthesis_artifacts()
+    monkeypatch.setattr(
+        debate_module,
+        "generate_memo",
+        lambda *_args, **_kwargs: (
+            aggregator.send_message([{"role": "user", "content": "memo"}]),
+            memo,
+        )[1],
+    )
+    monkeypatch.setattr(
+        debate_module,
+        "extract_disagreements",
+        lambda *_args, **_kwargs: (
+            aggregator.send_message(
+                [{"role": "user", "content": "disagreements"}]
+            ),
+            analysis,
+        )[1],
+    )
+    result = SimpleNamespace(memo=None, disagreement_analysis=None)
+    log = _started_log(tmp_path)
+    debate_module._emit_synthesis(
+        log,
+        result=result,
+        data_package=SimpleNamespace(),
+        moderator=SimpleNamespace(recorded_theses={}),
+        committee=committee,
+    )
+    events = read_event_log(log.path)
+    log.close()
+    assert aggregator.on_usage_window is prior_sink
+    return events, prior_windows
+
+
+def test_subscription_synthesis_emits_window_without_platform_cost(
+    tmp_path, monkeypatch
+):
+    usages = [
+        Usage(
+            1000,
+            100,
+            auth_profile="openai:chatgpt",
+            lane="subscription",
+        ),
+        Usage(
+            500,
+            50,
+            auth_profile="openai:chatgpt",
+            lane="subscription",
+        ),
+    ]
+    events, prior_windows = _run_synthesis_usage_case(
+        tmp_path, monkeypatch, usages
+    )
+
+    usage = next(
+        event
+        for event in events
+        if event.type == "usage" and event.payload["purpose"] == "memo"
+    )
+    assert usage.payload["input_tokens"] == 1500
+    assert usage.payload["output_tokens"] == 150
+    assert "cost_usd" not in usage.payload
+    assert sum(event.type == "usage_window" for event in events) == 2
+    assert len(prior_windows) == 2
+
+
+def test_mixed_synthesis_prices_only_api_key_calls(tmp_path, monkeypatch):
+    usages = [
+        Usage(
+            1000,
+            100,
+            auth_profile="openai:chatgpt",
+            lane="subscription",
+        ),
+        Usage(2000, 200, auth_profile="openai:key", lane="api_key"),
+    ]
+    events, _prior_windows = _run_synthesis_usage_case(
+        tmp_path, monkeypatch, usages
+    )
+
+    usage = next(
+        event
+        for event in events
+        if event.type == "usage" and event.payload["purpose"] == "memo"
+    )
+    expected = estimate_model_keyed_cost(
+        {
+            "openai/gpt-5.2": {
+                "input_tokens": 2000,
+                "output_tokens": 200,
+            }
+        },
+        MODEL_PRICES_USD_PER_MILLION,
+    )
+    assert usage.payload["input_tokens"] == 3000
+    assert usage.payload["output_tokens"] == 300
+    assert usage.payload["cost_usd"] == round(expected, 8)
+
+
+def test_prestopped_synthesis_preserves_existing_window_sink(tmp_path):
+    binding = ModelBinding("openai/gpt-5.2")
+    prior_windows = []
+    prior_sink = prior_windows.append
+    aggregator = BindingClient(
+        binding,
+        _SynthesisUsageTransport([]),
+        on_usage_window=prior_sink,
+    )
+    control = RunControl()
+    control.stop()
+    log = _started_log(tmp_path)
+
+    with pytest.raises(DebateStopRequested):
+        debate_module._emit_synthesis(
+            log,
+            result=SimpleNamespace(),
+            data_package=SimpleNamespace(),
+            moderator=SimpleNamespace(recorded_theses={}),
+            committee=SimpleNamespace(
+                aggregator=aggregator,
+                aggregator_binding=binding,
+            ),
+            phase_gate=control,
+        )
+
+    assert aggregator.on_usage_window is prior_sink
+    assert prior_windows == []
     log.close()
 
 

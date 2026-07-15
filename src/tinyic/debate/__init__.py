@@ -407,10 +407,24 @@ def _emit_synthesis(
     aggregator_client = committee.aggregator
     synthesis_before = snapshot_cost_counters(aggregator_client)
     cached_before = _client_cached_tokens(aggregator_client)
+    usage_cursor_getter = getattr(aggregator_client, "usage_cursor", None)
+    usage_cursor = (
+        usage_cursor_getter() if callable(usage_cursor_getter) else 0
+    )
+    previous_window_sink = getattr(
+        aggregator_client, "on_usage_window", None
+    )
+
+    def emit_synthesis_usage_window(snapshot) -> None:
+        event_log.emit("usage_window", snapshot.as_payload())
+        if previous_window_sink is not None:
+            previous_window_sink(snapshot)
+
     checkpoint = getattr(phase_gate, "check_stop", None)
     if not callable(checkpoint):
         checkpoint = None
     _check_run_stop(phase_gate)
+    aggregator_client.on_usage_window = emit_synthesis_usage_window
     try:
         with _activate_binding(aggregator_client):
             memo = generate_memo(
@@ -426,6 +440,7 @@ def _emit_synthesis(
             )
     finally:
         # A stop accepted during a paid provider call must not erase its usage.
+        aggregator_client.on_usage_window = previous_window_sink
         synthesis_after = snapshot_cost_counters(aggregator_client)
         cached_after = _client_cached_tokens(aggregator_client)
         _emit_aggregate_usage(
@@ -434,6 +449,9 @@ def _emit_synthesis(
             usage_delta=diff_cost_counters(synthesis_after, synthesis_before),
             model_ref=committee.aggregator_binding.model_ref,
             cached_tokens=max(0, cached_after - cached_before),
+            billable_usage_delta=_billable_usage_since(
+                aggregator_client, usage_cursor
+            ),
         )
     _check_run_stop(phase_gate)
 
