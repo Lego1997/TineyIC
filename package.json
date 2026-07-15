@@ -39,13 +39,17 @@
   "scripts": {
     "test": "node --test tests/npm/*.test.mjs",
     "test:package": "uv run --offline pytest -q tests/test_npm_packaging.py",
-    "test:offline": "uv run --offline pytest -q",
+    "test:offline": "npm test && uv run --offline pytest -q",
     "prepack": "node scripts/verify-npm-package.mjs",
     "prepublishOnly": "npm run test:offline"
   },
   "engines": {
     "node": ">=22.14"
   },
+  "os": [
+    "darwin",
+    "linux"
+  ],
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"

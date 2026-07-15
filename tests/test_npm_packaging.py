@@ -53,6 +53,11 @@ def _run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
 
 @pytest.fixture(scope="module")
 def npm_tarball(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    configured = os.environ.get("TINYIC_NPM_TARBALL")
+    if configured:
+        tarball = Path(configured).resolve()
+        assert tarball.is_file(), f"configured npm tarball does not exist: {tarball}"
+        return tarball
     destination = tmp_path_factory.mktemp("npm-pack")
     result = _run(
         [
@@ -123,6 +128,14 @@ def test_npm_metadata_matches_python_distribution():
     assert metadata["bin"] == {"tinyic": "bin/tinyic.mjs"}
     assert metadata["license"] == "MIT"
     assert metadata["engines"]["node"] == ">=22.14"
+    assert metadata["os"] == ["darwin", "linux"]
+    assert metadata["repository"]["url"] == (
+        "git+https://github.com/Lego1997/TineyIC.git"
+    )
+    assert metadata["scripts"]["test:offline"] == (
+        "npm test && uv run --offline pytest -q"
+    )
+    assert metadata["scripts"]["prepublishOnly"] == "npm run test:offline"
     for field in (
         "dependencies",
         "devDependencies",
@@ -218,6 +231,37 @@ def test_readme_documents_npm_install_and_interface_screenshots():
     assert "npm install --global tinyic" in readme
     assert "docs/assets/tinyic-town-hall.jpg" in readme
     assert "docs/assets/tinyic-debate-transcript.jpg" in readme
+
+
+def test_npm_ci_covers_supported_runtime_boundaries():
+    workflow = (ROOT / ".github" / "workflows" / "npm-package.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "ubuntu-24.04" in workflow
+    assert "macos-15" in workflow
+    assert "node: 22.14.0" in workflow
+    assert "node: 24" in workflow
+    assert "uv: 0.7.12" in workflow
+    assert "npm run test:offline" in workflow
+    assert "TINYIC_NPM_TARBALL" in workflow
+
+
+def test_npm_release_workflow_is_tokenless_and_staged():
+    workflow = (ROOT / ".github" / "workflows" / "publish-npm.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "workflow_dispatch:" in workflow
+    assert "environment: npm-production" in workflow
+    assert "id-token: write" in workflow
+    assert 'test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"' in workflow
+    assert 'test "$GITHUB_SHA" = "$(git rev-parse HEAD)"' in workflow
+    assert "stable semantic versions only" in workflow
+    assert "must still be newer than the current latest" in workflow
+    assert "npm stage publish" in workflow
+    assert "npm publish " not in workflow
+    assert "NPM_TOKEN" not in workflow
+    assert "NODE_AUTH_TOKEN" not in workflow
+    assert "--allow-publish" not in workflow
 
 
 def test_packed_workspace_lock_is_valid_offline(npm_tarball: Path, tmp_path: Path):
@@ -334,6 +378,7 @@ def test_local_tarball_global_install_exposes_tinyic_on_path(
     }
 
 
+@pytest.mark.timeout(300)
 def test_global_install_runs_real_cli_offline_without_mutating_package(
     installed_npm_package: tuple[Path, Path, Path],
     tmp_path: Path,
@@ -366,6 +411,7 @@ def test_global_install_runs_real_cli_offline_without_mutating_package(
     assert not (package_root / ".venv").exists()
 
 
+@pytest.mark.timeout(300)
 def test_concurrent_real_first_launches_share_one_complete_runtime(
     installed_npm_package: tuple[Path, Path, Path],
     tmp_path: Path,

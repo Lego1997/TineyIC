@@ -70,10 +70,11 @@ tinyic onboard
 tinyic debate AAPL
 ```
 
-The npm path requires a supported [Node.js 22.14+](https://nodejs.org/) release
-and `uv` 0.7.12+ (the current minimum validated launcher version). It has zero
-npm/JavaScript dependencies and no install lifecycle hooks, but it is not a
-self-contained Python binary: the first `tinyic` command
+The npm path supports macOS and Linux and requires a supported
+[Node.js 22.14+](https://nodejs.org/) release plus `uv` 0.7.12+ (the current
+minimum validated launcher version). Windows is not yet a supported npm target.
+The package has zero npm/JavaScript dependencies and no install lifecycle hooks,
+but it is not a self-contained Python binary: the first `tinyic` command
 may download Python 3.12 plus roughly 284 locked Python packages and can take a
 few minutes. The launcher caches that runtime outside `node_modules`; later
 commands reuse it. A project-local install uses `npm install tinyic` followed

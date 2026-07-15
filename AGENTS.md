@@ -40,9 +40,10 @@ npm install --global tinyic
 tinyic --help
 ```
 
-That path requires Node.js 22.14+ and `uv` 0.7.12+ (the minimum validated
-launcher version), but no separate `pip` install. Its first command may download
-Python 3.12 and the locked Python dependencies. The commands below use bare
+That path supports macOS and Linux and requires Node.js 22.14+ plus `uv` 0.7.12+
+(the minimum validated launcher version), but no separate `pip` install. Windows
+is not yet a supported npm target. Its first command may download Python 3.12
+and the locked Python dependencies. The commands below use bare
 `tinyic`; from a source checkout, replace that prefix
 with `uv run tinyic`.
 

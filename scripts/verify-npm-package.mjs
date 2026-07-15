@@ -26,9 +26,10 @@ requireCondition(
 );
 requireCondition(
   npmLock.name === metadata.name &&
-    npmLock.version === metadata.version &&
-    npmLock.packages?.[""]?.version === metadata.version &&
-    npmLock.packages?.[""]?.engines?.node === metadata.engines?.node,
+  npmLock.version === metadata.version &&
+  npmLock.packages?.[""]?.version === metadata.version &&
+  npmLock.packages?.[""]?.engines?.node === metadata.engines?.node &&
+  JSON.stringify(npmLock.packages?.[""]?.os) === JSON.stringify(metadata.os),
   "package-lock.json metadata does not match package.json",
 );
 requireCondition(
@@ -50,9 +51,24 @@ requireCondition(
   "npm launcher must support the documented Node.js range",
 );
 requireCondition(
+  JSON.stringify(metadata.os) === JSON.stringify(["darwin", "linux"]),
+  "npm launcher must not claim unvalidated platforms",
+);
+requireCondition(
   metadata.publishConfig?.access === "public" &&
     metadata.publishConfig?.registry === "https://registry.npmjs.org/",
   "npm publication must be public and use the official registry",
+);
+requireCondition(
+  metadata.repository?.url ===
+    "git+https://github.com/Lego1997/TineyIC.git",
+  "npm repository URL must match the public provenance repository",
+);
+requireCondition(
+  metadata.scripts?.["test:offline"] ===
+    "npm test && uv run --offline pytest -q" &&
+    metadata.scripts?.prepublishOnly === "npm run test:offline",
+  "npm publication must run the complete offline Node and Python suite",
 );
 for (const lifecycle of [
   "preinstall",
