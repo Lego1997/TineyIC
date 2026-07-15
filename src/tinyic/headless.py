@@ -68,10 +68,6 @@ DEFAULT_PERSONAS = [
     "li_lu",
 ]
 
-#: How long the steer-stdin reader waits for the debate to start before giving up
-#: (data fetch can be slow in production; instant with an injected data package).
-_START_TIMEOUT_S = 180.0
-
 # Give an auto-opened browser a bounded chance to attach. Once a real client is
 # present, ``--no-wait`` drains it without a second deadline.
 _BROWSER_ATTACH_TIMEOUT_S = 5.0
@@ -256,20 +252,18 @@ def _steer_stdin_reader(
     log: EventLog,
     err: TextIO,
     stop_event: threading.Event,
+    ready_event: threading.Event | None = None,
 ) -> None:
     """Read JSON steering lines from ``stdin`` and feed the engine inbox.
 
     Each line is ``{"type": "steer"|"queue"|"interrupt", "target"?, "text"?}``
     (``docs/event-schema.md``). ``steer``/``queue`` submit to the moderator's
     delivery queue (acknowledged by ``steering_submitted``); ``interrupt`` arms a
-    hard interrupt. Submits are held until the debate has started so every
-    delivered command has a preceding ``steering_submitted``.
+    hard interrupt. Pre-start submits remain safely queued: the inbox emits
+    their deferred ``steering_submitted`` acknowledgement before delivery or a
+    terminal drop. ``ready_event`` lets the command runner drain input already
+    available at startup before launching a worker that could fail immediately.
     """
-    deadline = time.monotonic() + _START_TIMEOUT_S
-    while not log.started:
-        if stop_event.is_set() or time.monotonic() > deadline:
-            return
-        stop_event.wait(0.02)
     def lines_until_stopped():
         """Yield lines without leaving a blocking stdin read behind at shutdown."""
         try:
@@ -287,17 +281,26 @@ def _steer_stdin_reader(
                 if stop_event.is_set():
                     return
                 yield buffered_line
+            if ready_event is not None:
+                ready_event.set()
             return
 
         encoding = getattr(stdin, "encoding", None) or "utf-8"
         decoder = codecs.getincrementaldecoder(encoding)(errors="replace")
         buffer = ""
+        startup_drain = True
         while not stop_event.is_set():
             try:
-                ready, _, _ = select.select([fd], [], [], 0.1)
+                ready, _, _ = select.select(
+                    [fd], [], [], 0.0 if startup_drain else 0.1
+                )
             except (OSError, ValueError):
                 return
             if not ready:
+                if startup_drain:
+                    startup_drain = False
+                    if ready_event is not None:
+                        ready_event.set()
                 continue
             try:
                 chunk = os.read(fd, 4096)
@@ -313,44 +316,54 @@ def _steer_stdin_reader(
                 buffered_line, buffer = buffer.split("\n", 1)
                 yield buffered_line
 
-    for line in lines_until_stopped():
-        if stop_event.is_set():
-            return
-        text = line.strip()
-        if not text:
-            continue
-        try:
-            obj = json.loads(text)
-        except (json.JSONDecodeError, ValueError):
-            _progress(err, "  steer-stdin: ignoring non-JSON line")
-            continue
-        if not isinstance(obj, dict):
-            continue
-        kind = obj.get("type")
-        target = obj.get("target")
-        body = obj.get("text")
-        if kind in ("steer", "queue"):
-            if (
-                not isinstance(body, str)
-                or not body.strip()
-                or (
-                    target is not None
-                    and (not isinstance(target, str) or not target.strip())
-                )
-            ):
-                _progress(err, f"  steer-stdin: ignoring malformed {kind!r} command")
+    try:
+        for line in lines_until_stopped():
+            if stop_event.is_set():
+                return
+            text = line.strip()
+            if not text:
                 continue
-            inbox.submit(kind, body, target=target, source="stdin")
-        elif kind == "interrupt":
-            if (
-                (body is not None and not isinstance(body, str))
-                or (target is not None and not isinstance(target, str))
-            ):
-                _progress(err, "  steer-stdin: ignoring malformed 'interrupt' command")
+            try:
+                obj = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                _progress(err, "  steer-stdin: ignoring non-JSON line")
                 continue
-            inbox.request_interrupt(text=body, target=target, source="stdin")
-        else:
-            _progress(err, f"  steer-stdin: ignoring unknown type {kind!r}")
+            if not isinstance(obj, dict):
+                continue
+            kind = obj.get("type")
+            target = obj.get("target")
+            body = obj.get("text")
+            if kind in ("steer", "queue"):
+                if (
+                    not isinstance(body, str)
+                    or not body.strip()
+                    or (
+                        target is not None
+                        and (not isinstance(target, str) or not target.strip())
+                    )
+                ):
+                    _progress(
+                        err,
+                        f"  steer-stdin: ignoring malformed {kind!r} command",
+                    )
+                    continue
+                inbox.submit(kind, body, target=target, source="stdin")
+            elif kind == "interrupt":
+                if (
+                    (body is not None and not isinstance(body, str))
+                    or (target is not None and not isinstance(target, str))
+                ):
+                    _progress(
+                        err,
+                        "  steer-stdin: ignoring malformed 'interrupt' command",
+                    )
+                    continue
+                inbox.request_interrupt(text=body, target=target, source="stdin")
+            else:
+                _progress(err, f"  steer-stdin: ignoring unknown type {kind!r}")
+    finally:
+        if ready_event is not None:
+            ready_event.set()
 
 
 # --------------------------------------------------------------------------- #
@@ -667,18 +680,17 @@ def _run_headless(
             ),
             daemon=False,
         )
-        worker.start()
-
         stop_stdin = threading.Event()
         reader = None
+        reader_ready = None
         if steer_stdin:
+            reader_ready = threading.Event()
             reader = threading.Thread(
                 name="tinyic-steer-stdin",
                 target=_steer_stdin_reader,
-                args=(stdin, inbox, log, err, stop_stdin),
+                args=(stdin, inbox, log, err, stop_stdin, reader_ready),
                 daemon=False,
             )
-            reader.start()
 
         # Tail the log: echo verbatim to the real STDOUT under --json, and always
         # surface human progress on STDERR. The worker sets ``worker_done`` from
@@ -687,7 +699,15 @@ def _run_headless(
             control.stop()
             inbox.request_interrupt(source="stdin")
 
+        worker_started = False
         try:
+            if reader is not None:
+                reader.start()
+                assert reader_ready is not None
+                while not reader_ready.wait(0.1):
+                    pass
+            worker.start()
+            worker_started = True
             _stream_log(
                 log.path,
                 real_out if json_mode else None,
@@ -695,7 +715,7 @@ def _run_headless(
                 worker_done,
                 on_interrupt=request_worker_stop,
             )
-            while worker.is_alive():
+            while worker_started and worker.is_alive():
                 try:
                     worker.join(timeout=0.1)
                 except KeyboardInterrupt:
@@ -704,7 +724,7 @@ def _run_headless(
             # Any renderer/output failure must not orphan the now non-daemon
             # debate worker. Ask it to stop, retain the original exception, and
             # keep the log/redirect alive until its final flush completes.
-            if worker.is_alive():
+            if worker_started and worker.is_alive():
                 request_worker_stop()
                 while worker.is_alive():
                     try:

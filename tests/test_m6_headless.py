@@ -1247,6 +1247,52 @@ def test_steer_stdin_end_to_end_runs_and_stays_clean(tmp_path, binding_mocks):
     assert events[-1].type == "debate_completed"
 
 
+def test_fast_setup_failure_acknowledges_prepiped_steering(
+    tmp_path, monkeypatch
+):
+    def fail_immediately(**kwargs):
+        log = kwargs["log"]
+        try:
+            log.emit("debate_started", _minimal_started_payload())
+            kwargs["inbox"].close(reason="debate_error")
+            log.emit(
+                "debate_error",
+                {
+                    "stage": "setup",
+                    "message": "setup failed",
+                    "recoverable": False,
+                },
+            )
+        finally:
+            log.close()
+            kwargs["done"].set()
+
+    monkeypatch.setenv("TINYIC_RUNS_DIR", str(tmp_path))
+    monkeypatch.setattr(headless_module, "_run_worker", fail_immediately)
+    out = io.StringIO()
+    stdin = io.StringIO('{"type":"steer","text":"preserve lifecycle"}\n')
+
+    assert run_debate_command(
+        "AAPL",
+        committee=object(),
+        interactive=False,
+        json_mode=True,
+        steer_stdin=True,
+        stdin=stdin,
+        out=out,
+        err=io.StringIO(),
+    ) == 3
+
+    events = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert [event["type"] for event in events] == [
+        "debate_started",
+        "steering_submitted",
+        "steering_dropped",
+        "debate_error",
+    ]
+    assert events[1]["payload"]["msg_id"] == events[2]["payload"]["msg_id"]
+
+
 # ==========================================================================
 # (FR-6.1) runs list + result document
 # ==========================================================================
