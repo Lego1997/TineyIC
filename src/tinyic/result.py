@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from tinyic.events import EventEnvelope
 from tinyic.tui.events import Event, read_events
 
 __all__ = [
@@ -40,6 +41,12 @@ _MEMO_SECTION_ORDER = (
     "valuation_discussion",
     "final_verdict",
 )
+
+_MALFORMED_LOG_ERROR = {
+    "stage": "result",
+    "message": "event log contains malformed schema-v1 events",
+    "recoverable": False,
+}
 
 
 def runs_dir() -> Path:
@@ -92,6 +99,47 @@ def exit_code_for_status(status: str) -> int:
     # ``error`` (nothing completed) and ``incomplete`` (never finished) both mean
     # the debate did not produce a usable result: a setup/failed-to-run outcome.
     return 3
+
+
+def _validated_events(events: list[Event]) -> tuple[list[Event], int]:
+    """Return schema-valid, redacted events and the rejected-event count.
+
+    The replay reader intentionally preserves malformed known events as far as
+    it safely can.  Result assembly is a stricter boundary: revalidating through
+    the frozen writer schema prevents unchecked ``list()``/``int()`` coercions
+    while retaining the reader's tolerance for unknown additive event types and
+    payload fields.
+    """
+    valid: list[Event] = []
+    rejected = 0
+    for event in events:
+        try:
+            envelope = EventEnvelope.model_validate(
+                {
+                    "v": event.v,
+                    "seq": event.seq,
+                    "ts": event.ts,
+                    "debate_id": event.debate_id,
+                    "type": event.type,
+                    "payload": event.payload,
+                }
+            )
+        except (TypeError, ValueError):
+            rejected += 1
+            continue
+        valid.append(
+            Event(
+                v=envelope.v,
+                seq=envelope.seq,
+                ts=event.ts,
+                debate_id=envelope.debate_id,
+                type=envelope.type,
+                payload=envelope.payload,
+                known=getattr(event, "known", True),
+                line_index=getattr(event, "line_index", 0),
+            )
+        )
+    return valid, rejected
 
 
 def _usage_rollup(events: list[Event]) -> dict:
@@ -153,6 +201,9 @@ def assemble_result(events: list[Event]) -> dict:
     Tolerant by construction: missing sections simply stay empty / null, and a
     truncated log yields ``status="incomplete"`` with whatever was recorded.
     """
+    raw_events = events
+    events, malformed_count = _validated_events(raw_events)
+
     started = next((e for e in events if e.type == "debate_started"), None)
     completed = next((e for e in events if e.type == "debate_completed"), None)
     error = next((e for e in events if e.type == "debate_error"), None)
@@ -182,7 +233,7 @@ def assemble_result(events: list[Event]) -> dict:
     }
 
     debate_id = ""
-    for event in events:
+    for event in raw_events:
         if event.debate_id:
             debate_id = event.debate_id
             break
@@ -235,7 +286,14 @@ def assemble_result(events: list[Event]) -> dict:
     document["disagreements"] = disagreements
     document["collapse_metrics"] = collapse
     document["usage"] = _usage_rollup(events)
-    if error is not None:
+    if malformed_count:
+        # A corrupt log cannot authoritatively claim completion.  If at least
+        # one event survived, expose its best-effort data as incomplete; if
+        # none survived, this is a failed-to-run result.  Both statuses map to
+        # the documented exit code 3.
+        document["status"] = "incomplete" if events else "error"
+        document["error"] = dict(_MALFORMED_LOG_ERROR)
+    elif error is not None:
         document["error"] = {
             "stage": error.payload.get("stage"),
             "message": error.payload.get("message"),
