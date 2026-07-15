@@ -21,12 +21,19 @@ import json as _json
 import sys
 from collections.abc import Sequence
 
+from tinyic import __version__
+
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the CLI parser with optional subcommands."""
     parser = argparse.ArgumentParser(
         prog="tinyic",
         description="TinyIC — an AI investment committee simulator.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
 
@@ -70,7 +77,16 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument(
         "--live",
         action="store_true",
-        help="Run explicit one-token provider checks (may consume quota).",
+        help="Run explicit one-token checks for the preset's required bindings (may consume quota).",
+    )
+    doctor.add_argument(
+        "--live-all",
+        dest="live_all",
+        action="store_true",
+        help=(
+            "Extend live one-token checks to every discovered lane, not just the "
+            "preset's required bindings (implies --live; may consume more quota)."
+        ),
     )
     doctor.set_defaults(func=_cmd_doctor)
 
@@ -624,7 +640,8 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         report = doctor_module.run_doctor(
             preset=args.preset,
             config_path=args.config,
-            live=args.live,
+            live=args.live or args.live_all,
+            live_optional=args.live_all,
         )
     if args.json:
         print(report.to_json())

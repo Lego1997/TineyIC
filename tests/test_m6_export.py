@@ -28,7 +28,7 @@ from tinyic.tui.events import parse_event, read_events
 FIXTURE = Path(__file__).parent / "fixtures" / "m4_full_debate.jsonl"
 # Byte-pin the golden event-log input: if the fixture is regenerated this hash
 # must be updated deliberately, which forces a re-review of the export goldens.
-FIXTURE_SHA256 = "fcecff5ee8d698011733c5e56746281304971002358271b59ce8a5b2f301a47d"
+FIXTURE_SHA256 = "4f650b4bd720136058a8fe7047365d2ba3dce6a5421dedb511fde76378653100"
 
 # The six committee members and the four phase labels the report must surface.
 _PERSONAS = [

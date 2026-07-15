@@ -125,14 +125,14 @@ def _usage_rollup(events: list[Event]) -> dict:
                     "input_tokens": 0,
                     "output_tokens": 0,
                     "cached_tokens": 0,
-                    "cost_usd": 0.0,
+                    "cost_usd": None,
                 },
             )
             bucket["input_tokens"] += inp
             bucket["output_tokens"] += out
             bucket["cached_tokens"] += cached
             if isinstance(cost, (int, float)):
-                bucket["cost_usd"] = round(bucket["cost_usd"] + float(cost), 8)
+                bucket["cost_usd"] = round((bucket["cost_usd"] or 0.0) + float(cost), 8)
     total = dict(totals)
     total["cost_usd"] = round(cost_total, 8) if has_cost else None
     # Subscription-lane message-window snapshots (dollar-free meters).

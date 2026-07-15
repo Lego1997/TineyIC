@@ -27,6 +27,27 @@ def test_bare_invocation_returns_zero_and_prints_help(capsys):
     assert "usage:" in capsys.readouterr().out
 
 
+def test_version_flag_prints_package_version_and_exits_zero(capsys):
+    """TIC-011: ``tinyic --version`` must resolve and print the package version."""
+    import importlib.metadata
+
+    with pytest.raises(SystemExit) as exc:
+        main(["--version"])
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.strip() == (
+        f"tinyic {importlib.metadata.version('tinyic')}"
+    )
+
+
+def test_dunder_version_is_sourced_from_package_metadata():
+    """TIC-011: the dunder and the emitted event version share one source."""
+    import importlib.metadata
+
+    import tinyic
+
+    assert tinyic.__version__ == importlib.metadata.version("tinyic")
+
+
 def test_parser_wires_replay_subcommand():
     args = build_parser().parse_args(
         ["replay", "/tmp/run.jsonl", "--port", "8765", "--no-open", "--no-wait"]
