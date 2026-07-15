@@ -9,12 +9,17 @@ schema validation, collision handling, and guarded last-stage writes.
 from __future__ import annotations
 
 import copy
+import errno
 import ipaddress
 import json
 import os
 import re
+import stat
 import tempfile
+import threading
+import time
 import unicodedata
+from contextlib import contextmanager
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date
@@ -2249,6 +2254,122 @@ def _source_records(ledger: EvidenceLedger, accessed: str) -> tuple[dict[str, st
     return ledger.source_records(accessed)
 
 
+class _ArtifactThreadLock:
+    """Reference-counted same-process guard for one artifact-pair lock."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.users = 0
+
+
+_ARTIFACT_THREAD_LOCKS_GUARD = threading.Lock()
+_ARTIFACT_THREAD_LOCKS: dict[str, _ArtifactThreadLock] = {}
+
+
+@contextmanager
+def _in_process_artifact_lock(key: str):
+    with _ARTIFACT_THREAD_LOCKS_GUARD:
+        entry = _ARTIFACT_THREAD_LOCKS.get(key)
+        if entry is None:
+            entry = _ArtifactThreadLock()
+            _ARTIFACT_THREAD_LOCKS[key] = entry
+        entry.users += 1
+    entry.lock.acquire()
+    try:
+        yield
+    finally:
+        entry.lock.release()
+        with _ARTIFACT_THREAD_LOCKS_GUARD:
+            entry.users -= 1
+            if entry.users == 0:
+                _ARTIFACT_THREAD_LOCKS.pop(key, None)
+
+
+def _artifact_lock_path(agent_path: Path) -> Path:
+    name = agent_path.name
+    slug = name.removesuffix(".agent.json")
+    if slug == name:
+        slug = agent_path.stem
+    return agent_path.with_name(f".{slug}.lock")
+
+
+def _open_artifact_lock(path: Path) -> int:
+    flags = os.O_CREAT | os.O_RDWR
+    for optional_flag in ("O_CLOEXEC", "O_NOFOLLOW", "O_NONBLOCK"):
+        flags |= getattr(os, optional_flag, 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError(f"persona artifact lock is not a regular file: {path}")
+        os.fchmod(descriptor, 0o600)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _lock_artifact_descriptor(descriptor: int) -> None:
+    if os.name == "posix":
+        import fcntl
+
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                return
+            except InterruptedError:
+                continue
+    if os.name == "nt":  # pragma: no cover - exercised on Windows
+        import msvcrt
+
+        if os.fstat(descriptor).st_size == 0:
+            os.write(descriptor, b"\0")
+            os.fsync(descriptor)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        while True:
+            try:
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                return
+            except OSError as error:
+                if error.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                    raise
+                time.sleep(0.05)
+    raise OSError(f"unsupported platform for persona artifact locking: {os.name}")
+
+
+def _unlock_artifact_descriptor(descriptor: int) -> None:
+    if os.name == "posix":
+        import fcntl
+
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return
+    if os.name == "nt":  # pragma: no cover - exercised on Windows
+        import msvcrt
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        return
+    raise OSError(f"unsupported platform for persona artifact locking: {os.name}")
+
+
+@contextmanager
+def _artifact_pair_lock(agent_path: Path):
+    lock_path = _artifact_lock_path(agent_path)
+    key = os.path.normcase(os.path.realpath(lock_path))
+    with _in_process_artifact_lock(key):
+        descriptor = _open_artifact_lock(lock_path)
+        locked = False
+        try:
+            _lock_artifact_descriptor(descriptor)
+            locked = True
+            yield
+        finally:
+            try:
+                if locked:
+                    _unlock_artifact_descriptor(descriptor)
+            finally:
+                os.close(descriptor)
+
+
 def _stage_file(path: Path, content: bytes) -> Path:
     descriptor, raw_path = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     staged = Path(raw_path)
@@ -2314,41 +2435,43 @@ def write_artifact_pair(
     force: bool,
     replace_fn: Callable[[Path, Path], Any] = os.replace,
 ) -> None:
-    """Stage both files before commit and roll back if the second rename fails."""
+    """Lock, stage, and install an artifact pair, rolling back on failure."""
     agent_path.parent.mkdir(parents=True, exist_ok=True)
-    if not force and (agent_path.exists() or dossier_path.exists()):
-        raise PersonaCollisionError(
-            f"persona artifacts already exist for {agent_path.stem.removesuffix('.agent')}"
-        )
-    old_agent = agent_path.read_bytes() if agent_path.exists() else None
-    old_dossier = dossier_path.read_bytes() if dossier_path.exists() else None
-    staged_agent: Path | None = None
-    staged_dossier: Path | None = None
-    try:
-        staged_agent = _stage_file(agent_path, agent_bytes)
-        staged_dossier = _stage_file(dossier_path, dossier_bytes)
-        replace_fn(staged_agent, agent_path)
-        replace_fn(staged_dossier, dossier_path)
-    except BaseException:
-        # Restore both destinations independently. An injected or exotic
-        # replacement can move a file and then raise during installation or
-        # rollback, so destination bytes—not call return values—are decisive.
-        rollback_errors = tuple(
-            error
-            for error in (
-                _restore_error(agent_path, old_agent, replace_fn=replace_fn),
-                _restore_error(dossier_path, old_dossier, replace_fn=replace_fn),
+    with _artifact_pair_lock(agent_path):
+        if not force and (agent_path.exists() or dossier_path.exists()):
+            raise PersonaCollisionError(
+                "persona artifacts already exist for "
+                f"{agent_path.stem.removesuffix('.agent')}"
             )
-            if error is not None
-        )
-        if rollback_errors:
-            raise RuntimeError("persona artifact rollback failed") from rollback_errors[0]
-        raise
-    finally:
-        if staged_agent is not None:
-            staged_agent.unlink(missing_ok=True)
-        if staged_dossier is not None:
-            staged_dossier.unlink(missing_ok=True)
+        old_agent = agent_path.read_bytes() if agent_path.exists() else None
+        old_dossier = dossier_path.read_bytes() if dossier_path.exists() else None
+        staged_agent: Path | None = None
+        staged_dossier: Path | None = None
+        try:
+            staged_agent = _stage_file(agent_path, agent_bytes)
+            staged_dossier = _stage_file(dossier_path, dossier_bytes)
+            replace_fn(staged_agent, agent_path)
+            replace_fn(staged_dossier, dossier_path)
+        except BaseException:
+            # Restore both destinations independently. An injected or exotic
+            # replacement can move a file and then raise during installation or
+            # rollback, so destination bytes—not call return values—are decisive.
+            rollback_errors = tuple(
+                error
+                for error in (
+                    _restore_error(agent_path, old_agent, replace_fn=replace_fn),
+                    _restore_error(dossier_path, old_dossier, replace_fn=replace_fn),
+                )
+                if error is not None
+            )
+            if rollback_errors:
+                raise RuntimeError("persona artifact rollback failed") from rollback_errors[0]
+            raise
+        finally:
+            if staged_agent is not None:
+                staged_agent.unlink(missing_ok=True)
+            if staged_dossier is not None:
+                staged_dossier.unlink(missing_ok=True)
 
 
 class PersonaFactory:

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import os
+import threading
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -38,6 +40,75 @@ from tinytroupe.agent import TinyPerson
 
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "persona_factory"
+
+
+def _interprocess_writer_a(
+    agent_raw,
+    dossier_raw,
+    first_agent_replaced,
+    second_attempting,
+    second_finished,
+    results,
+):
+    agent = Path(agent_raw)
+    dossier = Path(dossier_raw)
+    replace_calls = 0
+
+    def pause_after_first_replace(source, destination):
+        nonlocal replace_calls
+        replace_calls += 1
+        os.replace(source, destination)
+        if replace_calls == 1 and Path(destination) == agent:
+            first_agent_replaced.set()
+            if not second_attempting.wait(10):
+                raise AssertionError("second process did not attempt its write")
+            if second_finished.wait(0.75):
+                raise AssertionError("second process bypassed the artifact lock")
+        if replace_calls == 2:
+            raise OSError("simulated post-replace failure")
+
+    try:
+        write_artifact_pair(
+            agent,
+            b"process-agent-a",
+            dossier,
+            b"process-dossier-a",
+            force=True,
+            replace_fn=pause_after_first_replace,
+        )
+    except OSError as error:
+        if str(error) == "simulated post-replace failure":
+            results.put(("a", None))
+        else:
+            results.put(("a", f"{type(error).__name__}: {error}"))
+    except BaseException as error:
+        results.put(("a", f"{type(error).__name__}: {error}"))
+    else:
+        results.put(("a", "expected the first writer to fail and roll back"))
+
+
+def _interprocess_writer_b(
+    agent_raw,
+    dossier_raw,
+    second_attempting,
+    second_finished,
+    results,
+):
+    second_attempting.set()
+    try:
+        write_artifact_pair(
+            Path(agent_raw),
+            b"process-agent-b",
+            Path(dossier_raw),
+            b"process-dossier-b",
+            force=True,
+        )
+    except BaseException as error:
+        results.put(("b", f"{type(error).__name__}: {error}"))
+    else:
+        results.put(("b", None))
+    finally:
+        second_finished.set()
 
 
 def _evidence(count: int = 6) -> tuple[Evidence, ...]:
@@ -2369,7 +2440,145 @@ def test_dual_write_cleans_first_stage_when_second_staging_fails(
             force=False,
         )
 
-    assert not list(tmp_path.iterdir())
+    assert not list(tmp_path.glob("*.agent.json"))
+    assert not list(tmp_path.glob("*.dossier.md"))
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_dual_write_serializes_same_process_collision_check(
+    tmp_path, monkeypatch
+):
+    import tinyic.personas.factory.pipeline as factory_pipeline
+
+    agent = tmp_path / "threaded.agent.json"
+    dossier = tmp_path / "threaded.dossier.md"
+    first_staged = threading.Event()
+    second_attempting = threading.Event()
+    second_finished = threading.Event()
+    outcomes = []
+    original_stage = factory_pipeline._stage_file
+
+    # Exercise the in-process layer independently of platform flock semantics.
+    monkeypatch.setattr(
+        factory_pipeline, "_lock_artifact_descriptor", lambda _descriptor: None
+    )
+    monkeypatch.setattr(
+        factory_pipeline, "_unlock_artifact_descriptor", lambda _descriptor: None
+    )
+
+    def pause_first_stage(path, content):
+        staged = original_stage(path, content)
+        if content == b"thread-agent-a":
+            first_staged.set()
+            assert second_attempting.wait(5)
+            assert not second_finished.wait(0.5)
+        return staged
+
+    monkeypatch.setattr(factory_pipeline, "_stage_file", pause_first_stage)
+
+    def write_first():
+        try:
+            write_artifact_pair(
+                agent,
+                b"thread-agent-a",
+                dossier,
+                b"thread-dossier-a",
+                force=False,
+            )
+        except BaseException as error:
+            outcomes.append(("a", error))
+        else:
+            outcomes.append(("a", None))
+
+    def write_second():
+        second_attempting.set()
+        try:
+            write_artifact_pair(
+                agent,
+                b"thread-agent-b",
+                dossier,
+                b"thread-dossier-b",
+                force=False,
+            )
+        except BaseException as error:
+            outcomes.append(("b", error))
+        else:
+            outcomes.append(("b", None))
+        finally:
+            second_finished.set()
+
+    first = threading.Thread(target=write_first)
+    second = threading.Thread(target=write_second)
+    first.start()
+    assert first_staged.wait(5)
+    second.start()
+    first.join(5)
+    second.join(5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert dict(outcomes)["a"] is None
+    assert isinstance(dict(outcomes)["b"], PersonaCollisionError)
+    assert agent.read_bytes() == b"thread-agent-a"
+    assert dossier.read_bytes() == b"thread-dossier-a"
+
+
+def test_dual_write_serializes_interprocess_replacement_and_rollback(
+    tmp_path,
+):
+    context = multiprocessing.get_context("spawn")
+    agent = tmp_path / "process.agent.json"
+    dossier = tmp_path / "process.dossier.md"
+    agent.write_bytes(b"old-agent")
+    dossier.write_bytes(b"old-dossier")
+    first_agent_replaced = context.Event()
+    second_attempting = context.Event()
+    second_finished = context.Event()
+    results = context.Queue()
+    first = context.Process(
+        target=_interprocess_writer_a,
+        args=(
+            str(agent),
+            str(dossier),
+            first_agent_replaced,
+            second_attempting,
+            second_finished,
+            results,
+        ),
+    )
+    second = context.Process(
+        target=_interprocess_writer_b,
+        args=(
+            str(agent),
+            str(dossier),
+            second_attempting,
+            second_finished,
+            results,
+        ),
+    )
+
+    first.start()
+    assert first_agent_replaced.wait(10)
+    second.start()
+    first.join(10)
+    second.join(10)
+    try:
+        assert not first.is_alive()
+        assert not second.is_alive()
+    finally:
+        if first.is_alive():
+            first.terminate()
+            first.join(5)
+        if second.is_alive():
+            second.terminate()
+            second.join(5)
+
+    assert first.exitcode == 0
+    assert second.exitcode == 0
+    recorded = dict((results.get(timeout=5) for _ in range(2)))
+    assert recorded == {"a": None, "b": None}
+    assert agent.read_bytes() == b"process-agent-b"
+    assert dossier.read_bytes() == b"process-dossier-b"
 
 
 def test_schema_validation_reports_actionable_paths():
