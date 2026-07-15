@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import io
 import json
+import logging
+import os
 import socket
 import threading
 
@@ -253,6 +255,26 @@ def _run_logged(committee, inbox, tmp_path, debate_id="aapl-20260713-str1"):
     return read_event_log(log_path)
 
 
+def _assert_steering_lifecycle_closed(events) -> None:
+    """Every steering_submitted msg_id has exactly one delivered/dropped ack.
+
+    The frozen contract (docs/event-schema.md) forbids a silent loss: an
+    acknowledged command must terminate as either delivered or dropped, never
+    both and never neither.
+    """
+    submitted = [
+        e.payload["msg_id"] for e in events if e.type == "steering_submitted"
+    ]
+    for msg_id in submitted:
+        acks = [
+            e
+            for e in events
+            if e.type in ("steering_delivered", "steering_dropped")
+            and e.payload["msg_id"] == msg_id
+        ]
+        assert len(acks) == 1, f"{msg_id}: {len(acks)} acks, expected exactly 1"
+
+
 def test_steer_and_queue_are_acknowledged_and_delivered(tmp_path, binding_mocks):
     inbox = SteeringInbox(id_prefix="m")
     # Pre-loaded (before debate_started): the ack is deferred until the command
@@ -284,6 +306,7 @@ def test_steer_and_queue_are_acknowledged_and_delivered(tmp_path, binding_mocks)
     # Warren Buffett, plus an observation to the others).
     buffett = _display_agent(events)  # sanity: the debate really ran
     assert buffett
+    _assert_steering_lifecycle_closed(events)
 
 
 def test_queue_defers_to_next_phase_while_steer_lands_next_turn(tmp_path, binding_mocks, monkeypatch):
@@ -313,6 +336,7 @@ def test_queue_defers_to_next_phase_while_steer_lands_next_turn(tmp_path, bindin
     # Steer lands still inside opening (next speaker); queue waits for cross_exam.
     assert turn_phase[steer_turn] == "opening"
     assert turn_phase[queue_turn] == "cross_exam"
+    _assert_steering_lifecycle_closed(events)
 
 
 def _display_agent(events) -> bool:
@@ -341,6 +365,211 @@ def test_undelivered_steering_is_dropped_explicitly(tmp_path):
     assert dropped[0].payload == {"msg_id": msg_id, "reason": "debate_ended"}
     # A closed inbox no-ops further submits (never crashes the producer).
     assert inbox.submit("steer", "too late") is None
+    _assert_steering_lifecycle_closed(events)
+
+
+def test_queue_drained_at_crashing_phase_boundary_is_dropped_not_lost(
+    tmp_path, binding_mocks, monkeypatch
+):
+    # TIC-003 regression: a command drained at a boundary but not yet
+    # acknowledged delivered when the relay crashes must still be dropped
+    # explicitly at the terminal close — never lost in the drained window.
+    from tinyic.debate.moderator import Moderator
+
+    inbox = SteeringInbox(id_prefix="c")
+    submitted: dict[str, str] = {}
+
+    def act_and_submit(self, *, return_actions=False, **kwargs):
+        # Submitted mid-opening so it is drained at the cross_exam phase boundary.
+        if self.name == "Warren Buffett" and "queue" not in submitted:
+            submitted["queue"] = inbox.submit("queue", "phase-two instruction")
+        return _act_via_binding(self, return_actions=return_actions, **kwargs)
+
+    monkeypatch.setattr(InvestorPersona, "act", act_and_submit)
+
+    real_relay = Moderator.relay_message
+
+    def relay_or_boom(self, text, target, **kwargs):
+        if text == "phase-two instruction":
+            raise RuntimeError("relay blew up at the phase boundary")
+        return real_relay(self, text, target, **kwargs)
+
+    monkeypatch.setattr(Moderator, "relay_message", relay_or_boom)
+
+    debate_id = "aapl-20260713-crashdrop"
+    log_path = tmp_path / f"{debate_id}.jsonl"
+    with pytest.raises(RuntimeError):
+        with EventLog(debate_id, path=log_path) as log:
+            inbox.bind_event_log(log)
+            debate_module.run_debate(
+                "AAPL",
+                _REGISTRY_3,
+                data_package=_mock_data_package(),
+                event_log=log,
+                committee=_fake_committee(),
+                steering=inbox,
+                da="warren_buffett",
+            )
+
+    events = read_event_log(log_path)
+    msg_id = submitted["queue"]
+    dropped = [
+        e
+        for e in events
+        if e.type == "steering_dropped" and e.payload["msg_id"] == msg_id
+    ]
+    delivered = [
+        e
+        for e in events
+        if e.type == "steering_delivered" and e.payload["msg_id"] == msg_id
+    ]
+    assert len(dropped) == 1
+    assert delivered == []
+    assert events[-1].type == "debate_error"
+    cross_exam = next(
+        e
+        for e in events
+        if e.type == "phase_started" and e.payload["phase"] == "cross_exam"
+    )
+    # Dropped during the run — after the crashing boundary, before the terminal.
+    assert cross_exam.seq < dropped[0].seq < events[-1].seq
+    _assert_steering_lifecycle_closed(events)
+
+
+def test_targeted_steer_waits_for_that_personas_next_turn(
+    tmp_path, binding_mocks, monkeypatch
+):
+    # TIC-015 regression: a steer addressed to Warren Buffett, submitted during
+    # his own opening turn, must be delivered before HIS next turn (cross_exam) —
+    # not the immediately-next speaker (Benjamin Graham at turn-0002).
+    inbox = SteeringInbox(id_prefix="t")
+    submitted: dict[str, str] = {}
+
+    def act_and_submit(self, *, return_actions=False, **kwargs):
+        if self.name == "Warren Buffett" and "steer" not in submitted:
+            submitted["steer"] = inbox.submit(
+                "steer", "revisit your moat claim", target="Warren Buffett"
+            )
+        return _act_via_binding(self, return_actions=return_actions, **kwargs)
+
+    monkeypatch.setattr(InvestorPersona, "act", act_and_submit)
+
+    events = _run_logged(
+        _fake_committee(), inbox, tmp_path, debate_id="aapl-20260713-target"
+    )
+    delivers = {
+        e.payload["msg_id"]: e for e in events if e.type == "steering_delivered"
+    }
+    turn_started = {
+        e.payload["turn_id"]: e.payload
+        for e in events
+        if e.type == "turn_started"
+    }
+    before = delivers[submitted["steer"]].payload["delivered_before_turn_id"]
+    assert before != "turn-0002"
+    assert turn_started[before]["persona"] == "Warren Buffett"
+    assert turn_started[before]["phase"] == "cross_exam"
+    _assert_steering_lifecycle_closed(events)
+
+
+def test_targeted_steer_with_no_future_turn_is_dropped(
+    tmp_path, binding_mocks, monkeypatch
+):
+    # TIC-015 regression: a steer addressed to the first persona but submitted
+    # during the last persona's verdict turn has no future boundary to land on;
+    # it is dropped at close, never delivered to the wrong speaker.
+    inbox = SteeringInbox(id_prefix="v")
+    submitted: dict[str, str] = {}
+    munger_acts = {"count": 0}
+
+    def act_and_submit(self, *, return_actions=False, **kwargs):
+        if self.name == "Charlie Munger":
+            munger_acts["count"] += 1
+            # Munger's 4th act is his verdict turn (last speaker, last phase).
+            if munger_acts["count"] == 4 and "late" not in submitted:
+                submitted["late"] = inbox.submit(
+                    "steer", "too late to matter", target="Warren Buffett"
+                )
+        return _act_via_binding(self, return_actions=return_actions, **kwargs)
+
+    monkeypatch.setattr(InvestorPersona, "act", act_and_submit)
+
+    events = _run_logged(
+        _fake_committee(), inbox, tmp_path, debate_id="aapl-20260713-nofuture"
+    )
+    msg_id = submitted["late"]
+    dropped = [
+        e
+        for e in events
+        if e.type == "steering_dropped" and e.payload["msg_id"] == msg_id
+    ]
+    delivered = [
+        e
+        for e in events
+        if e.type == "steering_delivered" and e.payload["msg_id"] == msg_id
+    ]
+    assert len(dropped) == 1
+    assert dropped[0].payload["reason"]  # dropped with an explicit reason
+    assert delivered == []
+    assert events[-1].type == "debate_completed"
+    _assert_steering_lifecycle_closed(events)
+
+
+def _consolidation_boom():
+    # A named helper so the enriched debate_error can name the innermost failing
+    # frame (module.function), the way the real consolidation crash would.
+    raise AttributeError("'NoneType' object has no attribute 'get'")
+
+
+def test_debate_error_names_failing_component_and_logs_traceback(
+    tmp_path, binding_mocks, monkeypatch, caplog
+):
+    # TIC-001 regression: the terminal debate_error message names the failing
+    # component (innermost module.function), never a bare exception class, and
+    # the full traceback lands in the application log — while the public event
+    # stays free of file paths and exception-args text.
+    def boom(_self):
+        _consolidation_boom()
+
+    monkeypatch.setattr(debate_module.DebateOrchestrator, "run_debate", boom)
+
+    debate_id = "aapl-20260713-diag"
+    log_path = tmp_path / f"{debate_id}.jsonl"
+    with caplog.at_level(logging.ERROR, logger="tinyic.debate"):
+        with pytest.raises(AttributeError):
+            with EventLog(debate_id, path=log_path) as log:
+                debate_module.run_debate(
+                    "AAPL",
+                    _REGISTRY_3,
+                    data_package=_mock_data_package(),
+                    event_log=log,
+                    committee=_fake_committee(),
+                )
+
+    events = read_event_log(log_path)
+    error = events[-1]
+    assert error.type == "debate_error"
+    # Schema v1: exactly stage/message/recoverable — no new payload fields.
+    assert set(error.payload) == {"stage", "message", "recoverable"}
+    assert error.payload["stage"] == "debate"
+    assert error.payload["recoverable"] is False
+    message = error.payload["message"]
+    assert "AttributeError" in message
+    assert "_consolidation_boom" in message  # the innermost failing frame
+    # Secret-free: no file paths and no exception-args text in the public event.
+    assert os.sep not in message
+    assert "NoneType" not in message
+    # The crash is logged, not silently swallowed. The security log filter
+    # (tinytroupe/utils/config.py) scrubs the raw traceback but keeps the stage
+    # and exception class, which is enough to locate the failure.
+    logged = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.ERROR
+        and "debate failed at stage debate" in record.getMessage()
+        and "AttributeError" in record.getMessage()
+    ]
+    assert logged, "the crash must be logged on the crash path, never swallowed"
 
 
 # ==========================================================================
@@ -706,6 +935,62 @@ def test_web_path_wires_engine_controls_and_finalizes(binding_mocks, monkeypatch
     assert isinstance(captured["control"], RunControl)
     assert captured["disconnect_timeout"] is None
     assert captured["shutdown_timeout"] == 1.0
+
+
+def test_web_path_keeps_stdout_quiet_with_communication_display_on(
+    binding_mocks, monkeypatch, capsys
+):
+    # TIC-010 regression: the vendored TinyTroupe communication display is ON by
+    # default, and the moderator/reinforcement ``listen`` briefs render through the
+    # real ``_observe`` path even while ``InvestorPersona.act`` is stubbed. The web
+    # branch must hold ``redirect_stdout`` across the whole worker run so those
+    # renders land on STDERR, never the real STDOUT machine channel.
+    from tinyic.web import WebFace
+
+    # Re-enable the vendored default the fixture masks: without the display on,
+    # the briefs never render and the leak cannot reproduce.
+    monkeypatch.setattr(TinyPerson, "communication_display", True)
+
+    class _StubFace:
+        base_url = "http://127.0.0.1:4567"
+
+        def start(self):
+            pass
+
+        def mark_run_finished(self):
+            pass
+
+        def wait_for_sse_disconnect(self, timeout=None):
+            return True
+
+        def shutdown(self, *, timeout=None):
+            pass
+
+    monkeypatch.setattr(
+        WebFace, "live", staticmethod(lambda _log, **_kwargs: _StubFace())
+    )
+
+    committee = _fake_committee()
+    data_package = _mock_data_package()
+    err = io.StringIO()
+    capsys.readouterr()  # discard any construction-time banner before the run
+    code = run_debate_command(
+        "AAPL",
+        personas=_PERSONAS_CSV,
+        committee=committee,
+        data_package=data_package,
+        interactive=True,
+        no_open=True,
+        no_wait=True,
+        out=io.StringIO(),
+        err=err,
+    )
+
+    assert code == 0
+    # The real process STDOUT (what a pipe/agent reads) stays empty ...
+    assert capsys.readouterr().out == ""
+    # ... while the per-turn renders were produced and routed to the human channel.
+    assert "-->" in err.getvalue()
 
 
 def test_web_path_reports_occupied_port_before_starting_worker():

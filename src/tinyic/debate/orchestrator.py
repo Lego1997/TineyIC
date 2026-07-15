@@ -642,7 +642,10 @@ class DebateOrchestrator(TinyWorld):
                 # additionally emits steering_submitted/delivered and honors the
                 # steer-vs-queue delivery boundary (FR-5.3).
                 self._process_message_queue()
-                self._deliver_inbox_steering(phase_boundary=first_turn_of_phase)
+                self._deliver_inbox_steering(
+                    phase_boundary=first_turn_of_phase,
+                    upcoming_speaker=agent.name,
+                )
                 first_turn_of_phase = False
 
                 # Anti-convergence: inject persona-specific reinforcement (ALL phases)
@@ -788,29 +791,43 @@ class DebateOrchestrator(TinyWorld):
             "binding_usage": None,
         }
 
-    def _deliver_inbox_steering(self, *, phase_boundary: bool) -> None:
+    def _deliver_inbox_steering(
+        self, *, phase_boundary: bool, upcoming_speaker: str | None = None
+    ) -> None:
         """Drain the M6 engine inbox at this boundary and emit delivery events.
 
-        ``steer`` commands are delivered at every speaker-turn boundary; ``queue``
-        commands only at a phase boundary (the first turn of a phase). Each
-        delivered command is relayed through the moderator's procedure framing and
-        acknowledged with a ``steering_delivered`` referencing the imminent turn.
+        ``queue`` commands are delivered at a phase boundary (the first turn of a
+        phase); ``steer`` commands at every speaker-turn boundary, except that a
+        steer addressed to a specific persona waits for ``upcoming_speaker`` to be
+        that persona. Each delivered command is relayed through the moderator's
+        procedure framing and acknowledged with a ``steering_delivered``
+        referencing the imminent turn. A relay that raises mid-batch requeues the
+        undelivered remainder so the terminal ``close`` drops it explicitly rather
+        than losing it in the drained-but-unacknowledged window.
         """
         inbox = self.steering_inbox
         if inbox is None:
             return
-        commands = inbox.drain(phase_boundary=phase_boundary)
+        commands = inbox.drain(
+            phase_boundary=phase_boundary,
+            upcoming_speaker=upcoming_speaker,
+            known_targets=set(self.name_to_agent),
+        )
         if not commands:
             return
         before_turn_id = self._peek_next_turn_id()
-        for command in commands:
-            self.moderator.relay_message(
-                command.text,
-                command.target,
-                agents=self.agents,
-                name_to_agent=self.name_to_agent,
-                broadcast=self.broadcast,
-            )
+        for index, command in enumerate(commands):
+            try:
+                self.moderator.relay_message(
+                    command.text,
+                    command.target,
+                    agents=self.agents,
+                    name_to_agent=self.name_to_agent,
+                    broadcast=self.broadcast,
+                )
+            except BaseException:
+                inbox.requeue(commands[index:])
+                raise
             inbox.emit_delivered(command.msg_id, before_turn_id=before_turn_id)
 
     def _land_interrupt_message(self, agent, interrupt) -> None:

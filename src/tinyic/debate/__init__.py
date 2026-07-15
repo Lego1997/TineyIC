@@ -3,7 +3,9 @@
 import hashlib
 import json
 import logging
+import traceback
 from datetime import datetime, timezone
+from pathlib import Path
 
 from tinyic import __version__ as tinyic_version
 from tinyic.events import EventLog, make_debate_id
@@ -26,6 +28,20 @@ from tinyic.usage import (
 from tinytroupe.session import Session
 
 logger = logging.getLogger(__name__)
+
+
+def _failing_component(exc: BaseException) -> str:
+    """Name the innermost failing frame as ``module.function`` (secret-free).
+
+    Only the module stem and function name are surfaced -- never a file path or
+    the exception's own args -- so ``debate_error.message`` points at the crash
+    site without carrying request/credential material.
+    """
+    frames = traceback.extract_tb(exc.__traceback__)
+    if not frames:
+        return "unknown"
+    innermost = frames[-1]
+    return f"{Path(innermost.filename).stem}.{innermost.name}"
 
 
 def _canonical_model_ref() -> str:
@@ -348,6 +364,23 @@ def _check_run_stop(phase_gate) -> None:
         check()
 
 
+def _embedding_credential_available(credentials) -> bool:
+    """Whether an OpenAI embedding credential can be resolved (TIC-007).
+
+    Resolves ``OPENAI_API_KEY`` through the credential seam: an explicit
+    provider when one is supplied, otherwise the environment (which is what the
+    process-global llama-index embedding client itself reads). Any resolution
+    failure is treated as absence.
+    """
+    from tinyic.models.credentials import EnvCredentialProvider
+
+    provider = credentials if credentials is not None else EnvCredentialProvider()
+    try:
+        return bool(provider("OPENAI_API_KEY"))
+    except Exception:
+        return False
+
+
 def _emit_synthesis(
     event_log: EventLog,
     *,
@@ -531,6 +564,7 @@ def run_debate(
     debate_session = session
     resolved_client = None
     resolved_committee = committee
+    resolved_credentials = credentials
     usage_baseline: dict = {}
     personas = []
     orchestrator = None
@@ -553,8 +587,27 @@ def run_debate(
         resolved_client = resolve_client()
         usage_baseline = snapshot_cost_counters(resolved_client)
 
+        # TinyTroupe embeds every consolidated engram through the process-global
+        # llama-index OpenAI embedding client, which reads OPENAI_API_KEY from
+        # the environment. Without that credential the store fails per engram, so
+        # disable semantic-memory consolidation up front (TIC-007) rather than
+        # spend subscription-routed quota producing engrams that can never be
+        # embedded, and note it once for the operator.
+        semantic_consolidation = _embedding_credential_available(credentials)
+        if not semantic_consolidation:
+            logger.warning(
+                "semantic memory consolidation disabled: no OpenAI embedding "
+                "credential configured"
+            )
+
         for name in persona_names:
-            personas.append(load_persona(name, session=debate_session))
+            personas.append(
+                load_persona(
+                    name,
+                    session=debate_session,
+                    semantic_consolidation=semantic_consolidation,
+                )
+            )
 
         if resolved_committee is None and (
             preset is not None or model is not None or thinking is not None
@@ -851,6 +904,16 @@ def run_debate(
         )
         return result
     except Exception as exc:
+        stopped_by_user = isinstance(exc, DebateStopRequested)
+        if not stopped_by_user:
+            # The public event names only the failing component, so the full
+            # traceback is preserved here (STDERR-safe under --json, M6).
+            logger.error(
+                "debate failed at stage %s (%s)",
+                stage,
+                type(exc).__name__,
+                exc_info=exc,
+            )
         if not active_event_log.terminal:
             try:
                 if steering is not None:
@@ -894,18 +957,21 @@ def run_debate(
                         usage_delta=research_usage,
                     )
                     research_usage_emitted = True
-                stopped_by_user = isinstance(exc, DebateStopRequested)
                 active_event_log.emit(
                     "debate_error",
                     {
                         "stage": "stopped" if stopped_by_user else stage,
                         # Raw provider/auth exceptions can contain request or
-                        # credential material. The detailed exception remains
-                        # in application logs, never in the public event file.
+                        # credential material, so the public event names only the
+                        # failing component; the full traceback stays in the
+                        # application log, never in the event file.
                         "message": (
                             "Debate stopped by user"
                             if stopped_by_user
-                            else f"{type(exc).__name__} while running {stage}"
+                            else (
+                                f"{type(exc).__name__} in "
+                                f"{_failing_component(exc)} while running {stage}"
+                            )
                         ),
                         "recoverable": stopped_by_user,
                     },

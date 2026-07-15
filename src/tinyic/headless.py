@@ -18,10 +18,12 @@ Two faces:
   same inbox.
 
 STDOUT hygiene: the vendored TinyTroupe import prints an AI disclaimer and a
-config dump, and its console logger is a second potential polluter.  M6 moved the
-console log handler to STDERR (``tinytroupe/utils/config.py``); here the whole
-engine run additionally executes under ``redirect_stdout`` so any stray ``print``
-lands on STDERR, leaving STDOUT a clean machine channel.  The JSONL writer holds
+config dump, its console logger is a second potential polluter, and its
+communication display (per-turn act/listen renders, on by default) is a third.
+M6 moved the console log handler to STDERR (``tinytroupe/utils/config.py``); both
+faces additionally hold ``redirect_stdout`` across the *entire* worker run —
+thread start through join — so any stray ``print`` or render lands on STDERR,
+leaving STDOUT a clean machine channel.  Under ``--json`` the JSONL writer holds
 the *real* stdout captured before the redirect.
 
 Exit codes (FR-6.2): ``0`` complete · ``2`` partial (``debate_error`` after ≥1
@@ -644,83 +646,83 @@ def _run_web(
         from tinyic.debate.steering import SteeringInbox
         from tinyic.web import WebFace
 
-    log = EventLog(make_debate_id(ticker))
-    inbox = steering if steering is not None else SteeringInbox()
-    inbox.bind_event_log(log)
-    control = RunControl(paused=phase_step)
-    if phase_step:
-        # Opening runs immediately; subsequent phases park until next/resume.
-        control.next_phase()
+        log = EventLog(make_debate_id(ticker))
+        inbox = steering if steering is not None else SteeringInbox()
+        inbox.bind_event_log(log)
+        control = RunControl(paused=phase_step)
+        if phase_step:
+            # Opening runs immediately; subsequent phases park until next/resume.
+            control.next_phase()
 
-    result_holder: dict = {}
-    worker_done = threading.Event()
-    worker = threading.Thread(
-        name="tinyic-debate-worker",
-        target=_run_worker,
-        kwargs=dict(
-            ticker=ticker,
-            persona_names=persona_names,
-            log=log,
+        result_holder: dict = {}
+        worker_done = threading.Event()
+        worker = threading.Thread(
+            name="tinyic-debate-worker",
+            target=_run_worker,
+            kwargs=dict(
+                ticker=ticker,
+                persona_names=persona_names,
+                log=log,
+                inbox=inbox,
+                preset=preset,
+                model=model,
+                thinking=thinking,
+                da=da,
+                no_research=not deep_research,
+                committee=committee,
+                data_package=data_package,
+                transport_factory=transport_factory,
+                credentials=credentials,
+                config_path=config_path,
+                phase_gate=control,
+                result_holder=result_holder,
+                done=worker_done,
+            ),
+            daemon=True,
+        )
+        face = WebFace.live(
+            log,
             inbox=inbox,
-            preset=preset,
-            model=model,
-            thinking=thinking,
-            da=da,
-            no_research=not deep_research,
-            committee=committee,
-            data_package=data_package,
-            transport_factory=transport_factory,
-            credentials=credentials,
-            config_path=config_path,
-            phase_gate=control,
-            result_holder=result_holder,
-            done=worker_done,
-        ),
-        daemon=True,
-    )
-    face = WebFace.live(
-        log,
-        inbox=inbox,
-        control=control,
-        port=port,
-        browser_opener=browser_opener,
-        open_browser=not no_open,
-        stderr=err,
-        run_done=worker_done,
-    )
-    interrupted = False
-    try:
+            control=control,
+            port=port,
+            browser_opener=browser_opener,
+            open_browser=not no_open,
+            stderr=err,
+            run_done=worker_done,
+        )
+        interrupted = False
         try:
-            face.start()  # bind before the worker can emit debate_started
-        except OSError as exc:
-            _report_web_bind_error(err, port, exc)
-            return 3
-        worker.start()
-        try:
-            _stream_log(log.path, None, err, worker_done, poll_interval=0.1)
-            worker.join()
-        except KeyboardInterrupt:
-            interrupted = True
-            control.stop()
-            inbox.request_interrupt(source="api")
-            worker.join(timeout=1.0)
-        finally:
-            face.mark_run_finished()
-
-        if not no_wait and not interrupted:
-            _progress(
-                err,
-                f"debate complete — viewer still at {face.base_url}, Ctrl-C to exit",
-            )
             try:
-                while not face.wait(0.5):
-                    pass
+                face.start()  # bind before the worker can emit debate_started
+            except OSError as exc:
+                _report_web_bind_error(err, port, exc)
+                return 3
+            worker.start()
+            try:
+                _stream_log(log.path, None, err, worker_done, poll_interval=0.1)
+                worker.join()
             except KeyboardInterrupt:
-                pass
-        elif no_wait and not interrupted:
-            _wait_for_no_wait_viewer(face, no_open=no_open)
-    finally:
-        face.shutdown(timeout=1.0)
+                interrupted = True
+                control.stop()
+                inbox.request_interrupt(source="api")
+                worker.join(timeout=1.0)
+            finally:
+                face.mark_run_finished()
+
+            if not no_wait and not interrupted:
+                _progress(
+                    err,
+                    f"debate complete — viewer still at {face.base_url}, Ctrl-C to exit",
+                )
+                try:
+                    while not face.wait(0.5):
+                        pass
+                except KeyboardInterrupt:
+                    pass
+            elif no_wait and not interrupted:
+                _wait_for_no_wait_viewer(face, no_open=no_open)
+        finally:
+            face.shutdown(timeout=1.0)
 
     return _finalize(
         log,

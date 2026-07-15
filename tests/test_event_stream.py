@@ -758,7 +758,10 @@ def test_mocked_debate_failure_is_a_sanitized_terminal_event(
     assert events[-1].type == "debate_error"
     assert events[-1].payload == {
         "stage": "debate",
-        "message": "RuntimeError while running debate",
+        # The message names the innermost failing component (module.function)
+        # without exposing exception args (TIC-001); here the test throws via a
+        # generator expression, so the frame is ``<genexpr>``.
+        "message": "RuntimeError in test_event_stream.<genexpr> while running debate",
         "recoverable": False,
     }
     assert "SECRET" not in event_log.path.read_text(encoding="utf-8")
@@ -792,7 +795,9 @@ def test_setup_failure_still_creates_a_replayable_terminal_log(
     ]
     assert events[-1].payload == {
         "stage": "setup",
-        "message": "KeyError while running setup",
+        # Enriched with the innermost failing component, still secret-free
+        # (TIC-001); the generator-expression throw makes the frame ``<genexpr>``.
+        "message": "KeyError in test_event_stream.<genexpr> while running setup",
         "recoverable": False,
     }
     assert "SECRET" not in event_log.path.read_text(encoding="utf-8")
@@ -916,6 +921,11 @@ def test_mocked_debate_generation_matches_normalized_golden(
         for document in documents:
             if document["type"] == "debate_completed":
                 document["payload"]["result_ref"] = "<RESULT_REF>"
+            # tinyic_version is sourced from install metadata (TIC-011), so it is
+            # environment-derived rather than a frozen literal; normalize it like
+            # any other per-run field so the golden is not version-coupled.
+            if document["type"] == "debate_started":
+                document["payload"]["tinyic_version"] = "<TINYIC_VERSION>"
         return documents
 
     assert normalized(event_log.path) == normalized(GOLDEN_PATH)
