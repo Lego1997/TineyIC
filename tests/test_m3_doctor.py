@@ -401,6 +401,57 @@ def test_live_probe_is_explicit_one_token_seam_and_failure_text_is_sanitized(
     assert "opaque-secret" not in report.to_json()
 
 
+def test_live_probes_only_required_bindings_unless_live_all(tmp_path):
+    """TIC-004: plain --live escalates only the preset's required bindings.
+
+    An optional discovered lane the preset never references (here an Anthropic
+    subscription profile against an openai-only default preset) keeps local
+    detection and is not sent a network completion; opting in with
+    ``live_optional`` (the CLI ``--live-all``) re-includes it.
+    """
+    profile = AuthProfile(
+        "anthropic:claude-code",
+        ProfileKind.CLAUDE_RUNTIME,
+        AuthLane.SUBSCRIPTION,
+    )
+    manager = _manager(
+        tmp_path, profile, environ={"OPENAI_API_KEY": "opaque-key"}
+    )
+    live_providers: list[str] = []
+
+    def recording_live(binding, candidate):
+        live_providers.append(binding.provider)
+        return "ok"
+
+    common = dict(
+        openai_probe=lambda: "runtime_unavailable",
+        anthropic_probe=lambda candidate=None: "ok",
+        grok_probe=lambda: "missing_credential",
+        live_probe=recording_live,
+        runtime_locator=lambda _command: None,
+    )
+
+    report = run_doctor(manager=manager, live=True, **common)
+
+    # The required openai binding is escalated; the out-of-scope optional
+    # anthropic subscription lane is never sent to the network under --live.
+    assert "openai" in live_providers
+    assert "anthropic" not in live_providers
+    anthropic = next(
+        probe
+        for probe in report.probes
+        if probe.provider == "anthropic" and probe.lane == "subscription"
+    )
+    assert anthropic.required is False
+    assert anthropic.reason_code == "ok"
+    assert anthropic.message == "Claude Code subscription runtime is available."
+
+    # --live-all (live_optional) restores the broad all-lanes live detection.
+    live_providers.clear()
+    run_doctor(manager=manager, live=True, live_optional=True, **common)
+    assert "anthropic" in live_providers
+
+
 def test_subscription_only_openai_requires_configured_profile_and_viable_codex(
     tmp_path,
 ):

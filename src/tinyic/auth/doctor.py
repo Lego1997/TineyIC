@@ -254,6 +254,7 @@ def run_doctor(
     preset: str | None = None,
     config_path: str | None = None,
     live: bool = False,
+    live_optional: bool = False,
     manager=None,
     clock: Callable[[], datetime] | None = None,
     openai_probe: ReasonProbe | None = None,
@@ -321,6 +322,7 @@ def run_doctor(
         manager=manager,
         registry=registry,
         live=live,
+        live_optional=live_optional,
         openai_probe=openai_probe or _default_openai_probe,
         anthropic_probe=anthropic_probe or _default_anthropic_probe,
         grok_probe=grok_probe or _default_grok_probe,
@@ -486,6 +488,7 @@ class _ProbeContext:
         manager,
         registry,
         live: bool,
+        live_optional: bool = False,
         openai_probe: ReasonProbe,
         anthropic_probe: ReasonProbe,
         grok_probe: ReasonProbe,
@@ -495,6 +498,7 @@ class _ProbeContext:
         self.manager = manager
         self.registry = registry
         self.live = live
+        self.live_optional = live_optional
         self.openai_probe = openai_probe
         self.anthropic_probe = anthropic_probe
         self.grok_probe = grok_probe
@@ -711,10 +715,15 @@ class _ProbeContext:
                 reason if reason in _KNOWN_REASONS else "probe_failed"
             )
 
+        # Optional lanes stay local-only under plain ``--live``; a live one-token
+        # completion is escalated only when the caller opts in with
+        # ``live_optional`` (the onboarding all-lanes detection path). Required
+        # preset bindings keep live escalation unconditionally.
+        optional_live = self.live and self.live_optional
         first_failure: tuple[str, Any] | None = None
         for candidate in candidates:
             reason = self._candidate_reason(candidate)
-            if reason == "ok" and self.live:
+            if reason == "ok" and optional_live:
                 reason = self._run_live(binding, candidate)
             if reason == "ok":
                 return _result(
@@ -724,7 +733,7 @@ class _ProbeContext:
                     reason="ok",
                     auth_profile=candidate.ref,
                     model_ref=binding.model_ref,
-                    live=self.live,
+                    live=optional_live,
                 )
             if first_failure is None:
                 first_failure = (reason, candidate)
@@ -737,7 +746,7 @@ class _ProbeContext:
                 reason=reason,
                 auth_profile=candidate.ref,
                 model_ref=binding.model_ref,
-                live=self.live,
+                live=optional_live,
             )
 
         # Subscription probes double as the onboard wizard's non-mutating
