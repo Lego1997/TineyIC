@@ -72,7 +72,7 @@ Secrets, API keys, and OAuth material MUST never appear in any payload. Full LLM
 
 ## Headless stdin steering (input, not events)
 
-With `--steer-stdin`, each stdin line is `{"type": "steer"|"queue"|"interrupt", "target": "Warren Buffett"?, "text": "..."}`. Acknowledgement differs by command: `steer`/`queue` lines are acknowledged by a `steering_submitted` event (then `steering_delivered` or `steering_dropped`); an `interrupt` line is acknowledged by the authoritative `turn_interrupted` event on the affected turn — or by nothing at all when no turn is in flight to interrupt (the command is then a no-op by design).
+With `--steer-stdin`, each stdin line is `{"type": "steer"|"queue"|"interrupt", "target": "Warren Buffett"?, "text": "..."}`. Acknowledgement differs by command: `steer`/`queue` lines are acknowledged by a `steering_submitted` event (then `steering_delivered` or `steering_dropped`); an `interrupt` line is acknowledged by the authoritative `turn_interrupted` event only when it affects a turn. Interrupt requests share one latest-wins slot, and an untargeted interrupt retains the existing next-in-flight behavior. A targeted interrupt affects only its normalized matching persona's own in-flight turn; if another persona is in flight, it expires without waiting, and a target naming no committee member likewise expires rather than falling back to broadcast. Mismatched or unknown targets produce one WARNING on STDERR and no event. With no turn in flight, the command remains a no-op with no event by design.
 
 ## Compatibility promises
 

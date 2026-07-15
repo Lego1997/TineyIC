@@ -199,9 +199,10 @@ below. `debate_completed` / `debate_error` are terminal.
 
 ## Steering over STDIN (`--steer-stdin`)
 
-With `--steer-stdin`, each STDIN line is one JSON command. Each is acknowledged by a
-`steering_submitted` event and, when it lands, a `steering_delivered` event (or
-`steering_dropped` if the debate ended first — never silent).
+With `--steer-stdin`, each STDIN line is one JSON command. `steer` and `queue`
+commands emit `steering_submitted`, followed by exactly one `steering_delivered`
+or `steering_dropped`. An interrupt emits `turn_interrupted` only when it affects
+a turn; a no-op interrupt emits no event.
 
 ```json
 {"type":"steer",  "target":"Warren Buffett", "text":"Press the China supply-chain risk."}
@@ -211,7 +212,12 @@ With `--steer-stdin`, each STDIN line is one JSON command. Each is acknowledged 
 
 - `steer` — delivered at the **next speaker-turn** boundary (optionally `target`ed).
 - `queue` — delivered at the **next phase** boundary.
-- `interrupt` — cancel the in-flight turn (or discard it on arrival) and let the speaker retake.
+- `interrupt` — requests share one latest-wins slot. Untargeted requests retain
+  the existing next-in-flight behavior. A targeted request affects only its
+  normalized matching persona's in-flight turn; a different in-flight speaker
+  or an unknown target makes it expire immediately with one WARNING on STDERR
+  and no event. It never waits or falls back to broadcast. A matching interrupt
+  cancels the turn (or discards it on arrival) and lets the speaker retake.
 
 End-to-end, feeding steering from a script:
 
