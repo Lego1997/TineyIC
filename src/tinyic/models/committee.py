@@ -11,6 +11,7 @@ construction out of the orchestrator, and gives tests one seam
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
@@ -19,6 +20,8 @@ from .binding_client import BindingClient, build_transport
 from .credentials import CredentialProvider
 from .presets import Preset, validate_preset_thinking
 from .types import Transport
+
+logger = logging.getLogger(__name__)
 
 #: Builds a bound transport for a binding; overridable in tests.
 TransportFactory = Callable[[ModelBinding, CredentialProvider], Transport]
@@ -159,10 +162,21 @@ def build_committee(
         aggregator_binding, make_transport(aggregator_binding), stream=stream
     )
 
-    moderator_binding = preset.moderator_binding()
-    moderator = BindingClient(
-        moderator_binding, make_transport(moderator_binding), stream=stream
-    )
+    # The moderator is a rules-only procedure owner in this release: its binding
+    # does no LLM work (``moderator_ref`` is always ``"rules"``), so no live
+    # client is realized for it. Building one would eagerly resolve credentials
+    # for a lane that is never called, letting an unusable moderator lane abort
+    # the whole debate. An explicitly configured binding is recorded and flagged.
+    moderator: BindingClient | None = None
+    moderator_binding: ModelBinding | None = None
+    if preset.moderator is not None:
+        moderator_binding = preset.moderator_binding()
+        logger.warning(
+            "preset %r configures a moderator binding (%s) but the moderator is "
+            "rules-only in this release; it will make no LLM calls",
+            preset.name,
+            moderator_binding.model_ref,
+        )
 
     return Committee(
         persona_clients=persona_clients,

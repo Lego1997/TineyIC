@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -116,7 +117,7 @@ def test_run_debate_passes_configured_policy_manager_to_committee(
     )
     monkeypatch.setattr(
         "tinyic.personas.registry.load_persona",
-        lambda _name, session=None: next(personas),
+        lambda _name, session=None, semantic_consolidation=True: next(personas),
     )
     monkeypatch.setattr("tinytroupe.clients.client", lambda: LegacyClient())
     def manager_from_config(_cls, path=None, **_kwargs):
@@ -294,9 +295,115 @@ def test_committee_default_is_one_shared_auth_manager() -> None:
         ),
     )
 
-    assert len(seen) == 3
+    # One persona + the aggregator; the rules-only moderator builds no client
+    # unless a preset explicitly configures a [moderator] binding.
+    assert len(seen) == 2
     assert isinstance(seen[0], AuthManager)
     assert all(credentials is seen[0] for credentials in seen)
+
+
+def _spy_committee(preset: Preset) -> tuple[object, list[str]]:
+    """Build ``preset`` with a spy factory recording each built binding's ref."""
+
+    built: list[str] = []
+
+    class OfflineTransport:
+        def generate(self, _request) -> Iterator[object]:
+            return iter(())
+
+    committee = build_committee(
+        preset,
+        [("warren_buffett", "Warren Buffett")],
+        credentials=StaticCredentialProvider({}),
+        transport_factory=lambda binding, _credentials: (
+            built.append(binding.model_ref) or OfflineTransport()
+        ),
+    )
+    return committee, built
+
+
+def test_build_committee_builds_no_moderator_client_without_explicit_config() -> None:
+    preset = Preset(
+        name="no-mod",
+        default=BindingSpec(model="openai/gpt-5.2", thinking="high"),
+    )
+    committee, built = _spy_committee(preset)
+
+    # The rules-only moderator is never realized: no client, no recorded
+    # binding, and the transport factory only runs for persona + aggregator.
+    assert committee.moderator is None
+    assert committee.moderator_binding is None
+    assert built == ["openai/gpt-5.2", "openai/gpt-5.2"]
+
+
+def test_build_committee_records_but_never_realizes_explicit_moderator(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    preset = Preset(
+        name="explicit-mod",
+        default=BindingSpec(model="openai/gpt-5.2", thinking="high"),
+        moderator=BindingSpec(model="anthropic/claude-opus-4-8"),
+    )
+    with caplog.at_level(logging.WARNING, logger="tinyic.models.committee"):
+        committee, built = _spy_committee(preset)
+
+    # The configured binding is recorded for observability, but no live client
+    # is built (it would do no LLM work) and a warning flags the inert config.
+    assert committee.moderator is None
+    assert committee.moderator_binding is not None
+    assert committee.moderator_binding.model_ref == "anthropic/claude-opus-4-8"
+    assert "anthropic/claude-opus-4-8" not in built
+    assert built == ["openai/gpt-5.2", "openai/gpt-5.2"]
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+    ]
+    assert any(
+        "explicit-mod" in message
+        and "anthropic/claude-opus-4-8" in message
+        and "rules-only" in message
+        for message in warnings
+    )
+
+
+def test_build_committee_does_not_abort_on_unusable_explicit_moderator_lane(
+    tmp_path: Path,
+) -> None:
+    # A moderator binding on a lane with no credential used to kill the whole
+    # debate at build (eager candidate resolution for a client never called).
+    moderator_preset = Preset(
+        name="unusable-mod",
+        default=BindingSpec(model="ollama/qwen3:32b"),
+        moderator=BindingSpec(
+            model="openai/gpt-5.2", auth_profile="openai:ghost", thinking="high"
+        ),
+    )
+    committee = build_committee(
+        moderator_preset,
+        [("warren_buffett", "Warren Buffett")],
+        credentials=AuthManager(_store(tmp_path / "mod"), environ={}),
+        validate_thinking=False,
+    )
+    assert committee.moderator is None
+    assert committee.moderator_binding.model_ref == "openai/gpt-5.2"
+
+    # Sanity: the same unusable lane on a role that IS called still fails fast,
+    # proving the moderator's no-raise is demotion, not a resolvable lane.
+    aggregator_preset = Preset(
+        name="unusable-agg",
+        default=BindingSpec(model="ollama/qwen3:32b"),
+        aggregator=BindingSpec(
+            model="openai/gpt-5.2", auth_profile="openai:ghost", thinking="high"
+        ),
+    )
+    with pytest.raises(AuthResolutionError):
+        build_committee(
+            aggregator_preset,
+            [("warren_buffett", "Warren Buffett")],
+            credentials=AuthManager(_store(tmp_path / "agg"), environ={}),
+            validate_thinking=False,
+        )
 
 
 def test_committee_default_honors_the_configured_anthropic_policy_guard(
