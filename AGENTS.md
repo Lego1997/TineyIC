@@ -15,7 +15,9 @@ STDOUT line-by-line; never scrape STDERR.
 
 ## Install & run
 
-v1 is distributed **from git source only** (no PyPI). Both work without cloning:
+TinyIC's Python distributions remain **git-source only** and are never resolved
+from PyPI. Until this repository announces the first verified npm release, run
+from source:
 
 ```bash
 # One-shot, from a clone on disk:
@@ -27,6 +29,22 @@ uvx --from 'git+https://github.com/Lego1997/TineyIC.git#subdirectory=src/tinyic'
 uv sync            # installs both workspace packages (tinyic + the vendored tinytroupe)
 uv run tinyic --help
 ```
+
+The npm release candidate bundles the locked TinyIC + vendored TinyTroupe
+workspace and launches it through `uv`. The official registry currently
+returns `E404` for the unowned name; do not install it before the release
+announcement. After publication, the install is:
+
+```bash
+npm install --global tinyic
+tinyic --help
+```
+
+That path requires Node.js 22.14+ and `uv` 0.7.12+ (the minimum validated
+launcher version), but no separate `pip` install. Its first command may download
+Python 3.12 and the locked Python dependencies. The commands below use bare
+`tinyic`; from a source checkout, replace that prefix
+with `uv run tinyic`.
 
 You need one LLM credential (an API key, or a supported subscription lane). Check and
 set up non-interactively / interactively:

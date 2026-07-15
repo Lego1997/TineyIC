@@ -89,7 +89,9 @@ Threading model: the debate loop runs in one worker thread owned by the session 
 
 **FR-0.3 Packaging.** `uv` workspace stays; `uv sync` alone must produce a working dev environment; `uv.lock` committed; `tinyic` console entry point via `[project.scripts]`; `uvx tinyic` works from a clean machine — meaning source-based invocation from a clean clone (`uvx --from <clone>/src/tinyic tinyic`) and, once public, `uvx --from git+<repo-url>#subdirectory=src/tinyic tinyic`.
 
-**FR-0.4 Distribution & publication (owner decision, 2026-07-13).** v1 distributes as **git-source only**; registry (PyPI) publication is out of scope. Rationale: the `tinyic` wheel's `Requires-Dist: tinytroupe` would resolve to Microsoft's upstream PyPI distribution — not the vendored fork — on any registry install (uv workspace source mappings are not serialized into wheel metadata). Fail-safe: both workspace packages carry the `Private :: Do Not Upload` trove classifier (PyPI rejects unknown classifiers, so accidental uploads fail), asserted by a packaging test. If post-v1 publication is desired, the recorded direction is to **bundle the vendored fork inside the `tinyic` distribution** (ship both import packages in one wheel, drop the external `tinytroupe` requirement), accepting and documenting the import-name-shadowing caveat if upstream `tinytroupe` is co-installed; publishing the fork as a separately named distribution is rejected (two artifacts to maintain, same collision).
+**FR-0.4 Distribution & publication (owner decisions, 2026-07-13 and 2026-07-15).** The Python distributions remain **git-source only**; PyPI publication is out of scope. Rationale: the `tinyic` wheel's `Requires-Dist: tinytroupe` would resolve to Microsoft's upstream PyPI distribution — not the vendored fork — on any registry install (uv workspace source mappings are not serialized into wheel metadata). Fail-safe: both workspace packages carry the `Private :: Do Not Upload` trove classifier (PyPI rejects unknown classifiers, so accidental uploads fail), asserted by a packaging test. If a Python-registry release is desired later, the recorded direction is to **bundle the vendored fork inside the `tinyic` distribution** (ship both import packages in one wheel, drop the external `tinytroupe` requirement), accepting and documenting the import-name-shadowing caveat if upstream `tinytroupe` is co-installed; publishing the fork as a separately named Python distribution is rejected (two artifacts to maintain, same collision).
+
+The 2026-07-15 amendment permits an unscoped public **npm CLI distribution**. This is a source-bundling launcher, not a Python-registry release: its tarball carries the root lock/config plus both workspace packages, and a zero-npm-dependency Node.js shim stages those files into a user-writable cache keyed by TinyIC version, lock hash, and packaged-source digest. The staged copy semantically merges the committed root `config.ini` over the untouched vendored default, preserving the source-checkout configuration precedence without changing `src/tinytroupe/`. First use serializes a frozen, non-editable `uv sync` behind an atomic cross-process lock, builds from a disposable source copy, and writes a readiness marker only after success; commands then use `uv run --no-sync --frozen --no-dev --no-editable --package tinyic`. An interrupted bootstrap cleans up safely, while an unclean stale lock fails with cache-removal guidance instead of risking concurrent mutation. The npm package must have no consumer install lifecycle hooks, must never resolve `tinytroupe` from PyPI, and must preserve caller cwd, argv, stdin, JSONL-only STDOUT, STDERR diagnostics, SIGINT/SIGTERM (plus POSIX SIGHUP), and TinyIC exit codes. Exact pack inspection, isolated global install, concurrent real first-launch, immutable-prefix, secret-scan, and complete offline-suite checks gate publication. Registry publication requires an owner-controlled npm account with current npm publishing protections; documentation must not promote an unowned package name, and publication remains a separate explicit release action.
 
 ---
 
@@ -450,11 +452,13 @@ different member.
 - `--headless --json` keeps its byte/channel contract: only event JSONL on
   STDOUT; diagnostics on STDERR. The stdin steering protocol, result document,
   replayability, truncated-log handling, and exit-code families remain.
-- The implementation adds no runtime dependency, Node toolchain, or build
-  step. Browser assets are self-contained; Textual remains only because the
-  onboarding wizard still needs it.
+- The core implementation and browser assets add no JavaScript runtime
+  dependency or frontend build step; Textual remains only because the
+  onboarding wizard still needs it. The optional npm distribution adds only a
+  zero-dependency Node.js launcher around the same locked Python workspace.
 - No v2.2 work changes `src/tinytroupe/`; the vendored-fork discipline and
-  git-source-only distribution remain.
+  Python git-source/PyPI boundary remain. The npm tarball bundles that vendored
+  source rather than publishing or resolving a separate Python distribution.
 - Secrets remain excluded from event logs, exports, generated persona
   artifacts, HTTP diagnostics, and tests. The browser capability appears only
   in its intended launch URL/cookie authentication flow.
