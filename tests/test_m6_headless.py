@@ -588,9 +588,12 @@ def test_interrupt_discards_turn_and_speaker_retakes(tmp_path, binding_mocks):
     interrupted = [e for e in events if e.type == "turn_interrupted"]
     assert len(interrupted) == 1
     payload = interrupted[0].payload
-    assert payload["turn_id"] == "turn-0001"  # the first turn was discarded
-    assert payload["by"] == "user"
-    assert payload["disposition"] == "discarded_on_arrival"
+    assert payload == {
+        "turn_id": "turn-0001",  # the first turn was discarded
+        "persona": "Warren Buffett",
+        "by": "user",
+        "disposition": "discarded_on_arrival",
+    }
 
     # The discarded turn has no turn_completed; the retake is a fresh turn that
     # does complete, so the first speaker still produces a committed turn.
@@ -606,6 +609,232 @@ def test_interrupt_discards_turn_and_speaker_retakes(tmp_path, binding_mocks):
     assert retake.payload["phase"] == first.payload["phase"] == "opening"
     # The whole stream remains schema-valid and complete.
     assert events[-1].type == "debate_completed"
+    assert not inbox.has_interrupt()
+
+
+def test_targeted_interrupt_matches_normalized_speaker_and_lands_for_retake(
+    tmp_path, binding_mocks, monkeypatch
+):
+    inbox = SteeringInbox(id_prefix="it")
+    message = "Rebuild the downside case before answering."
+    contexts: list[str] = []
+    submitted = False
+
+    def act_and_capture_context(self, *, return_actions=False, **kwargs):
+        nonlocal submitted
+        if self.name == "Warren Buffett":
+            contexts.append(repr(self.episodic_memory.retrieve_all()))
+            if not submitted:
+                submitted = inbox.request_interrupt(
+                    text=message,
+                    target="  warren buffett ",
+                    source="stdin",
+                )
+        return _act_via_binding(self, return_actions=return_actions, **kwargs)
+
+    monkeypatch.setattr(InvestorPersona, "act", act_and_capture_context)
+
+    events = _run_logged(
+        _fake_committee(),
+        inbox,
+        tmp_path,
+        debate_id="aapl-20260715-targeted-int",
+    )
+
+    assert submitted is True
+    interrupted = [e for e in events if e.type == "turn_interrupted"]
+    assert len(interrupted) == 1
+    assert interrupted[0].payload == {
+        "turn_id": "turn-0001",
+        "persona": "Warren Buffett",
+        "by": "user",
+        "disposition": "discarded_on_arrival",
+    }
+    turns = [e.payload for e in events if e.type == "turn_started"]
+    assert turns[0]["persona"] == turns[1]["persona"] == "Warren Buffett"
+    assert turns[0]["phase"] == turns[1]["phase"] == "opening"
+    assert message not in contexts[0]
+    assert message in contexts[1]
+    assert not inbox.has_interrupt()
+
+
+def test_interrupt_arriving_during_retake_waits_for_next_speaker_check(
+    tmp_path, binding_mocks, monkeypatch
+):
+    inbox = SteeringInbox(id_prefix="ir")
+    warren_attempts = 0
+
+    def act_and_interrupt_each_warren_attempt(
+        self, *, return_actions=False, **kwargs
+    ):
+        nonlocal warren_attempts
+        if self.name == "Warren Buffett":
+            warren_attempts += 1
+            if warren_attempts == 1:
+                inbox.request_interrupt(text="Force Warren's retake.")
+            elif warren_attempts == 2:
+                # The attempt==0 gate must leave this armed during Warren's
+                # retake. Benjamin is the next speaker, so it fires only after
+                # Benjamin's own model call returns.
+                inbox.request_interrupt(
+                    text="Force Benjamin's retake.",
+                    target="Benjamin Graham",
+                )
+        return _act_via_binding(self, return_actions=return_actions, **kwargs)
+
+    monkeypatch.setattr(
+        InvestorPersona,
+        "act",
+        act_and_interrupt_each_warren_attempt,
+    )
+
+    events = _run_logged(
+        _fake_committee(),
+        inbox,
+        tmp_path,
+        debate_id="aapl-20260715-retake-interrupt",
+    )
+
+    interrupted = [e.payload for e in events if e.type == "turn_interrupted"]
+    assert [payload["persona"] for payload in interrupted] == [
+        "Warren Buffett",
+        "Benjamin Graham",
+    ]
+    assert [payload["turn_id"] for payload in interrupted] == [
+        "turn-0001",
+        "turn-0003",
+    ]
+    completed_ids = {
+        e.payload["turn_id"] for e in events if e.type == "turn_completed"
+    }
+    assert {"turn-0001", "turn-0003"}.isdisjoint(completed_ids)
+    assert {"turn-0002", "turn-0004"} <= completed_ids
+    assert not inbox.has_interrupt()
+
+
+def test_targeted_interrupt_mismatch_expires_before_targets_later_turn(
+    tmp_path, binding_mocks, monkeypatch, caplog
+):
+    inbox = SteeringInbox(id_prefix="im")
+    submitted = False
+
+    def act_and_interrupt_other_speaker(self, *, return_actions=False, **kwargs):
+        nonlocal submitted
+        if self.name == "Benjamin Graham" and not submitted:
+            submitted = inbox.request_interrupt(
+                text="This must not fire later.",
+                target="Charlie Munger",
+                source="stdin",
+            )
+        return _act_via_binding(self, return_actions=return_actions, **kwargs)
+
+    monkeypatch.setattr(InvestorPersona, "act", act_and_interrupt_other_speaker)
+    with caplog.at_level(logging.WARNING, logger="tinyic.debate.steering"):
+        events = _run_logged(
+            _fake_committee(),
+            inbox,
+            tmp_path,
+            debate_id="aapl-20260715-mismatched-int",
+        )
+
+    assert submitted is True
+    assert [e for e in events if e.type == "turn_interrupted"] == []
+    started_ids = {
+        e.payload["turn_id"] for e in events if e.type == "turn_started"
+    }
+    completed_ids = {
+        e.payload["turn_id"] for e in events if e.type == "turn_completed"
+    }
+    assert len(started_ids) == 12
+    assert completed_ids == started_ids
+    assert not inbox.has_interrupt()
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == "tinyic.debate.steering"
+        and record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert "not in flight" in warnings[0].getMessage()
+    assert "Charlie Munger" in warnings[0].getMessage()
+    assert "Benjamin Graham" in warnings[0].getMessage()
+
+
+@pytest.mark.parametrize("target", ["Warren Buffet", "   "])
+def test_unknown_target_interrupt_warns_once_and_emits_no_event(
+    tmp_path, binding_mocks, caplog, target
+):
+    inbox = SteeringInbox(id_prefix="iu")
+    inbox.request_interrupt(
+        text="A typo must be harmless.",
+        target=target,
+        source="stdin",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="tinyic.debate.steering"):
+        events = _run_logged(
+            _fake_committee(),
+            inbox,
+            tmp_path,
+            debate_id="aapl-20260715-unknown-int",
+        )
+
+    assert [e for e in events if e.type == "turn_interrupted"] == []
+    assert sum(e.type == "turn_started" for e in events) == 12
+    assert sum(e.type == "turn_completed" for e in events) == 12
+    assert not inbox.has_interrupt()
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == "tinyic.debate.steering"
+        and record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert "unknown target" in warnings[0].getMessage()
+    assert repr(target) in warnings[0].getMessage()
+
+
+def test_interrupt_slot_latest_request_wins_across_targeting_modes():
+    known = {"Warren Buffett", "Benjamin Graham", "Charlie Munger"}
+
+    targeted_wins = SteeringInbox(id_prefix="ilt")
+    targeted_wins.request_interrupt(text="old untargeted")
+    targeted_wins.request_interrupt(
+        text="new targeted",
+        target="Warren Buffett",
+        source="api",
+    )
+    targeted = targeted_wins.take_interrupt(
+        in_flight="Warren Buffett",
+        known_targets=known,
+    )
+    assert targeted is not None
+    assert targeted.text == "new targeted"
+    assert targeted.target == "Warren Buffett"
+    assert targeted.source == "api"
+    assert targeted_wins.take_interrupt(
+        in_flight="Warren Buffett",
+        known_targets=known,
+    ) is None
+
+    untargeted_wins = SteeringInbox(id_prefix="ilu")
+    untargeted_wins.request_interrupt(
+        text="old targeted",
+        target="Charlie Munger",
+    )
+    untargeted_wins.request_interrupt(text="new untargeted", source="api")
+    untargeted = untargeted_wins.take_interrupt(
+        in_flight="Benjamin Graham",
+        known_targets=known,
+    )
+    assert untargeted is not None
+    assert untargeted.text == "new untargeted"
+    assert untargeted.target is None
+    assert untargeted.source == "api"
+    assert untargeted_wins.take_interrupt(
+        in_flight="Benjamin Graham",
+        known_targets=known,
+    ) is None
 
 
 # ==========================================================================
@@ -638,6 +867,62 @@ def test_stdin_reader_parses_and_feeds_the_inbox(tmp_path):
     assert submits[0].payload["target_persona"] == "Warren Buffett"
     assert inbox.has_interrupt()  # the interrupt line armed an interrupt
     assert "non-JSON" in err.getvalue() or "unknown type" in err.getvalue()
+
+
+@pytest.mark.parametrize("target", [0, 42])
+def test_stdin_reader_malformed_interrupt_target_is_unknown_noop(
+    tmp_path, caplog, target
+):
+    from tinyic.headless import _steer_stdin_reader
+
+    debate_id = f"aapl-20260715-stdin-target-{target}"
+    log_path = tmp_path / f"{debate_id}.jsonl"
+    log = EventLog(debate_id, path=log_path)
+    log.emit("debate_started", _minimal_started_payload())
+    inbox = SteeringInbox(event_log=log, id_prefix="x")
+    stdin = io.StringIO(
+        json.dumps(
+            {
+                "type": "interrupt",
+                "target": target,
+                "text": "must remain non-destructive",
+            }
+        )
+        + "\n"
+    )
+
+    _steer_stdin_reader(
+        stdin,
+        inbox,
+        log,
+        io.StringIO(),
+        threading.Event(),
+    )
+
+    assert inbox.has_interrupt()
+    with caplog.at_level(logging.WARNING, logger="tinyic.debate.steering"):
+        assert inbox.take_interrupt(
+            in_flight="Warren Buffett",
+            known_targets={"Warren Buffett"},
+        ) is None
+    assert not inbox.has_interrupt()
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == "tinyic.debate.steering"
+        and record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert "unknown target" in warnings[0].getMessage()
+    assert repr(target) in warnings[0].getMessage()
+
+    inbox.close()
+    log.emit(
+        "debate_completed",
+        {"phases_completed": [], "duration_s": 0.0, "result_ref": str(log_path)},
+    )
+    log.close()
+    assert [e for e in read_event_log(log_path) if e.type == "turn_interrupted"] == []
 
 
 def test_steer_stdin_end_to_end_runs_and_stays_clean(tmp_path, binding_mocks):

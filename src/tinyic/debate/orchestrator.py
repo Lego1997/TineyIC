@@ -688,7 +688,10 @@ class DebateOrchestrator(TinyWorld):
                     # arrives during the retake is left in the inbox for the next
                     # turn rather than consumed here (bounded, at most one retake).
                     interrupt = (
-                        self.steering_inbox.take_interrupt()
+                        self.steering_inbox.take_interrupt(
+                            in_flight=agent.name,
+                            known_targets=set(self.name_to_agent),
+                        )
                         if (self.steering_inbox is not None and attempt == 0)
                         else None
                     )

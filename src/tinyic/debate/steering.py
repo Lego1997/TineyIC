@@ -15,16 +15,19 @@ FR-5.3), delivered **one at a time** at a boundary:
   committee member).
 * ``queue`` — delivered at the next *phase* boundary (before that phase's first
   turn).
-* ``interrupt`` — the in-flight turn is discarded on arrival, the engine emits
-  ``turn_interrupted`` and the speaker retakes the turn with the accompanying
-  message (if any) in context.
+* ``interrupt`` — an untargeted request discards the in-flight turn; a targeted
+  request does so only when that persona is in flight. A mismatched or unknown
+  target expires with a warning and no event. When an interrupt lands, the
+  engine emits ``turn_interrupted`` and the speaker retakes the turn with the
+  accompanying message (if any) in context.
 
-An undelivered command still pending when the debate ends is dropped explicitly
-with a ``steering_dropped`` event — never silently.
+An undelivered ``steer``/``queue`` command still pending when the debate ends is
+dropped explicitly with a ``steering_dropped`` event — never silently.
 """
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Collection
 from dataclasses import dataclass
@@ -38,17 +41,20 @@ __all__ = [
 #: The two delivery modes carried by ``steering_submitted`` (schema enum).
 _STEERING_MODES = frozenset({"steer", "queue"})
 
+logger = logging.getLogger(__name__)
 
-def _normalize_name(name: str | None) -> str | None:
-    """Fold a persona name for target matching (casefold + space/underscore).
+
+def _normalize_name(name: object | None) -> str | None:
+    """Fold a persona name for target matching (trim + casefold + separators).
 
     Mirrors ``Moderator._match_override`` so a steer targeting ``"Warren
     Buffett"`` matches the same member the moderator addresses, whether the
     caller used the display name or the registry slug.
     """
-    if not name:
+    if not isinstance(name, str) or not name:
         return None
-    return name.casefold().replace(" ", "_")
+    normalized = name.strip().casefold().replace(" ", "_")
+    return normalized or None
 
 
 @dataclass(frozen=True)
@@ -176,7 +182,7 @@ class SteeringInbox:
             if self._closed:
                 return False
             self._interrupt = InterruptCommand(
-                text=clean, target=(target or None), source=source
+                text=clean, target=target, source=source
             )
         return True
 
@@ -264,12 +270,51 @@ class SteeringInbox:
                 return
             self._pending[:0] = list(commands)
 
-    def take_interrupt(self) -> InterruptCommand | None:
-        """Atomically consume the pending interrupt request, if any."""
+    def take_interrupt(
+        self,
+        *,
+        in_flight: str | None = None,
+        known_targets: Collection[str] | None = None,
+    ) -> InterruptCommand | None:
+        """Atomically consume a pending interrupt when it applies now.
+
+        Untargeted requests retain the original next-in-flight-turn behavior.
+        A targeted request applies only when ``in_flight`` normalizes to that
+        target. Otherwise it expires immediately: an unknown committee target
+        and a known target that is not currently in flight are diagnosed
+        separately when ``known_targets`` is supplied.
+        """
         with self._lock:
             interrupt = self._interrupt
             self._interrupt = None
-            return interrupt
+            if interrupt is None:
+                return None
+
+            if interrupt.target is None:
+                return interrupt
+            target = _normalize_name(interrupt.target)
+
+            known = (
+                {_normalize_name(name) for name in known_targets}
+                if known_targets is not None
+                else None
+            )
+            if target is None or (known is not None and target not in known):
+                logger.warning(
+                    "Dropping interrupt for unknown target %r",
+                    interrupt.target,
+                )
+                return None
+            if target == _normalize_name(in_flight):
+                return interrupt
+
+            logger.warning(
+                "Dropping interrupt for target %r: target is not in flight "
+                "(current speaker: %r)",
+                interrupt.target,
+                in_flight,
+            )
+            return None
 
     def has_interrupt(self) -> bool:
         with self._lock:
