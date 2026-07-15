@@ -73,6 +73,64 @@ class TestInvestorPersonaUnit:
         persona = InvestorPersona(name="Minimal Investor")
         assert persona.name == "Minimal Investor"
 
+    def test_semantic_consolidation_off_skips_store_and_consolidator(
+        self, monkeypatch
+    ):
+        """TIC-007: a disabled persona commits the episode without any LLM/embedding.
+
+        With ``semantic_consolidation=False`` a > ``MIN_EPISODE_LENGTH`` episode
+        must not touch the episodic consolidator or ``SemanticMemory.store_all``
+        (which would embed each engram through the credential-less global client)
+        even when a binding is active, while still committing the episode.
+        """
+        from tinyic.models import routing
+        from tinytroupe.agent import memory as tt_memory
+        from tinytroupe.session import Session
+
+        store_calls: list = []
+        process_calls: list = []
+        monkeypatch.setattr(
+            tt_memory.SemanticMemory,
+            "store_all",
+            lambda self, values: store_calls.append(values),
+        )
+        monkeypatch.setattr(
+            tt_memory.EpisodicConsolidator,
+            "process",
+            lambda self, *a, **k: process_calls.append(1),
+        )
+
+        with Session() as session:
+            persona = InvestorPersona(
+                name="Frugal Graham",
+                session=session,
+                semantic_consolidation=False,
+            )
+            for index in range(persona.MIN_EPISODE_LENGTH + 2):
+                persona.store_in_memory(
+                    {
+                        "role": "user",
+                        "content": {
+                            "stimuli": [
+                                {
+                                    "type": "CONVERSATION",
+                                    "content": f"event {index}",
+                                    "source": "",
+                                }
+                            ]
+                        },
+                        "type": "stimulus",
+                        "simulation_timestamp": None,
+                    }
+                )
+            with routing.activate(object()):
+                persona.consolidate_episode_memories()
+
+        assert store_calls == []
+        assert process_calls == []
+        assert persona._current_episode_event_count == 0
+        assert persona.episodic_memory.episodic_buffer == []
+
 
 class TestInvestorPersonaLiveAPI:
     """Integration tests that require a live OpenAI API key."""

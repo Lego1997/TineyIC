@@ -95,8 +95,18 @@ class _LayeredRegistry(Mapping[str, Path]):
 PERSONA_REGISTRY: Mapping[str, Path] = _LayeredRegistry()
 
 
-def load_persona(name: str, session: Session | None = None):
-    """Load a built-in or discovered user persona by registry slug."""
+def load_persona(
+    name: str,
+    session: Session | None = None,
+    *,
+    semantic_consolidation: bool = True,
+):
+    """Load a built-in or discovered user persona by registry slug.
+
+    ``semantic_consolidation`` is forwarded to the persona so a debate can
+    disable episode consolidation up front when no OpenAI embedding credential
+    is configured (TIC-007).
+    """
     registry = registry_snapshot()
     if name not in registry:
         raise KeyError(f"Unknown persona '{name}'. Available: {list_personas()}")
@@ -119,6 +129,7 @@ def load_persona(name: str, session: Session | None = None):
         name=display_name,
         philosophy_config_path=str(config_path),
         session=persona_session,
+        semantic_consolidation=semantic_consolidation,
     )
 
 

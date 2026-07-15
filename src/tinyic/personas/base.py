@@ -1,10 +1,13 @@
 """Base class for investor personas in tinyIC."""
 
 import json
+import logging
 from pathlib import Path
 
 from tinytroupe.agent import TinyPerson
 from tinytroupe.session import Session
+
+logger = logging.getLogger(__name__)
 
 #: Anti-sycophancy temperament (FR-4.3) when a config omits one. Kept as a plain
 #: string here so the persona layer does not depend on the debate package; the
@@ -25,9 +28,16 @@ class InvestorPersona(TinyPerson):
         name: str,
         philosophy_config_path: str | None = None,
         session: Session | None = None,
+        semantic_consolidation: bool = True,
         **kwargs,
     ):
         super().__init__(name=name, session=session, **kwargs)
+        # When no OpenAI embedding credential is configured, the debate disables
+        # semantic-memory consolidation at construction (TIC-007): every engram
+        # store would fail against the process-global llama-index embedding
+        # client, so consolidation is skipped rather than spending routed
+        # subscription quota producing engrams that can never be embedded.
+        self._semantic_consolidation = bool(semantic_consolidation)
         self._philosophy_config_path = philosophy_config_path
         # Anti-sycophancy temperament (FR-4.3); a config may override it below.
         self.temperament = DEFAULT_TEMPERAMENT
@@ -83,6 +93,48 @@ class InvestorPersona(TinyPerson):
         persona_data.pop("name", None)
 
         self.include_persona_definitions(persona_data)
+
+    def consolidate_episode_memories(self) -> bool:
+        """Consolidate an episode only when a routed binding is active (TIC-001).
+
+        Episode consolidation reaches the LLM through the vendored
+        ``client()``.  On phase boundaries, moderator relays, and internal-goal
+        broadcasts, that call happens outside every ``routing.activate()`` scope,
+        so the vendored path falls back to the legacy default client and — with
+        no ``OPENAI_API_KEY`` — raises, killing the debate.  Here we skip the
+        LLM consolidation whenever no binding is active (or semantic
+        consolidation was disabled at construction for TIC-007) while preserving
+        the vendored episode lifecycle, and we degrade gracefully if a routed
+        consolidation fails for any transient provider reason.
+        """
+        from tinyic.models import routing
+
+        if not self._semantic_consolidation or routing.active_client() is None:
+            return self._commit_episode_without_semantic_consolidation()
+
+        try:
+            return super().consolidate_episode_memories()
+        except Exception as exc:  # pragma: no cover - defensive degrade path
+            logger.warning(
+                "%s: episode consolidation failed (%s); committing episode "
+                "without semantic consolidation",
+                self.name,
+                type(exc).__name__,
+            )
+            return self._commit_episode_without_semantic_consolidation()
+
+    def _commit_episode_without_semantic_consolidation(self) -> bool:
+        """Commit the current episode without any LLM/semantic consolidation.
+
+        Mirrors the vendored commit/reset (``TinyPerson.consolidate_episode_memories``)
+        so agent context — episodic memory plus its buffer — is unchanged, only
+        skipping the semantic-memory formation that requires an active binding
+        and embedding credential.
+        """
+        if self._current_episode_event_count > self.MIN_EPISODE_LENGTH:
+            self.episodic_memory.commit_episode()
+            self._current_episode_event_count = 0
+        return False
 
     def analyze_company(self, data_package: dict) -> dict:
         """Analyze a company from this investor's perspective.

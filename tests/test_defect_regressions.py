@@ -8,6 +8,7 @@ corresponding test has been observed failing.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ import pytest
 
 from tinyic.data.models import DataPackage
 from tinyic.debate import run_debate
+from tinyic.personas.base import InvestorPersona
 from tinyic.debate.extraction import extract_votes
 from tinyic.debate.memo import extract_disagreements, generate_memo
 from tinyic.debate.models import (
@@ -597,3 +599,237 @@ def test_d2_logging_filter_redacts_configured_credentials(
 
     assert secret not in record.getMessage()
     assert "[REDACTED]" in record.getMessage()
+
+
+# ---------------------------------------------------------------------------
+# TIC-001: episode consolidation must never kill a debate
+# ---------------------------------------------------------------------------
+
+
+def _stimulus(text: str) -> dict:
+    return {
+        "role": "user",
+        "content": {
+            "stimuli": [{"type": "CONVERSATION", "content": text, "source": ""}]
+        },
+        "type": "stimulus",
+        "simulation_timestamp": None,
+    }
+
+
+def test_tic001_unrouted_boundary_consolidation_skips_llm(monkeypatch) -> None:
+    """A phase-boundary stimulus consolidates outside every binding scope.
+
+    The vendored path would reach the legacy default client (minibio plus the
+    episodic consolidator); with no ``OPENAI_API_KEY`` that raised and killed
+    the debate.  The override must skip both LLM calls while still committing
+    the episode and resetting the counter.
+    """
+    from tinyic.models import routing
+    from tinytroupe.agent import memory as tt_memory
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        tt_memory.EpisodicConsolidator,
+        "process",
+        lambda self, *args, **kwargs: calls.append("process"),
+    )
+
+    with Session() as session:
+        persona = InvestorPersona(name="Boundary Buffett", session=session)
+        monkeypatch.setattr(
+            persona, "minibio", lambda *a, **k: calls.append("minibio") or "bio"
+        )
+        persona._current_episode_event_count = persona.MAX_EPISODE_LENGTH - 1
+        assert routing.active_client() is None
+
+        persona.listen("phase boundary stimulus", communication_display=False)
+
+    assert calls == []
+    assert persona._current_episode_event_count == 0
+    assert persona.episodic_memory.episodic_buffer == []
+
+
+def test_tic001_vendored_consolidation_survives_none_process_result(
+    monkeypatch,
+) -> None:
+    """The vendored consolidation must tolerate a ``None`` ``process()`` result.
+
+    ``EpisodicConsolidator.process`` returns ``None`` whenever the consolidation
+    LLM call fails ("Will return None instead of failing"); the chained
+    ``.get`` previously raised ``AttributeError``.  A raw ``TinyPerson``
+    exercises the vendored guard directly, with no ``InvestorPersona`` override
+    to mask it.
+    """
+    from tinytroupe import config_manager
+    from tinytroupe.agent import memory as tt_memory
+
+    assert config_manager.get("enable_memory_consolidation")
+
+    with Session() as session:
+        agent = TinyPerson("Consolidation Survivor", session=session)
+        monkeypatch.setattr(agent, "minibio", lambda *a, **k: "bio")
+        for index in range(TinyPerson.MIN_EPISODE_LENGTH + 2):
+            agent.store_in_memory(_stimulus(f"event {index}"))
+        monkeypatch.setattr(
+            tt_memory.EpisodicConsolidator, "process", lambda *a, **k: None
+        )
+
+        agent.consolidate_episode_memories()
+
+    assert agent._current_episode_event_count == 0
+    assert agent.episodic_memory.episodic_buffer == []
+
+
+def test_tic001_routed_consolidation_failure_degrades_gracefully(
+    monkeypatch,
+) -> None:
+    """A transient failure in a routed act-end consolidation must not raise.
+
+    The episode still commits so the debate proceeds; only the semantic-memory
+    formation is skipped.
+    """
+    from tinyic.models import routing
+
+    def _boom(_self):
+        raise RuntimeError("provider exploded")
+
+    monkeypatch.setattr(TinyPerson, "consolidate_episode_memories", _boom)
+
+    with Session() as session:
+        persona = InvestorPersona(name="Routed Munger", session=session)
+        for index in range(persona.MIN_EPISODE_LENGTH + 2):
+            persona.store_in_memory(_stimulus(f"event {index}"))
+
+        with routing.activate(object()):
+            assert routing.active_client() is not None
+            persona.consolidate_episode_memories()
+
+    assert persona._current_episode_event_count == 0
+    assert persona.episodic_memory.episodic_buffer == []
+
+
+def test_tic001_routed_consolidation_resolves_through_binding_client(
+    monkeypatch,
+) -> None:
+    """A routed act-end consolidation runs the real vendored chain.
+
+    The suite universally stubs ``consolidate_episode_memories``; this exercises
+    the real method end-to-end under an active binding so its LLM call resolves
+    through the routed client (never the legacy default client), and the
+    consolidated memories reach semantic memory.
+    """
+    from tinyic.models import routing
+
+    canned = [
+        {
+            "content": "I judged the business on durable economics.",
+            "type": "consolidated",
+            "simulation_timestamp": "2026-07-15T00:00:00",
+        }
+    ]
+
+    class _FakeBindingClient:
+        def __init__(self) -> None:
+            self.calls: list = []
+
+        def send_message(self, messages, **params):
+            self.calls.append(messages)
+            return {"content": json.dumps({"consolidation": canned})}
+
+    fake = _FakeBindingClient()
+
+    with Session() as session:
+        persona = InvestorPersona(name="Routed Graham", session=session)
+        # Neutralize minibio's own LLM call so the only routed completion under
+        # test is the episodic consolidation itself.
+        monkeypatch.setattr(persona, "minibio", lambda *a, **k: "bio")
+        stored: list = []
+        monkeypatch.setattr(
+            persona.semantic_memory,
+            "store_all",
+            lambda memories: stored.append(memories),
+        )
+        for index in range(persona.MIN_EPISODE_LENGTH + 2):
+            persona.store_in_memory(_stimulus(f"event {index}"))
+
+        with routing.activate(fake):
+            assert routing.active_client() is fake
+            persona.consolidate_episode_memories()
+
+    assert fake.calls, "routed consolidation never reached the binding client"
+    assert stored == [canned]
+    assert persona._current_episode_event_count == 0
+    assert persona.episodic_memory.episodic_buffer == []
+
+
+# ---------------------------------------------------------------------------
+# TIC-007: no embedding credential disables semantic-memory consolidation
+# ---------------------------------------------------------------------------
+
+
+def _minimal_top_level_debate(caplog):
+    """Drive a committee-less ``run_debate`` and capture the consolidation flag.
+
+    Mirrors ``test_b4_top_level_debate``'s patch set (no preset/model/thinking,
+    so no committee and no synthesis stage) and returns
+    ``(captured_flags, warning_records)``.
+    """
+    captured: list[bool] = []
+
+    def _fake_load(name, session=None, *, semantic_consolidation=True):
+        captured.append(semantic_consolidation)
+        return SimpleNamespace(name=name.replace("_", " ").title())
+
+    orchestrator = MagicMock()
+    orchestrator._phase_history = ["final_verdict"]
+    orchestrator.get_cost_stats.return_value = {}
+    orchestrator.pretty_current_interactions.return_value = "full transcript"
+
+    with (
+        patch("tinyic.personas.registry.load_persona", side_effect=_fake_load),
+        patch("tinyic.debate.DebateOrchestrator", return_value=orchestrator),
+        patch(
+            "tinyic.debate.extract_votes",
+            return_value=[
+                Vote(investor="Warren Buffett", vote="BUY", confidence="HIGH"),
+                Vote(investor="Benjamin Graham", vote="SELL", confidence="HIGH"),
+            ],
+        ),
+        patch("tinyic.debate.build_scorecard", return_value=_scorecard()),
+        caplog.at_level(logging.WARNING),
+    ):
+        run_debate(
+            "AAPL",
+            ["warren_buffett", "benjamin_graham"],
+            data_package=_data_package(),
+        )
+
+    warnings = [
+        record
+        for record in caplog.records
+        if "semantic memory consolidation disabled" in record.getMessage()
+    ]
+    return captured, warnings
+
+
+def test_tic007_debate_disables_consolidation_without_embedding_credential(
+    monkeypatch, caplog
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    captured, warnings = _minimal_top_level_debate(caplog)
+
+    assert captured == [False, False]
+    assert len(warnings) == 1
+
+
+def test_tic007_debate_keeps_consolidation_with_embedding_credential(
+    monkeypatch, caplog
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-embedding-credential-present")
+
+    captured, warnings = _minimal_top_level_debate(caplog)
+
+    assert captured == [True, True]
+    assert warnings == []
