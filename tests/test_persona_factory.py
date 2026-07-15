@@ -2720,8 +2720,11 @@ def test_factory_rejects_unknown_model_fields_without_writes(tmp_path):
     [
         ("He is 76 years old. [1]", "age"),
         ("His dau\u200bghter manages the family trust. [1]", "family"),
+        ("Warren Buffett's daughter manages a trust. [1]", "family"),
         ("She was diagnosed with cancer. [1]", "health"),
+        ("Buffett was diagnosed with cancer. [1]", "health"),
         ("He currently lives at 123 Main Street. [1]", "residence"),
+        ("The investor lives at 123 Main Street. [1]", "residence"),
         (
             "This persona is officially endorsed by the represented investor. [1]",
             "affiliation or endorsement",
@@ -2734,9 +2737,29 @@ def test_dossier_scope_gate_rejects_excluded_personal_content_before_persona(
     backend = FakeBackend(_evidence(), voice_addendum=phrase)
 
     with pytest.raises(SchemaValidationError) as error:
-        _factory(backend).run(ResearchRequest("Scoped Dossier", tmp_path))
+        _factory(backend).run(ResearchRequest("Warren Buffett", tmp_path))
 
     assert f"dossier.voice[1] contains excluded {category} content" in str(error.value)
+    assert backend.persona_requests == []
+    assert not list(tmp_path.iterdir())
+
+
+def test_scope_gate_rejects_private_source_title_before_synthesis(tmp_path):
+    evidence = list(_evidence())
+    evidence[0] = replace(
+        evidence[0],
+        title="Warren Buffett's daughter discusses the family home",
+    )
+    backend = FakeBackend(tuple(evidence))
+
+    with pytest.raises(SchemaValidationError) as error:
+        _factory(backend).run(ResearchRequest("Warren Buffett", tmp_path))
+
+    message = str(error.value)
+    assert "tinyic.sources[0].title contains excluded family content" in message
+    assert "daughter" not in message
+    assert "family home" not in message
+    assert backend.dossier_requests == []
     assert backend.persona_requests == []
     assert not list(tmp_path.iterdir())
 
@@ -2802,12 +2825,15 @@ def test_scope_gate_keeps_investment_context_with_overlapping_words(tmp_path):
     statement = (
         "The family-owned business maintains healthy margins, serves "
         "retirement-age customers, owns residential real estate, and management "
-        "endorsed disciplined capital allocation. [1]"
+        "endorsed disciplined capital allocation. Buffett's family office "
+        "diagnosed portfolio margin pressure, the investor lives by a "
+        "margin-of-safety rule, and Buffett was affiliated with an investment "
+        "partnership. [1]"
     )
 
     result = _factory(
         FakeBackend(_evidence(), voice_addendum=statement)
-    ).run(ResearchRequest("Conservative Scope", tmp_path))
+    ).run(ResearchRequest("Warren Buffett", tmp_path))
 
     assert statement in result.dossier_path.read_text(encoding="utf-8")
 

@@ -1006,7 +1006,71 @@ def _normalize_public_record_text(value: str) -> str:
     return " ".join("".join(cleaned).split())
 
 
-def _assert_public_record_scope(entries: Iterable[tuple[str, str]]) -> None:
+def _subject_scope_patterns(
+    investor_name: str,
+) -> tuple[tuple[str, re.Pattern[str]], ...]:
+    """Build high-confidence private-life patterns for named subjects."""
+
+    normalized_name = _normalize_public_record_text(investor_name)
+    subjects = {"the investor", "the represented investor"}
+    if normalized_name:
+        subjects.add(normalized_name)
+        surname = normalized_name.rsplit(" ", 1)[-1]
+        if surname:
+            subjects.add(surname)
+    subject_alternatives = "|".join(
+        re.escape(value)
+        for value in sorted(subjects, key=len, reverse=True)
+    )
+    subject = rf"(?<!\w)(?:{subject_alternatives})(?!\w)"
+    safe_family_uses = (
+        r"office|business|company|firm|fund|investment|enterprise"
+    )
+    family_relation = (
+        rf"family(?!\s+(?:{safe_family_uses}))|wife|husband|spouse|son|"
+        r"daughter|children?|mother|father|parents?|brother|sister"
+    )
+    return (
+        (
+            "age",
+            re.compile(
+                rf"{subject}\s+(?:is|are|was|were)\s+(?:now\s+)?"
+                r"\d{1,3}(?:\s|-)+years?(?:\s|-)+old\b|"
+                rf"{subject}\s+was\s+born\s+(?:in\s+\d{{4}}|"
+                r"on\s+[a-z]+\s+\d{1,2})\b"
+            ),
+        ),
+        (
+            "family",
+            re.compile(
+                rf"{subject}['’]s\s+(?:{family_relation})\b|"
+                rf"{subject}\s+(?:has|had)\s+(?:an?\s+)?(?:{family_relation})\b|"
+                rf"{subject}\s+(?:is|was|became)\s+(?:married|divorced|widowed)\b"
+            ),
+        ),
+        (
+            "health",
+            re.compile(
+                rf"{subject}['’]s\s+(?:health|illness|disease|diagnosis|"
+                r"medical\s+(?:history|condition|treatment))\b|"
+                rf"{subject}\s+(?:(?:is|are|was|were|has been|have been)\s+)?"
+                r"(?:diagnosed\s+with|hospitalized\s+for|treated\s+for|suffers?\s+from)\b"
+            ),
+        ),
+        (
+            "residence",
+            re.compile(
+                rf"{subject}['’]s\s+(?:residence|home address|street address|"
+                r"residential address|phone number|email address)\b|"
+                rf"{subject}\s+(?:currently\s+)?(?:lives|resides)\s+(?:at|in)\b"
+            ),
+        ),
+    )
+
+
+def _assert_public_record_scope(
+    entries: Iterable[tuple[str, str]], *, investor_name: str
+) -> None:
     """Reject high-confidence personal-life or false-affiliation claims.
 
     This is intentionally narrower than a general keyword filter. Professional
@@ -1017,9 +1081,12 @@ def _assert_public_record_scope(entries: Iterable[tuple[str, str]]) -> None:
     """
 
     issues: list[str] = []
+    patterns = _PUBLIC_RECORD_SCOPE_PATTERNS + _subject_scope_patterns(
+        investor_name
+    )
     for path, value in entries:
         normalized = _normalize_public_record_text(value)
-        for category, pattern in _PUBLIC_RECORD_SCOPE_PATTERNS:
+        for category, pattern in patterns:
             if pattern.search(normalized) is not None:
                 issues.append(f"{path} contains excluded {category} content")
                 break
@@ -2583,6 +2650,13 @@ class PersonaFactory:
         quality = quality_for(ledger)  # refusal occurs before any artifact write
         generated_date = self.clock().isoformat()
         source_records = _source_records(ledger, generated_date)
+        _assert_public_record_scope(
+            (
+                (f"tinyic.sources[{index}].title", record["title"])
+                for index, record in enumerate(source_records)
+            ),
+            investor_name=investor_name,
+        )
         generation = {
             "generated_by": "tinyic persona research",
             "model_ref": str(self.backend.model_ref),
@@ -2617,10 +2691,13 @@ class PersonaFactory:
             if not paragraphs:
                 paragraphs = (
                     f"The public record does not establish a sufficiently specific {title.casefold()} profile. [1]",
-                )
+            )
             _assert_public_record_scope(
-                (f"dossier.{key}[{index}]", paragraph)
-                for index, paragraph in enumerate(paragraphs)
+                (
+                    (f"dossier.{key}[{index}]", paragraph)
+                    for index, paragraph in enumerate(paragraphs)
+                ),
+                investor_name=investor_name,
             )
             draft_sections[key] = paragraphs
 
@@ -2662,8 +2739,11 @@ class PersonaFactory:
         validate_agent_spec(specification)
         persona_claims = _persona_claims(specification)
         _assert_public_record_scope(
-            (_format_claim_path(claim.path), claim.text)
-            for claim in persona_claims
+            (
+                (_format_claim_path(claim.path), claim.text)
+                for claim in persona_claims
+            ),
+            investor_name=investor_name,
         )
 
         dossier_claims: list[AtomicClaim] = []
