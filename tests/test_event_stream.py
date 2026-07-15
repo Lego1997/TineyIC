@@ -478,6 +478,70 @@ def test_opaque_credentials_are_redacted_in_all_json_compatible_shapes(
     assert persisted.count("[REDACTED]") >= 4
 
 
+def test_camel_case_credentials_and_content_are_structurally_redacted_with_aliases(
+    tmp_path,
+):
+    """Common provider camelCase fields get the same two-pass protection."""
+    values = {
+        "accessToken": "opaque-access-value",
+        "refreshToken": "opaque-refresh-value",
+        "clientSecret": "opaque-client-value",
+        "idToken": "opaque-id-value",
+        "oauthToken": "opaque-oauth-value",
+        "fullPrompt": "opaque-full-prompt-value",
+    }
+    with _new_log(tmp_path) as event_log:
+        event_log.emit("debate_started", _started_payload())
+        event_log.emit(
+            "debate_error",
+            {
+                "stage": "provider",
+                "message": "provider failed safely",
+                "recoverable": False,
+                "details": values,
+                "aliases": list(values.values()),
+            },
+        )
+
+    terminal = json.loads(
+        event_log.path.read_text(encoding="utf-8").splitlines()[-1]
+    )
+    assert terminal["payload"]["details"] == {
+        key: "[REDACTED]" for key in values
+    }
+    assert terminal["payload"]["aliases"] == [
+        "[REDACTED]" for _value in values.values()
+    ]
+    persisted = event_log.path.read_text(encoding="utf-8")
+    assert not any(value in persisted for value in values.values())
+
+
+def test_camel_case_redaction_does_not_match_benign_related_fields(tmp_path):
+    benign = {
+        "tokenCount": 17,
+        "accessTokenCount": 3,
+        "clientSecretary": "public role",
+        "fullPromptCount": 2,
+        "promptTemplate": "Discuss valuation without private context.",
+    }
+    with _new_log(tmp_path) as event_log:
+        event_log.emit("debate_started", _started_payload())
+        event_log.emit(
+            "debate_error",
+            {
+                "stage": "provider",
+                "message": "provider failed safely",
+                "recoverable": False,
+                "details": benign,
+            },
+        )
+
+    terminal = json.loads(
+        event_log.path.read_text(encoding="utf-8").splitlines()[-1]
+    )
+    assert terminal["payload"]["details"] == benign
+
+
 def test_replay_ignores_only_a_crash_truncated_final_json_line(tmp_path):
     """A process crash may leave one incomplete tail after valid events."""
     with _new_log(tmp_path) as event_log:

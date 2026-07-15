@@ -353,8 +353,17 @@ _TOKEN_PATTERN = re.compile(
 )
 
 
+def _canonicalize_payload_key(key: object) -> str:
+    """Normalize snake/kebab/spaced and camel-case payload field names."""
+    # Split only lower/digit -> upper boundaries.  This handles ``accessToken``
+    # and ``OAuthToken`` without turning initialisms such as ``APIKey`` into
+    # surprising one-letter components; ``apikey`` is an explicit alias below.
+    separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key))
+    return re.sub(r"[^a-z0-9]+", "_", separated.lower()).strip("_")
+
+
 def _is_sensitive_key(key: object) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", "_", str(key).lower()).strip("_")
+    normalized = _canonicalize_payload_key(key)
     return (
         normalized in _SENSITIVE_KEYS
         or normalized.endswith("_api_key")
@@ -365,7 +374,7 @@ def _is_sensitive_key(key: object) -> bool:
 
 
 def _is_forbidden_content_key(key: object) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", "_", str(key).lower()).strip("_")
+    normalized = _canonicalize_payload_key(key)
     return (
         normalized in _FORBIDDEN_CONTENT_KEYS
         or normalized.endswith("_full_prompt")
