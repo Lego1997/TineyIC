@@ -92,7 +92,11 @@ def _try_fast_info(symbol: str) -> bool:
 def _try_search(query: str) -> Optional[tuple[str, str]]:
     """Try yfinance Search API to find a ticker.
 
-    Returns (ticker_symbol, company_name) for the best EQUITY match, or None.
+    Returns (ticker_symbol, company_name) for the best tradable-security match,
+    or None. Only EQUITY (preferred) and ETF quotes are accepted: a name search
+    must fail closed rather than silently bind to a non-security quote such as a
+    CRYPTOCURRENCY, MUTUALFUND, OPTION, INDEX, or CURRENCY (e.g. a private
+    company whose only quote is a tokenized-stock crypto listing).
     """
     try:
         import yfinance as yf
@@ -101,20 +105,14 @@ def _try_search(query: str) -> Optional[tuple[str, str]]:
         if not results.quotes:
             return None
 
-        # Prefer EQUITY results
-        for quote in results.quotes:
-            if quote.get("quoteType", "").upper() == "EQUITY":
-                symbol = quote.get("symbol", "")
-                name = quote.get("longname") or quote.get("shortname") or ""
-                if symbol and name:
-                    return (symbol, name)
-
-        # Fall back to first result if no EQUITY match
-        first = results.quotes[0]
-        symbol = first.get("symbol", "")
-        name = first.get("longname") or first.get("shortname") or ""
-        if symbol and name:
-            return (symbol, name)
+        # Prefer EQUITY, then ETF; reject every other quote type (fail closed).
+        for accepted_type in ("EQUITY", "ETF"):
+            for quote in results.quotes:
+                if quote.get("quoteType", "").upper() == accepted_type:
+                    symbol = quote.get("symbol", "")
+                    name = quote.get("longname") or quote.get("shortname") or ""
+                    if symbol and name:
+                        return (symbol, name)
 
     except Exception as e:
         logger.debug("Search failed for '%s': %s", query, e)

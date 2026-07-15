@@ -1,23 +1,23 @@
 """Pipeline orchestrator: assembles DataPackage from all data sources."""
 
 import logging
-import os
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
+from ..models.credentials import CredentialProvider, EnvCredentialProvider
 from .models import DataPackage
 from .ticker_resolver import resolve_ticker
 from .financials import fetch_financials
 from .news import fetch_news
 from .filings import fetch_filings
-from .social import fetch_social_sentiment
+from .social import fetch_social_sentiment, social_lane_available
 from .cnmarket import (
     cn_market_dependency_missing,
     detect_cn_market,
     fetch_cn_market_data,
 )
-from .research import build_research_brief
+from .research import build_research_brief, research_lane_available
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,8 @@ def build_data_package(
     deep_research: bool = True,
     *,
     checkpoint: Callable[[], None] | None = None,
+    credentials: Optional[CredentialProvider] = None,
+    aggregator_client: Any = None,
 ) -> DataPackage:
     """Build complete DataPackage for a stock ticker.
 
@@ -72,6 +74,12 @@ def build_data_package(
             to produce a ResearchBrief. Set False to skip (v1 behavior).
         checkpoint: Optional callback invoked before and after every sequential
             source call. It may raise to stop before subsequent network work.
+        credentials: Credential provider for the API-key-gated sources (social
+            sentiment, deep research). Defaults to the process environment; the
+            debate hands its ``AuthManager`` so the selected lanes are honored.
+        aggregator_client: Optional binding client the deep-research synthesis
+            chat call is routed through (an ordinary chat a subscription lane
+            can serve); ``None`` keeps the legacy configured client.
 
     Returns:
         DataPackage with all available data.
@@ -79,6 +87,9 @@ def build_data_package(
     Raises:
         ValueError: If the ticker is invalid (cannot be resolved).
     """
+    provider_credentials = (
+        credentials if credentials is not None else EnvCredentialProvider()
+    )
     warnings: list[str] = []
 
     # Step 1: Validate ticker (DATA-01)
@@ -91,6 +102,16 @@ def build_data_package(
         raise ValueError(f"Invalid ticker: {ticker}")
 
     logger.info("Building data package for %s (%s)", resolved_ticker, company_name)
+
+    # Disclose low-confidence name/fuzzy resolution: when the input did not
+    # match the resolved symbol it was bound by search (e.g. "SpaceX" -> SPCX),
+    # not by an exact ticker. Personas see this via DataPackage.warnings.
+    if ticker.strip().upper() != resolved_ticker:
+        warnings.append(
+            f"Entity resolution unverified: '{ticker}' was matched by "
+            f"name/fuzzy search to {resolved_ticker} ({company_name}); pass the "
+            f"exact ticker symbol to skip name resolution"
+        )
 
     # Step 2: Fetch company description
     description = _checked_source_call(
@@ -127,6 +148,21 @@ def build_data_package(
     if filing_10q is None:
         warnings.append("10-Q filing unavailable")
 
+    # Cross-source coherence: market data with zero SEC filings is the tell for
+    # a fresh IPO, a foreign private issuer, or a misresolved entity. Surface it
+    # so personas with pre-listing training cutoffs don't read genuine data as
+    # fabricated. The text carries "financial", so _data_ready_payload attaches
+    # it to the financials source and marks it degraded.
+    if financials is not None and filing_10k is None and filing_10q is None:
+        detail = getattr(financials, "listing_note", None) or (
+            "possible recent IPO, foreign private issuer, or misresolved entity"
+        )
+        warnings.append(
+            f"Financial data caution: market data exists for {resolved_ticker} "
+            f"but no SEC 10-K/10-Q filing was found -- {detail}; treat "
+            f"fundamentals as unverified"
+        )
+
     # Step 5: Fetch news (DATA-04)
     news = _checked_source_call(
         checkpoint,
@@ -142,14 +178,19 @@ def build_data_package(
         fetch_social_sentiment,
         resolved_ticker,
         company_name,
+        provider_credentials,
     )
     if social is None:
-        if not os.getenv("XAI_API_KEY"):
+        if not social_lane_available(provider_credentials):
             warnings.append(
-                "X/Twitter sentiment disabled: XAI_API_KEY not configured"
+                "X/Twitter sentiment disabled: grok API-key lane not "
+                "configured (subscription lanes cannot serve x_search)"
             )
         else:
-            warnings.append("X/Twitter sentiment unavailable")
+            warnings.append(
+                "X/Twitter sentiment unavailable (grok API-key lane request "
+                "failed)"
+            )
 
     # Step 7: China market data (A-share / HK tickers only; optional extra)
     cn_market = None
@@ -189,11 +230,15 @@ def build_data_package(
             resolved_ticker,
             company_name,
             description,
+            provider_credentials,
+            aggregator_client,
         )
         if research_brief is None:
-            if not os.getenv("OPENAI_API_KEY"):
+            if not research_lane_available(provider_credentials):
                 warnings.append(
-                    "Deep research disabled: OPENAI_API_KEY not configured"
+                    "Deep research disabled: OpenAI API-key lane not "
+                    "configured (subscription lanes cannot serve hosted web "
+                    "search)"
                 )
             else:
                 warnings.append("Deep research unavailable")

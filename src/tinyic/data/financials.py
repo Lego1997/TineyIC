@@ -2,6 +2,7 @@
 
 import logging
 import math
+from datetime import datetime, timezone
 from numbers import Real
 from typing import Optional
 
@@ -11,6 +12,33 @@ import yfinance as yf
 from .models import FinancialData
 
 logger = logging.getLogger(__name__)
+
+# A first-trade date within this window marks a recently-listed issuer whose
+# 10-K/10-Q may not exist yet.
+_RECENT_LISTING_DAYS = 120
+
+
+def _listing_note(info: dict) -> Optional[str]:
+    """Return a recent-listing note from yfinance ``info``, or None.
+
+    Reads the first-trade date already present in the info dict so a genuinely
+    fresh IPO is not mistaken (by personas with pre-listing training cutoffs)
+    for fabricated data. Best-effort: any malformed value yields None.
+    """
+    try:
+        ms = info.get("firstTradeDateMilliseconds")
+        if not isinstance(ms, (int, float)) or isinstance(ms, bool):
+            return None
+        first_trade = datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
+        days_ago = (datetime.now(timezone.utc) - first_trade).days
+        if 0 <= days_ago <= _RECENT_LISTING_DAYS:
+            return (
+                f"Recently listed: first traded {first_trade:%Y-%m-%d} "
+                f"({days_ago} days ago); a 10-K/10-Q may not exist yet"
+            )
+    except Exception:
+        return None
+    return None
 
 
 def _finite_number(value) -> Optional[float]:
@@ -132,6 +160,7 @@ def fetch_financials(ticker: str) -> Optional[FinancialData]:
         return FinancialData(
             income_summary=income_summary,
             balance_summary=balance_summary,
+            listing_note=_listing_note(info),
             **{k: v for k, v in ratios.items() if v is not None},
         )
 

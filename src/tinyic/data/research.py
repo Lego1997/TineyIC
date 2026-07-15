@@ -1,19 +1,28 @@
 """Deep research pipeline: web search + LLM synthesis for comprehensive research briefs."""
 
 import logging
-import os
-from typing import Optional
+from typing import Any, Optional
 
 from tinytroupe import config_manager
 from tinytroupe.clients import client
 from tinytroupe.utils import extract_json
 
+from ..models.binding import ModelBinding
+from ..models.credentials import CredentialProvider, EnvCredentialProvider
+from ..models.routing import activate as _route_client
+from ._credentials import has_api_key_lane, resolve_api_key_secret
 from .models import ResearchBrief
 
 logger = logging.getLogger(__name__)
 
 # Maximum chars per web search result to include in synthesis prompt
 MAX_SEARCH_RESULT_LENGTH = 3000
+
+# Hosted ``web_search_preview`` is an OpenAI Platform (API-key) surface; the
+# codex/ChatGPT subscription lane must not be assumed to serve it, so the search
+# key resolves through the API-key lane only.
+_OPENAI_BINDING = ModelBinding("openai/web-search")
+_OPENAI_CREDENTIAL_REFS = ("OPENAI_API_KEY",)
 
 SYNTHESIS_SYSTEM_PROMPT = (
     "You are a senior equity research analyst producing a structured research brief "
@@ -40,16 +49,23 @@ SYNTHESIS_SYSTEM_PROMPT = (
 )
 
 
-def _web_search(query: str) -> str:
+def research_lane_available(credentials: Optional[CredentialProvider]) -> bool:
+    """Whether an OpenAI API-key lane is configured for deep research."""
+    resolved = credentials if credentials is not None else EnvCredentialProvider()
+    return has_api_key_lane(_OPENAI_BINDING, _OPENAI_CREDENTIAL_REFS, resolved)
+
+
+def _web_search(query: str, *, api_key: str, model: str) -> str:
     """Perform a web search via OpenAI Responses API with web_search_preview tool.
 
     Args:
         query: Search query string.
+        api_key: Resolved OpenAI API-key-lane secret.
+        model: OpenAI model id for the Responses call.
 
     Returns:
         Synthesized search result text, or empty string on failure.
     """
-    api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         return ""
 
@@ -57,7 +73,6 @@ def _web_search(query: str) -> str:
         from openai import OpenAI
 
         oai = OpenAI(api_key=api_key)
-        model = config_manager.get("model") or "gpt-5.6-sol"
 
         response = oai.responses.create(
             model=model,
@@ -77,27 +92,45 @@ def build_research_brief(
     ticker: str,
     company_name: str,
     description: Optional[str],
+    credentials: Optional[CredentialProvider] = None,
+    aggregator_client: Any = None,
 ) -> Optional[ResearchBrief]:
     """Build a comprehensive research brief via web search + LLM synthesis.
 
     Performs two focused web searches (company-specific and environment/analyst),
-    then synthesizes the results into a structured ResearchBrief using the
-    TinyTroupe LLM client.
+    then synthesizes the results into a structured ResearchBrief.
+
+    The hosted web-search key resolves through ``credentials`` (an
+    ``AuthManager`` or plain :class:`CredentialProvider`); only an API-key lane
+    is honored, so a selected OpenAI subscription runtime is never used for this
+    Platform-billed surface.  When ``aggregator_client`` is supplied the
+    synthesis chat call is routed through it (an ordinary chat a subscription
+    lane can serve); otherwise the legacy configured client is used.
 
     Args:
         ticker: Stock ticker symbol (e.g., "AAPL").
         company_name: Resolved company name.
         description: Optional company description for search context.
+        credentials: Credential provider; defaults to the process environment.
+        aggregator_client: Optional binding client for the synthesis call.
 
     Returns:
         ResearchBrief with 5 populated sections, or None on failure.
     """
-    api_key = os.getenv("OPENAI_API_KEY")
+    resolved = credentials if credentials is not None else EnvCredentialProvider()
+    api_key = resolve_api_key_secret(
+        _OPENAI_BINDING, _OPENAI_CREDENTIAL_REFS, resolved
+    )
     if not api_key:
-        logger.warning("OPENAI_API_KEY not set, skipping deep research for %s", ticker)
+        logger.warning(
+            "No OpenAI API-key lane configured, skipping deep research for %s",
+            ticker,
+        )
         return None
 
     logger.info("Starting deep research for %s (%s)", ticker, company_name)
+
+    model = config_manager.get("model") or "gpt-5.6-sol"
 
     # Stage 1: Web searches
     desc_hint = f" ({description[:100]})" if description else ""
@@ -105,7 +138,9 @@ def build_research_brief(
     try:
         search_company = _web_search(
             f"{company_name} ({ticker}){desc_hint} business model competitive advantage "
-            f"moat revenue breakdown management capital allocation track record"
+            f"moat revenue breakdown management capital allocation track record",
+            api_key=api_key,
+            model=model,
         )
     except Exception as e:
         logger.warning("Company search failed for %s: %s", ticker, e)
@@ -114,7 +149,9 @@ def build_research_brief(
     try:
         search_environment = _web_search(
             f"{company_name} ({ticker}) stock investment analysis industry trends "
-            f"recent catalysts earnings 2026 analyst price target bull bear case"
+            f"recent catalysts earnings 2026 analyst price target bull bear case",
+            api_key=api_key,
+            model=model,
         )
     except Exception as e:
         logger.warning("Environment search failed for %s: %s", ticker, e)
@@ -143,7 +180,10 @@ def build_research_brief(
     ]
 
     try:
-        response = client().send_message(messages, temperature=0.3)
+        # A ``None`` aggregator client is a no-op scope: synthesis then uses the
+        # legacy configured client, preserving prior behavior.
+        with _route_client(aggregator_client):
+            response = client().send_message(messages, temperature=0.3)
         data = extract_json(response["content"])
     except Exception as e:
         logger.warning("Research synthesis LLM call failed for %s: %s", ticker, e)
