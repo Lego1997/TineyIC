@@ -16,11 +16,17 @@ from __future__ import annotations
 
 import io
 import json
+import logging
+import os
+import socket
 import threading
+import time
+from collections import Counter
 
 import pytest
 
 import tinyic.debate as debate_module
+import tinyic.headless as headless_module
 from tinyic.debate.steering import SteeringInbox
 from tinyic.events import EventEnvelope, EventLog, make_debate_id, read_event_log
 from tinyic.headless import PersonaSelectionError, resolve_personas, run_debate_command
@@ -213,6 +219,8 @@ def test_exit_code_3_on_setup_error_with_doctor_reason_on_stderr(tmp_path):
         encoding="utf-8",
     )
     out, err = io.StringIO(), io.StringIO()
+    inbox = SteeringInbox(id_prefix="setup")
+    pending_id = inbox.submit("steer", "preserve my lifecycle")
     code = run_debate_command(
         "AAPL",
         personas=_PERSONAS_CSV,
@@ -220,13 +228,24 @@ def test_exit_code_3_on_setup_error_with_doctor_reason_on_stderr(tmp_path):
         json_mode=True,
         data_package=_mock_data_package(),
         config_path=str(config),
+        steering=inbox,
         out=out,
         err=err,
     )
     assert code == 3
     # STDOUT stays a clean JSON channel even on failure.
-    for line in _jsonl_lines(out.getvalue()):
+    events = [
         EventEnvelope.model_validate(json.loads(line))
+        for line in _jsonl_lines(out.getvalue())
+    ]
+    submitted = next(
+        e for e in events if e.type == "steering_submitted"
+    )
+    dropped = next(e for e in events if e.type == "steering_dropped")
+    assert submitted.payload["msg_id"] == dropped.payload["msg_id"] == pending_id
+    assert events[0].type == "debate_started"
+    assert submitted.seq < dropped.seq < events[-1].seq
+    _assert_steering_lifecycle_closed(events)
     assert "setup failed" in err.getvalue().lower()
 
 
@@ -251,6 +270,25 @@ def _run_logged(committee, inbox, tmp_path, debate_id="aapl-20260713-str1"):
     return read_event_log(log_path)
 
 
+def _assert_steering_lifecycle_closed(events) -> None:
+    """Every steering_submitted msg_id has exactly one delivered/dropped ack.
+
+    The frozen contract (docs/event-schema.md) forbids a silent loss: an
+    acknowledged command must terminate as either delivered or dropped, never
+    both and never neither.
+    """
+    submitted = Counter(
+        e.payload["msg_id"] for e in events if e.type == "steering_submitted"
+    )
+    terminal = Counter(
+        e.payload["msg_id"]
+        for e in events
+        if e.type in ("steering_delivered", "steering_dropped")
+    )
+    assert submitted == terminal
+    assert all(count == 1 for count in submitted.values())
+
+
 def test_steer_and_queue_are_acknowledged_and_delivered(tmp_path, binding_mocks):
     inbox = SteeringInbox(id_prefix="m")
     # Pre-loaded (before debate_started): the ack is deferred until the command
@@ -260,8 +298,6 @@ def test_steer_and_queue_are_acknowledged_and_delivered(tmp_path, binding_mocks)
     assert steer_id and queue_id
 
     events = _run_logged(_fake_committee(), inbox, tmp_path)
-    by_seq = {e.seq: e for e in events}
-
     submits = {e.payload["msg_id"]: e for e in events if e.type == "steering_submitted"}
     delivers = {e.payload["msg_id"]: e for e in events if e.type == "steering_delivered"}
     assert {steer_id, queue_id} <= set(submits)
@@ -273,15 +309,83 @@ def test_steer_and_queue_are_acknowledged_and_delivered(tmp_path, binding_mocks)
     assert {steer_id, queue_id} <= set(delivers)
     for msg_id in (steer_id, queue_id):
         assert submits[msg_id].seq < delivers[msg_id].seq
-        # Delivered before a real turn (the opening phase boundary is both the
-        # first speaker boundary and the first phase boundary).
-        before = delivers[msg_id].payload["delivered_before_turn_id"]
-        assert before == "turn-0001"
+    # Only one ready command may land at a boundary. The targeted steer wins the
+    # opening boundary by submit order; the queue remains pending until the next
+    # phase boundary.
+    assert delivers[steer_id].payload["delivered_before_turn_id"] == "turn-0001"
+    assert delivers[queue_id].payload["delivered_before_turn_id"] == "turn-0004"
 
     # The moderator relay actually reached the committee (targeted framing to
     # Warren Buffett, plus an observation to the others).
     buffett = _display_agent(events)  # sanity: the debate really ran
     assert buffett
+    _assert_steering_lifecycle_closed(events)
+
+
+def test_multiple_ready_steers_land_one_per_turn_boundary(tmp_path, binding_mocks):
+    inbox = SteeringInbox(id_prefix="one")
+    msg_ids = [inbox.submit("steer", f"instruction {index}") for index in range(3)]
+
+    events = _run_logged(
+        _fake_committee(), inbox, tmp_path, debate_id="aapl-20260715-one-at-a-time"
+    )
+    delivered = {
+        e.payload["msg_id"]: e.payload["delivered_before_turn_id"]
+        for e in events
+        if e.type == "steering_delivered"
+    }
+    assert [delivered[msg_id] for msg_id in msg_ids] == [
+        "turn-0001",
+        "turn-0002",
+        "turn-0003",
+    ]
+    _assert_steering_lifecycle_closed(events)
+
+
+def test_duplicate_custom_steering_ids_are_rejected(tmp_path):
+    debate_id = "aapl-20260715-duplicate-id"
+    log_path = tmp_path / f"{debate_id}.jsonl"
+    log = EventLog(debate_id, path=log_path)
+    log.emit("debate_started", _minimal_started_payload())
+    inbox = SteeringInbox(event_log=log, id_prefix="dup")
+
+    assert inbox.submit("steer", "first", msg_id="caller-id") == "caller-id"
+    assert inbox.submit("steer", "second", msg_id="caller-id") is None
+    inbox.close()
+    log.emit(
+        "debate_completed",
+        {"phases_completed": [], "duration_s": 0.0, "result_ref": str(log_path)},
+    )
+    log.close()
+
+    events = read_event_log(log_path)
+    _assert_steering_lifecycle_closed(events)
+    assert sum(e.type == "steering_submitted" for e in events) == 1
+
+
+def test_command_is_not_enqueued_when_submission_ack_cannot_persist():
+    class FailingLog:
+        started = True
+
+        def emit(self, _event_type, _payload):
+            raise OSError("disk unavailable")
+
+    inbox = SteeringInbox(event_log=FailingLog(), id_prefix="fail")
+    assert inbox.submit("steer", "must not be delivered") is None
+    assert inbox.drain(
+        phase_boundary=True,
+        upcoming_speaker="Warren Buffett",
+        known_targets={"Warren Buffett"},
+    ) == []
+
+
+def test_steering_rejects_sources_outside_the_frozen_schema():
+    inbox = SteeringInbox(id_prefix="source")
+
+    assert inbox.submit("steer", "must not queue", source="websocket") is None
+    assert inbox.request_interrupt(source="websocket") is False
+    assert inbox.drain(phase_boundary=True) == []
+    assert inbox.has_interrupt() is False
 
 
 def test_queue_defers_to_next_phase_while_steer_lands_next_turn(tmp_path, binding_mocks, monkeypatch):
@@ -311,6 +415,7 @@ def test_queue_defers_to_next_phase_while_steer_lands_next_turn(tmp_path, bindin
     # Steer lands still inside opening (next speaker); queue waits for cross_exam.
     assert turn_phase[steer_turn] == "opening"
     assert turn_phase[queue_turn] == "cross_exam"
+    _assert_steering_lifecycle_closed(events)
 
 
 def _display_agent(events) -> bool:
@@ -339,6 +444,251 @@ def test_undelivered_steering_is_dropped_explicitly(tmp_path):
     assert dropped[0].payload == {"msg_id": msg_id, "reason": "debate_ended"}
     # A closed inbox no-ops further submits (never crashes the producer).
     assert inbox.submit("steer", "too late") is None
+    _assert_steering_lifecycle_closed(events)
+
+
+def test_queue_drained_at_crashing_phase_boundary_is_dropped_not_lost(
+    tmp_path, binding_mocks, monkeypatch
+):
+    # TIC-003 regression: a command drained at a boundary but not yet
+    # acknowledged delivered when the relay crashes must still be dropped
+    # explicitly at the terminal close — never lost in the drained window.
+    from tinyic.debate.moderator import Moderator
+
+    inbox = SteeringInbox(id_prefix="c")
+    submitted: dict[str, str] = {}
+
+    def act_and_submit(self, *, return_actions=False, **kwargs):
+        # Submitted mid-opening so it is drained at the cross_exam phase boundary.
+        if self.name == "Warren Buffett" and "queue" not in submitted:
+            submitted["queue"] = inbox.submit("queue", "phase-two instruction")
+        return _act_via_binding(self, return_actions=return_actions, **kwargs)
+
+    monkeypatch.setattr(InvestorPersona, "act", act_and_submit)
+
+    real_relay = Moderator.relay_message
+
+    def relay_or_boom(self, text, target, **kwargs):
+        if text == "phase-two instruction":
+            raise RuntimeError("relay blew up at the phase boundary")
+        return real_relay(self, text, target, **kwargs)
+
+    monkeypatch.setattr(Moderator, "relay_message", relay_or_boom)
+
+    debate_id = "aapl-20260713-crashdrop"
+    log_path = tmp_path / f"{debate_id}.jsonl"
+    with pytest.raises(RuntimeError):
+        with EventLog(debate_id, path=log_path) as log:
+            inbox.bind_event_log(log)
+            debate_module.run_debate(
+                "AAPL",
+                _REGISTRY_3,
+                data_package=_mock_data_package(),
+                event_log=log,
+                committee=_fake_committee(),
+                steering=inbox,
+                da="warren_buffett",
+            )
+
+    events = read_event_log(log_path)
+    msg_id = submitted["queue"]
+    dropped = [
+        e
+        for e in events
+        if e.type == "steering_dropped" and e.payload["msg_id"] == msg_id
+    ]
+    delivered = [
+        e
+        for e in events
+        if e.type == "steering_delivered" and e.payload["msg_id"] == msg_id
+    ]
+    assert len(dropped) == 1
+    assert delivered == []
+    assert events[-1].type == "debate_error"
+    cross_exam = next(
+        e
+        for e in events
+        if e.type == "phase_started" and e.payload["phase"] == "cross_exam"
+    )
+    # Dropped during the run — after the crashing boundary, before the terminal.
+    assert cross_exam.seq < dropped[0].seq < events[-1].seq
+    _assert_steering_lifecycle_closed(events)
+
+
+def test_targeted_steer_waits_for_that_personas_next_turn(
+    tmp_path, binding_mocks, monkeypatch
+):
+    # TIC-015 regression: a steer addressed to Warren Buffett, submitted during
+    # his own opening turn, must be delivered before HIS next turn (cross_exam) —
+    # not the immediately-next speaker (Benjamin Graham at turn-0002).
+    inbox = SteeringInbox(id_prefix="t")
+    submitted: dict[str, str] = {}
+
+    def act_and_submit(self, *, return_actions=False, **kwargs):
+        if self.name == "Warren Buffett" and "steer" not in submitted:
+            submitted["steer"] = inbox.submit(
+                "steer", "revisit your moat claim", target="Warren Buffett"
+            )
+        return _act_via_binding(self, return_actions=return_actions, **kwargs)
+
+    monkeypatch.setattr(InvestorPersona, "act", act_and_submit)
+
+    events = _run_logged(
+        _fake_committee(), inbox, tmp_path, debate_id="aapl-20260713-target"
+    )
+    delivers = {
+        e.payload["msg_id"]: e for e in events if e.type == "steering_delivered"
+    }
+    turn_started = {
+        e.payload["turn_id"]: e.payload
+        for e in events
+        if e.type == "turn_started"
+    }
+    before = delivers[submitted["steer"]].payload["delivered_before_turn_id"]
+    assert before != "turn-0002"
+    assert turn_started[before]["persona"] == "Warren Buffett"
+    assert turn_started[before]["phase"] == "cross_exam"
+    _assert_steering_lifecycle_closed(events)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "warren_buffett",
+        "WARREN BUFFETT",
+        "  warren_buffett  ",
+        "Warren \t Buffett",
+        "warren-buffett",
+    ],
+)
+def test_normalized_steer_target_stays_targeted(target):
+    from tinyic.debate.moderator import Moderator
+
+    class Listener:
+        def __init__(self, name):
+            self.name = name
+            self.messages = []
+
+        def listen(self, message):
+            self.messages.append(message)
+
+    agents = [Listener("Warren Buffett"), Listener("Benjamin Graham")]
+    broadcasts = []
+    Moderator().relay_message(
+        "Focus on the moat.",
+        target,
+        agents=agents,
+        name_to_agent={agent.name: agent for agent in agents},
+        broadcast=broadcasts.append,
+    )
+
+    assert broadcasts == []
+    assert agents[0].messages == [
+        "[Moderator to Warren Buffett]: Focus on the moat."
+    ]
+    assert agents[1].messages == [
+        "[Moderator asked Warren Buffett]: Focus on the moat."
+    ]
+
+
+def test_targeted_steer_with_no_future_turn_is_dropped(
+    tmp_path, binding_mocks, monkeypatch
+):
+    # TIC-015 regression: a steer addressed to the first persona but submitted
+    # during the last persona's verdict turn has no future boundary to land on;
+    # it is dropped at close, never delivered to the wrong speaker.
+    inbox = SteeringInbox(id_prefix="v")
+    submitted: dict[str, str] = {}
+    munger_acts = {"count": 0}
+
+    def act_and_submit(self, *, return_actions=False, **kwargs):
+        if self.name == "Charlie Munger":
+            munger_acts["count"] += 1
+            # Munger's 4th act is his verdict turn (last speaker, last phase).
+            if munger_acts["count"] == 4 and "late" not in submitted:
+                submitted["late"] = inbox.submit(
+                    "steer", "too late to matter", target="Warren Buffett"
+                )
+        return _act_via_binding(self, return_actions=return_actions, **kwargs)
+
+    monkeypatch.setattr(InvestorPersona, "act", act_and_submit)
+
+    events = _run_logged(
+        _fake_committee(), inbox, tmp_path, debate_id="aapl-20260713-nofuture"
+    )
+    msg_id = submitted["late"]
+    dropped = [
+        e
+        for e in events
+        if e.type == "steering_dropped" and e.payload["msg_id"] == msg_id
+    ]
+    delivered = [
+        e
+        for e in events
+        if e.type == "steering_delivered" and e.payload["msg_id"] == msg_id
+    ]
+    assert len(dropped) == 1
+    assert dropped[0].payload["reason"]  # dropped with an explicit reason
+    assert delivered == []
+    assert events[-1].type == "debate_completed"
+    _assert_steering_lifecycle_closed(events)
+
+
+def _consolidation_boom():
+    # A named helper so the enriched debate_error can name the innermost failing
+    # frame (module.function), the way the real consolidation crash would.
+    raise AttributeError("'NoneType' object has no attribute 'get'")
+
+
+def test_debate_error_names_failing_component_and_logs_traceback(
+    tmp_path, binding_mocks, monkeypatch, caplog
+):
+    # TIC-001 regression: the terminal debate_error message names the failing
+    # component (innermost module.function), never a bare exception class, and
+    # the full traceback lands in the application log — while the public event
+    # stays free of file paths and exception-args text.
+    def boom(_self):
+        _consolidation_boom()
+
+    monkeypatch.setattr(debate_module.DebateOrchestrator, "run_debate", boom)
+
+    debate_id = "aapl-20260713-diag"
+    log_path = tmp_path / f"{debate_id}.jsonl"
+    with caplog.at_level(logging.ERROR, logger="tinyic.debate"):
+        with pytest.raises(AttributeError):
+            with EventLog(debate_id, path=log_path) as log:
+                debate_module.run_debate(
+                    "AAPL",
+                    _REGISTRY_3,
+                    data_package=_mock_data_package(),
+                    event_log=log,
+                    committee=_fake_committee(),
+                )
+
+    events = read_event_log(log_path)
+    error = events[-1]
+    assert error.type == "debate_error"
+    # Schema v1: exactly stage/message/recoverable — no new payload fields.
+    assert set(error.payload) == {"stage", "message", "recoverable"}
+    assert error.payload["stage"] == "debate"
+    assert error.payload["recoverable"] is False
+    message = error.payload["message"]
+    assert "AttributeError" in message
+    assert "_consolidation_boom" in message  # the innermost failing frame
+    # Secret-free: no file paths and no exception-args text in the public event.
+    assert os.sep not in message
+    assert "NoneType" not in message
+    # The crash is logged, not silently swallowed. The security log filter
+    # (tinytroupe/utils/config.py) scrubs the raw traceback but keeps the stage
+    # and exception class, which is enough to locate the failure.
+    logged = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.ERROR
+        and "debate failed at stage debate" in record.getMessage()
+        and "AttributeError" in record.getMessage()
+    ]
+    assert logged, "the crash must be logged on the crash path, never swallowed"
 
 
 # ==========================================================================
@@ -357,9 +707,12 @@ def test_interrupt_discards_turn_and_speaker_retakes(tmp_path, binding_mocks):
     interrupted = [e for e in events if e.type == "turn_interrupted"]
     assert len(interrupted) == 1
     payload = interrupted[0].payload
-    assert payload["turn_id"] == "turn-0001"  # the first turn was discarded
-    assert payload["by"] == "user"
-    assert payload["disposition"] == "discarded_on_arrival"
+    assert payload == {
+        "turn_id": "turn-0001",  # the first turn was discarded
+        "persona": "Warren Buffett",
+        "by": "user",
+        "disposition": "discarded_on_arrival",
+    }
 
     # The discarded turn has no turn_completed; the retake is a fresh turn that
     # does complete, so the first speaker still produces a committed turn.
@@ -375,6 +728,377 @@ def test_interrupt_discards_turn_and_speaker_retakes(tmp_path, binding_mocks):
     assert retake.payload["phase"] == first.payload["phase"] == "opening"
     # The whole stream remains schema-valid and complete.
     assert events[-1].type == "debate_completed"
+    assert not inbox.has_interrupt()
+    usage_by_turn = {
+        e.payload.get("turn_id"): e
+        for e in events
+        if e.type == "usage" and e.payload.get("purpose") == "turn"
+    }
+    # The discarded paid call remains in the usage rollup, while only the
+    # committed retake is referenced by turn_completed.
+    assert {"turn-0001", "turn-0002"} <= set(usage_by_turn)
+    retake_completed = next(
+        e
+        for e in events
+        if e.type == "turn_completed" and e.payload["turn_id"] == "turn-0002"
+    )
+    assert retake_completed.payload["usage_ref"] == usage_by_turn["turn-0002"].seq
+    assert assemble_result(events)["usage"]["total"]["input_tokens"] == sum(
+        e.payload["input_tokens"]
+        for e in events
+        if e.type == "usage"
+    )
+
+
+def test_stop_after_paid_turn_keeps_usage_and_discards_output(
+    tmp_path, binding_mocks, monkeypatch
+):
+    from tinyic.debate.control import DebateStopRequested, RunControl
+
+    control = RunControl()
+
+    def act_then_stop(self, *, return_actions=False, **kwargs):
+        committed = _act_via_binding(
+            self, return_actions=return_actions, **kwargs
+        )
+        control.stop()
+        return committed
+
+    monkeypatch.setattr(InvestorPersona, "act", act_then_stop)
+    debate_id = "aapl-20260715-stop-usage"
+    log_path = tmp_path / f"{debate_id}.jsonl"
+    with pytest.raises(DebateStopRequested):
+        with EventLog(debate_id, path=log_path) as log:
+            debate_module.run_debate(
+                "AAPL",
+                _REGISTRY_3,
+                data_package=_mock_data_package(),
+                event_log=log,
+                committee=_fake_committee(),
+                phase_gate=control,
+            )
+
+    events = read_event_log(log_path)
+    usage = [
+        e
+        for e in events
+        if e.type == "usage" and e.payload.get("purpose") == "turn"
+    ]
+    assert len(usage) == 1
+    assert usage[0].payload["turn_id"] == "turn-0001"
+    assert not any(e.type == "turn_completed" for e in events)
+    assert events[-1].type == "debate_error"
+    assert events[-1].payload["stage"] == "stopped"
+
+
+def test_interrupted_attempt_is_absent_from_memories_and_transcript(
+    tmp_path, binding_mocks, monkeypatch
+):
+    marker = "DISCARDED-ATTEMPT-MARKER"
+    inbox = SteeringInbox(id_prefix="rollback")
+    inbox.request_interrupt(text="Retake without the discarded thesis.")
+    first_attempt = True
+
+    def act_with_marker(self, *, return_actions=False, **kwargs):
+        nonlocal first_attempt
+        committed = _act_via_binding(
+            self, return_actions=return_actions, **kwargs
+        )
+        if self.name == "Warren Buffett" and first_attempt:
+            first_attempt = False
+            for action in self._actions_buffer:
+                if action.get("type") == "TALK":
+                    action["content"] = marker
+            self.store_in_memory(
+                {
+                    "role": "assistant",
+                    "content": marker,
+                    "type": "action",
+                    "simulation_timestamp": self.iso_datetime(),
+                }
+            )
+            self._mental_state["attention"] = marker
+        return committed
+
+    monkeypatch.setattr(InvestorPersona, "act", act_with_marker)
+    session = debate_module.Session()
+    debate_id = "aapl-20260715-rollback"
+    log_path = tmp_path / f"{debate_id}.jsonl"
+    with EventLog(debate_id, path=log_path) as log:
+        inbox.bind_event_log(log)
+        result = debate_module.run_debate(
+            "AAPL",
+            _REGISTRY_3,
+            data_package=_mock_data_package(),
+            event_log=log,
+            committee=_fake_committee(),
+            steering=inbox,
+            session=session,
+            da="warren_buffett",
+        )
+
+    assert marker not in (result.transcript or "")
+    for agent in session.agents.values():
+        assert marker not in repr(agent.episodic_memory.retrieve_all())
+        assert marker not in repr(agent._mental_state)
+
+
+def test_targeted_interrupt_matches_normalized_speaker_and_lands_for_retake(
+    tmp_path, binding_mocks, monkeypatch
+):
+    inbox = SteeringInbox(id_prefix="it")
+    message = "Rebuild the downside case before answering."
+    contexts: list[str] = []
+    submitted = False
+
+    def act_and_capture_context(self, *, return_actions=False, **kwargs):
+        nonlocal submitted
+        if self.name == "Warren Buffett":
+            contexts.append(repr(self.episodic_memory.retrieve_all()))
+            if not submitted:
+                submitted = inbox.request_interrupt(
+                    text=message,
+                    target="  warren buffett ",
+                    source="stdin",
+                )
+        return _act_via_binding(self, return_actions=return_actions, **kwargs)
+
+    monkeypatch.setattr(InvestorPersona, "act", act_and_capture_context)
+
+    events = _run_logged(
+        _fake_committee(),
+        inbox,
+        tmp_path,
+        debate_id="aapl-20260715-targeted-int",
+    )
+
+    assert submitted is True
+    interrupted = [e for e in events if e.type == "turn_interrupted"]
+    assert len(interrupted) == 1
+    assert interrupted[0].payload == {
+        "turn_id": "turn-0001",
+        "persona": "Warren Buffett",
+        "by": "user",
+        "disposition": "discarded_on_arrival",
+    }
+    turns = [e.payload for e in events if e.type == "turn_started"]
+    assert turns[0]["persona"] == turns[1]["persona"] == "Warren Buffett"
+    assert turns[0]["phase"] == turns[1]["phase"] == "opening"
+    assert message not in contexts[0]
+    assert message in contexts[1]
+    assert not inbox.has_interrupt()
+
+
+def test_targeted_interrupt_during_retake_expires_at_current_speaker(
+    tmp_path, binding_mocks, monkeypatch, caplog
+):
+    inbox = SteeringInbox(id_prefix="ir")
+    warren_attempts = 0
+
+    def act_and_interrupt_each_warren_attempt(
+        self, *, return_actions=False, **kwargs
+    ):
+        nonlocal warren_attempts
+        if self.name == "Warren Buffett":
+            warren_attempts += 1
+            if warren_attempts == 1:
+                inbox.request_interrupt(text="Force Warren's retake.")
+            elif warren_attempts == 2:
+                # A targeted request never waits for a later speaker, including
+                # when it arrives during the one bounded retake.
+                inbox.request_interrupt(
+                    text="Force Benjamin's retake.",
+                    target="Benjamin Graham",
+                )
+        return _act_via_binding(self, return_actions=return_actions, **kwargs)
+
+    monkeypatch.setattr(
+        InvestorPersona,
+        "act",
+        act_and_interrupt_each_warren_attempt,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="tinyic.debate.steering"):
+        events = _run_logged(
+            _fake_committee(),
+            inbox,
+            tmp_path,
+            debate_id="aapl-20260715-retake-interrupt",
+        )
+
+    interrupted = [e.payload for e in events if e.type == "turn_interrupted"]
+    assert [payload["persona"] for payload in interrupted] == ["Warren Buffett"]
+    assert [payload["turn_id"] for payload in interrupted] == ["turn-0001"]
+    completed_ids = {
+        e.payload["turn_id"] for e in events if e.type == "turn_completed"
+    }
+    assert "turn-0001" not in completed_ids
+    assert {"turn-0002", "turn-0003"} <= completed_ids
+    assert not inbox.has_interrupt()
+    assert any("not in flight" in record.getMessage() for record in caplog.records)
+
+
+def test_matching_interrupt_during_retake_is_consumed_without_third_attempt(
+    tmp_path, binding_mocks, monkeypatch, caplog
+):
+    inbox = SteeringInbox(id_prefix="bounded")
+    warren_attempts = 0
+
+    def interrupt_both_attempts(self, *, return_actions=False, **kwargs):
+        nonlocal warren_attempts
+        if self.name == "Warren Buffett":
+            warren_attempts += 1
+            if warren_attempts <= 2:
+                inbox.request_interrupt(text=f"request {warren_attempts}")
+        return _act_via_binding(self, return_actions=return_actions, **kwargs)
+
+    monkeypatch.setattr(InvestorPersona, "act", interrupt_both_attempts)
+    with caplog.at_level(logging.WARNING, logger="tinyic.debate.orchestrator"):
+        events = _run_logged(
+            _fake_committee(),
+            inbox,
+            tmp_path,
+            debate_id="aapl-20260715-bounded-retake",
+        )
+
+    assert sum(e.type == "turn_interrupted" for e in events) == 1
+    first_speaker_turns = [
+        e
+        for e in events
+        if e.type == "turn_started"
+        and e.payload["persona"] == "Warren Buffett"
+        and e.payload["phase"] == "opening"
+    ]
+    assert len(first_speaker_turns) == 2
+    assert any(
+        "bounded retake" in record.getMessage() for record in caplog.records
+    )
+    assert not inbox.has_interrupt()
+
+
+def test_targeted_interrupt_mismatch_expires_before_targets_later_turn(
+    tmp_path, binding_mocks, monkeypatch, caplog
+):
+    inbox = SteeringInbox(id_prefix="im")
+    submitted = False
+
+    def act_and_interrupt_other_speaker(self, *, return_actions=False, **kwargs):
+        nonlocal submitted
+        if self.name == "Benjamin Graham" and not submitted:
+            submitted = inbox.request_interrupt(
+                text="This must not fire later.",
+                target="Charlie Munger",
+                source="stdin",
+            )
+        return _act_via_binding(self, return_actions=return_actions, **kwargs)
+
+    monkeypatch.setattr(InvestorPersona, "act", act_and_interrupt_other_speaker)
+    with caplog.at_level(logging.WARNING, logger="tinyic.debate.steering"):
+        events = _run_logged(
+            _fake_committee(),
+            inbox,
+            tmp_path,
+            debate_id="aapl-20260715-mismatched-int",
+        )
+
+    assert submitted is True
+    assert [e for e in events if e.type == "turn_interrupted"] == []
+    started_ids = {
+        e.payload["turn_id"] for e in events if e.type == "turn_started"
+    }
+    completed_ids = {
+        e.payload["turn_id"] for e in events if e.type == "turn_completed"
+    }
+    assert len(started_ids) == 12
+    assert completed_ids == started_ids
+    assert not inbox.has_interrupt()
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == "tinyic.debate.steering"
+        and record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert "not in flight" in warnings[0].getMessage()
+    assert "Charlie Munger" in warnings[0].getMessage()
+    assert "Benjamin Graham" in warnings[0].getMessage()
+
+
+@pytest.mark.parametrize("target", ["Warren Buffet", "   "])
+def test_unknown_target_interrupt_warns_once_and_emits_no_event(
+    tmp_path, binding_mocks, caplog, target
+):
+    inbox = SteeringInbox(id_prefix="iu")
+    inbox.request_interrupt(
+        text="A typo must be harmless.",
+        target=target,
+        source="stdin",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="tinyic.debate.steering"):
+        events = _run_logged(
+            _fake_committee(),
+            inbox,
+            tmp_path,
+            debate_id="aapl-20260715-unknown-int",
+        )
+
+    assert [e for e in events if e.type == "turn_interrupted"] == []
+    assert sum(e.type == "turn_started" for e in events) == 12
+    assert sum(e.type == "turn_completed" for e in events) == 12
+    assert not inbox.has_interrupt()
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == "tinyic.debate.steering"
+        and record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert "unknown target" in warnings[0].getMessage()
+    assert repr(target) in warnings[0].getMessage()
+
+
+def test_interrupt_slot_latest_request_wins_across_targeting_modes():
+    known = {"Warren Buffett", "Benjamin Graham", "Charlie Munger"}
+
+    targeted_wins = SteeringInbox(id_prefix="ilt")
+    targeted_wins.request_interrupt(text="old untargeted")
+    targeted_wins.request_interrupt(
+        text="new targeted",
+        target="Warren Buffett",
+        source="api",
+    )
+    targeted = targeted_wins.take_interrupt(
+        in_flight="Warren Buffett",
+        known_targets=known,
+    )
+    assert targeted is not None
+    assert targeted.text == "new targeted"
+    assert targeted.target == "Warren Buffett"
+    assert targeted.source == "api"
+    assert targeted_wins.take_interrupt(
+        in_flight="Warren Buffett",
+        known_targets=known,
+    ) is None
+
+    untargeted_wins = SteeringInbox(id_prefix="ilu")
+    untargeted_wins.request_interrupt(
+        text="old targeted",
+        target="Charlie Munger",
+    )
+    untargeted_wins.request_interrupt(text="new untargeted", source="api")
+    untargeted = untargeted_wins.take_interrupt(
+        in_flight="Benjamin Graham",
+        known_targets=known,
+    )
+    assert untargeted is not None
+    assert untargeted.text == "new untargeted"
+    assert untargeted.target is None
+    assert untargeted.source == "api"
+    assert untargeted_wins.take_interrupt(
+        in_flight="Benjamin Graham",
+        known_targets=known,
+    ) is None
 
 
 # ==========================================================================
@@ -409,6 +1133,93 @@ def test_stdin_reader_parses_and_feeds_the_inbox(tmp_path):
     assert "non-JSON" in err.getvalue() or "unknown type" in err.getvalue()
 
 
+@pytest.mark.parametrize("target", [0, 42])
+def test_stdin_reader_rejects_malformed_interrupt_target(
+    tmp_path, target
+):
+    from tinyic.headless import _steer_stdin_reader
+
+    debate_id = f"aapl-20260715-stdin-target-{target}"
+    log_path = tmp_path / f"{debate_id}.jsonl"
+    log = EventLog(debate_id, path=log_path)
+    log.emit("debate_started", _minimal_started_payload())
+    inbox = SteeringInbox(event_log=log, id_prefix="x")
+    stdin = io.StringIO(
+        json.dumps(
+            {
+                "type": "interrupt",
+                "target": target,
+                "text": "must remain non-destructive",
+            }
+        )
+        + "\n"
+    )
+
+    err = io.StringIO()
+    _steer_stdin_reader(
+        stdin,
+        inbox,
+        log,
+        err,
+        threading.Event(),
+    )
+
+    assert not inbox.has_interrupt()
+    assert "malformed" in err.getvalue()
+
+    inbox.close()
+    log.emit(
+        "debate_completed",
+        {"phases_completed": [], "duration_s": 0.0, "result_ref": str(log_path)},
+    )
+    log.close()
+    assert [e for e in read_event_log(log_path) if e.type == "turn_interrupted"] == []
+
+
+def test_stdin_reader_ignores_malformed_lines_then_accepts_valid_command(tmp_path):
+    from tinyic.headless import _steer_stdin_reader
+
+    debate_id = "aapl-20260715-stdin-recovery"
+    log_path = tmp_path / f"{debate_id}.jsonl"
+    log = EventLog(debate_id, path=log_path)
+    log.emit("debate_started", _minimal_started_payload())
+    inbox = SteeringInbox(event_log=log, id_prefix="recover")
+    stdin = io.StringIO(
+        '{"type":"steer","text":{"bad":true}}\n'
+        '{"type":"queue","target":["bad"],"text":"bad target"}\n'
+        '{"type":"steer","target":"   ","text":"blank target"}\n'
+        '{"type":"steer","text":"valid after malformed"}\n'
+    )
+
+    _steer_stdin_reader(stdin, inbox, log, io.StringIO(), threading.Event())
+    delivered = inbox.drain(phase_boundary=False, upcoming_speaker="Warren Buffett")
+    assert [command.text for command in delivered] == ["valid after malformed"]
+
+
+def test_stdin_reader_stops_without_consuming_a_future_line(tmp_path):
+    from tinyic.headless import _steer_stdin_reader
+
+    debate_id = "aapl-20260715-stdin-stop"
+    log = EventLog(debate_id, path=tmp_path / "stdin-stop.jsonl")
+    log.emit("debate_started", _minimal_started_payload())
+    inbox = SteeringInbox(event_log=log)
+    read_fd, write_fd = os.pipe()
+    stdin = os.fdopen(read_fd, "r", encoding="utf-8")
+    stop = threading.Event()
+    reader = threading.Thread(
+        target=_steer_stdin_reader,
+        args=(stdin, inbox, log, io.StringIO(), stop),
+    )
+    reader.start()
+    stop.set()
+    reader.join(timeout=1.0)
+    try:
+        assert not reader.is_alive()
+    finally:
+        os.close(write_fd)
+        stdin.close()
+
+
 def test_steer_stdin_end_to_end_runs_and_stays_clean(tmp_path, binding_mocks):
     # steer_stdin=True must wire the reader thread without crashing; delivery is
     # made deterministic via a pre-loaded inbox, and stdout stays pure JSONL.
@@ -434,6 +1245,52 @@ def test_steer_stdin_end_to_end_runs_and_stays_clean(tmp_path, binding_mocks):
     # The pre-loaded steer was delivered; the run is complete and clean.
     assert any(e.type == "steering_submitted" for e in events)
     assert events[-1].type == "debate_completed"
+
+
+def test_fast_setup_failure_acknowledges_prepiped_steering(
+    tmp_path, monkeypatch
+):
+    def fail_immediately(**kwargs):
+        log = kwargs["log"]
+        try:
+            log.emit("debate_started", _minimal_started_payload())
+            kwargs["inbox"].close(reason="debate_error")
+            log.emit(
+                "debate_error",
+                {
+                    "stage": "setup",
+                    "message": "setup failed",
+                    "recoverable": False,
+                },
+            )
+        finally:
+            log.close()
+            kwargs["done"].set()
+
+    monkeypatch.setenv("TINYIC_RUNS_DIR", str(tmp_path))
+    monkeypatch.setattr(headless_module, "_run_worker", fail_immediately)
+    out = io.StringIO()
+    stdin = io.StringIO('{"type":"steer","text":"preserve lifecycle"}\n')
+
+    assert run_debate_command(
+        "AAPL",
+        committee=object(),
+        interactive=False,
+        json_mode=True,
+        steer_stdin=True,
+        stdin=stdin,
+        out=out,
+        err=io.StringIO(),
+    ) == 3
+
+    events = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert [event["type"] for event in events] == [
+        "debate_started",
+        "steering_submitted",
+        "steering_dropped",
+        "debate_error",
+    ]
+    assert events[1]["payload"]["msg_id"] == events[2]["payload"]["msg_id"]
 
 
 # ==========================================================================
@@ -510,6 +1367,10 @@ def test_cli_debate_dispatches_all_flags_to_the_runner(monkeypatch):
             "high",
             "--da",
             "charlie_munger",
+            "--port",
+            "8765",
+            "--no-open",
+            "--no-wait",
         ]
     )
     assert code == 0
@@ -522,6 +1383,8 @@ def test_cli_debate_dispatches_all_flags_to_the_runner(monkeypatch):
     assert captured["model"] == "openai/gpt-5.2"
     assert captured["thinking"] == "high"
     assert captured["da"] == "charlie_munger"
+    assert captured["port"] == 8765
+    assert captured["no_open"] and captured["no_wait"]
 
 
 def test_cli_runs_list_and_result_json(binding_mocks, capsys):
@@ -613,26 +1476,256 @@ def test_stream_log_stops_when_worker_finishes_without_a_terminal_event(tmp_path
     assert json.loads(lines[0])["type"] == "debate_started"
 
 
-def test_interactive_path_wires_engine_sinks_and_finalizes(binding_mocks, monkeypatch):
-    # Exercise the interactive branch end to end minus Textual: a stub app stands
-    # in for the Town Hall, so the worker + follower + finalize wiring is covered
-    # and the engine-backed steering/control sinks are the ones passed in.
-    import tinyic.tui.app as tui_app_module
-    from tinyic.debate.steering import EngineControlSink, EngineSteeringSink
+def test_stream_log_drains_same_chunk_after_caught_interrupt(tmp_path):
+    from tinyic.headless import _stream_log
+
+    debate_id = "aapl-20260715-prebuffered-sigint"
+    log = EventLog(debate_id, path=tmp_path / f"{debate_id}.jsonl")
+    log.emit("debate_started", _minimal_started_payload())
+    log.emit(
+        "debate_completed",
+        {
+            "phases_completed": [],
+            "duration_s": 0.0,
+            "result_ref": str(log.path),
+        },
+    )
+    log.close()
+
+    class InterruptOnceOut(io.StringIO):
+        interrupted = False
+
+        def write(self, value):
+            written = super().write(value)
+            if not self.interrupted:
+                self.interrupted = True
+                raise KeyboardInterrupt
+            return written
+
+    out = InterruptOnceOut()
+    interrupts = []
+    done = threading.Event()
+    done.set()
+    _stream_log(
+        log.path,
+        out,
+        io.StringIO(),
+        done,
+        on_interrupt=lambda: interrupts.append(True),
+    )
+
+    assert interrupts == [True]
+    assert [json.loads(line)["type"] for line in out.getvalue().splitlines()] == [
+        "debate_started",
+        "debate_completed",
+    ]
+
+
+def test_headless_sigint_drains_graceful_terminal_without_duplicate_jsonl(
+    tmp_path, monkeypatch
+):
+    saw_stop = threading.Event()
+
+    class InterruptOnceOut(io.StringIO):
+        interrupted = False
+
+        def write(self, value):
+            written = super().write(value)
+            if not self.interrupted and '"type":"debate_started"' in value:
+                self.interrupted = True
+                raise KeyboardInterrupt
+            return written
+
+    def stoppable_worker(**kwargs):
+        log = kwargs["log"]
+        try:
+            log.emit("debate_started", _minimal_started_payload())
+            deadline = time.monotonic() + 2.0
+            while not kwargs["phase_gate"].snapshot().stopped:
+                if time.monotonic() >= deadline:
+                    raise AssertionError("headless interrupt did not stop worker")
+                time.sleep(0.005)
+            saw_stop.set()
+            log.emit(
+                "debate_error",
+                {
+                    "stage": "stopped",
+                    "message": "Debate stopped by user",
+                    "recoverable": True,
+                },
+            )
+        finally:
+            log.close()
+            kwargs["done"].set()
+
+    monkeypatch.setenv("TINYIC_RUNS_DIR", str(tmp_path))
+    monkeypatch.setattr(headless_module, "_run_worker", stoppable_worker)
+    out = InterruptOnceOut()
+
+    assert run_debate_command(
+        "AAPL",
+        committee=object(),
+        interactive=False,
+        json_mode=True,
+        out=out,
+        err=io.StringIO(),
+    ) == 3
+
+    assert saw_stop.is_set()
+    assert [json.loads(line)["type"] for line in out.getvalue().splitlines()] == [
+        "debate_started",
+        "debate_error",
+    ]
+
+
+def test_headless_stream_failure_stops_and_joins_worker(tmp_path, monkeypatch):
+    saw_stop = threading.Event()
+    worker_finished = threading.Event()
+
+    def stoppable_worker(**kwargs):
+        deadline = time.monotonic() + 2.0
+        while not kwargs["phase_gate"].snapshot().stopped:
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.005)
+        if kwargs["phase_gate"].snapshot().stopped:
+            saw_stop.set()
+        worker_finished.set()
+        kwargs["log"].close()
+        kwargs["done"].set()
+
+    monkeypatch.setenv("TINYIC_RUNS_DIR", str(tmp_path))
+    monkeypatch.setattr(headless_module, "_run_worker", stoppable_worker)
+    monkeypatch.setattr(
+        headless_module,
+        "_stream_log",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("renderer failed")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="renderer failed"):
+        run_debate_command(
+            "AAPL",
+            committee=object(),
+            interactive=False,
+            json_mode=True,
+            out=io.StringIO(),
+            err=io.StringIO(),
+        )
+
+    assert saw_stop.is_set()
+    assert worker_finished.is_set()
+
+
+def test_worker_forwards_no_research_to_debate_pipeline(tmp_path, monkeypatch):
+    from tinyic.headless import _run_worker
+
+    captured = {}
+
+    def fake_run_debate(_ticker, _personas, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(debate_module, "run_debate", fake_run_debate)
+    log = EventLog("aapl-20260714-nors", path=tmp_path / "run.jsonl")
+    done = threading.Event()
+    _run_worker(
+        ticker="AAPL",
+        persona_names=["a", "b"],
+        log=log,
+        inbox=object(),
+        preset=None,
+        model=None,
+        thinking=None,
+        da=None,
+        no_research=True,
+        committee=None,
+        data_package=None,
+        transport_factory=None,
+        credentials=None,
+        config_path=None,
+        phase_gate=None,
+        result_holder={},
+        done=done,
+    )
+    assert done.is_set()
+    assert captured["deep_research"] is False
+
+
+def test_data_build_uses_resolved_credentials_and_aggregator(
+    tmp_path, binding_mocks, monkeypatch
+):
+    captured = {}
+    credentials = StaticCredentialProvider({"OPENAI_API_KEY": "test-only"})
+    committee = _fake_committee()
+
+    def fake_build(ticker, **kwargs):
+        captured["ticker"] = ticker
+        captured.update(kwargs)
+        kwargs["aggregator_client"].send_message(
+            [{"role": "user", "content": "synthesize research"}]
+        )
+        return _mock_data_package()
+
+    monkeypatch.setattr(
+        "tinyic.data.pipeline.build_data_package", fake_build
+    )
+    debate_id = "aapl-20260715-data-routing"
+    log_path = tmp_path / f"{debate_id}.jsonl"
+    with EventLog(debate_id, path=log_path) as log:
+        debate_module.run_debate(
+            "AAPL",
+            _REGISTRY_3,
+            event_log=log,
+            committee=committee,
+            credentials=credentials,
+        )
+
+    assert captured["ticker"] == "AAPL"
+    assert captured["credentials"] is credentials
+    assert captured["aggregator_client"] is committee.aggregator
+    research_usage = [
+        e
+        for e in read_event_log(log_path)
+        if e.type == "usage" and e.payload.get("purpose") == "research"
+    ]
+    assert len(research_usage) == 1
+    assert research_usage[0].payload["model_ref"] == "openai/gpt-5.2"
+    assert research_usage[0].payload["input_tokens"] > 0
+
+
+def test_web_path_wires_engine_controls_and_finalizes(binding_mocks, monkeypatch):
+    # Exercise the default web branch with the server lifecycle stubbed. The
+    # debate worker remains real and consumes the same JSONL log as production.
+    from tinyic.debate.control import RunControl
+    from tinyic.debate.steering import SteeringInbox
+    from tinyic.web import WebFace
 
     captured: dict = {}
 
-    class _StubApp:
-        def run(self):
-            captured["ran"] = True
+    class _StubFace:
+        base_url = "http://127.0.0.1:4567"
 
-    def fake_live(event_queue, *, sink=None, control=None, **_kwargs):
-        captured["queue"] = event_queue
-        captured["sink"] = sink
+        def start(self):
+            captured["started"] = True
+
+        def mark_run_finished(self):
+            captured["finished"] = True
+
+        def wait_for_sse_disconnect(self, timeout=None):
+            captured["disconnect_timeout"] = timeout
+            return True
+
+        def shutdown(self, *, timeout=None):
+            captured["shutdown_timeout"] = timeout
+
+    def fake_live(log, *, inbox=None, control=None, **_kwargs):
+        captured["log"] = log
+        captured["inbox"] = inbox
         captured["control"] = control
-        return _StubApp()
+        return _StubFace()
 
-    monkeypatch.setattr(tui_app_module.TownHallApp, "live", staticmethod(fake_live))
+    monkeypatch.setattr(WebFace, "live", staticmethod(fake_live))
 
     code = run_debate_command(
         "AAPL",
@@ -640,13 +1733,261 @@ def test_interactive_path_wires_engine_sinks_and_finalizes(binding_mocks, monkey
         committee=_fake_committee(),
         data_package=_mock_data_package(),
         interactive=True,
+        no_open=True,
+        no_wait=True,
         out=io.StringIO(),
         err=io.StringIO(),
     )
     assert code == 0
-    assert captured.get("ran") is True
-    assert isinstance(captured["sink"], EngineSteeringSink)
-    assert isinstance(captured["control"], EngineControlSink)
+    assert captured.get("started") is True
+    assert captured.get("finished") is True
+    assert isinstance(captured["inbox"], SteeringInbox)
+    assert isinstance(captured["control"], RunControl)
+    assert captured["disconnect_timeout"] is None
+    assert captured["shutdown_timeout"] == 1.0
+
+
+def test_web_path_keeps_stdout_quiet_with_communication_display_on(
+    binding_mocks, monkeypatch, capsys
+):
+    # TIC-010 regression: the vendored TinyTroupe communication display is ON by
+    # default, and the moderator/reinforcement ``listen`` briefs render through the
+    # real ``_observe`` path even while ``InvestorPersona.act`` is stubbed. The web
+    # branch must hold ``redirect_stdout`` across the whole worker run so those
+    # renders land on STDERR, never the real STDOUT machine channel.
+    from tinyic.web import WebFace
+
+    # Re-enable the vendored default the fixture masks: without the display on,
+    # the briefs never render and the leak cannot reproduce.
+    monkeypatch.setattr(TinyPerson, "communication_display", True)
+
+    class _StubFace:
+        base_url = "http://127.0.0.1:4567"
+
+        def start(self):
+            pass
+
+        def mark_run_finished(self):
+            pass
+
+        def wait_for_sse_disconnect(self, timeout=None):
+            return True
+
+        def shutdown(self, *, timeout=None):
+            pass
+
+    monkeypatch.setattr(
+        WebFace, "live", staticmethod(lambda _log, **_kwargs: _StubFace())
+    )
+
+    committee = _fake_committee()
+    data_package = _mock_data_package()
+    err = io.StringIO()
+    capsys.readouterr()  # discard any construction-time banner before the run
+    code = run_debate_command(
+        "AAPL",
+        personas=_PERSONAS_CSV,
+        committee=committee,
+        data_package=data_package,
+        interactive=True,
+        no_open=True,
+        no_wait=True,
+        out=io.StringIO(),
+        err=err,
+    )
+
+    assert code == 0
+    # The real process STDOUT (what a pipe/agent reads) stays empty ...
+    assert capsys.readouterr().out == ""
+    # ... while the per-turn renders were produced and routed to the human channel.
+    assert "-->" in err.getvalue()
+
+
+def test_web_path_reports_occupied_port_before_starting_worker():
+    err = io.StringIO()
+    with socket.create_server(("127.0.0.1", 0)) as occupied:
+        port = occupied.getsockname()[1]
+        code = run_debate_command(
+            "AAPL",
+            committee=object(),
+            interactive=True,
+            port=port,
+            no_open=True,
+            no_wait=True,
+            out=io.StringIO(),
+            err=err,
+        )
+    assert code == 3
+    diagnostic = err.getvalue()
+    assert f"127.0.0.1:{port}" in diagnostic
+    assert "could not bind" in diagnostic
+    assert "Traceback" not in diagnostic
+
+
+def test_web_sigint_does_not_enter_no_wait_attach_or_drain(monkeypatch):
+    from tinyic.web import WebFace
+
+    calls: list[str] = []
+
+    class StubFace:
+        def start(self):
+            calls.append("start")
+
+        def mark_run_finished(self):
+            calls.append("finished")
+
+        def wait_for_sse_disconnect(self, timeout=None):
+            calls.append("disconnect")
+
+        def wait_for_sse_cycle(self, **_kwargs):
+            calls.append("cycle")
+
+        def shutdown(self, *, timeout=None):
+            calls.append("shutdown")
+
+    monkeypatch.setattr(
+        WebFace,
+        "live",
+        staticmethod(lambda _log, **_kwargs: StubFace()),
+    )
+
+    def finish_worker(**kwargs):
+        kwargs["done"].set()
+
+    def interrupt_stream(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(headless_module, "_run_worker", finish_worker)
+    monkeypatch.setattr(headless_module, "_stream_log", interrupt_stream)
+
+    assert (
+        run_debate_command(
+            "AAPL",
+            committee=object(),
+            interactive=True,
+            no_wait=True,
+            no_open=False,
+            out=io.StringIO(),
+            err=io.StringIO(),
+        )
+        == 3
+    )
+    assert calls == ["start", "finished", "shutdown"]
+
+
+def test_web_sigint_waits_for_blocked_worker_before_finalizing(monkeypatch):
+    from tinyic.web import WebFace
+
+    worker_finished = threading.Event()
+    release_worker = threading.Event()
+    timer = threading.Timer(1.1, release_worker.set)
+    calls = []
+
+    class StubFace:
+        def start(self):
+            calls.append("start")
+
+        def mark_run_finished(self):
+            assert worker_finished.is_set()
+            calls.append("finished")
+
+        def shutdown(self, *, timeout=None):
+            calls.append("shutdown")
+
+    def blocked_worker(**kwargs):
+        release_worker.wait()
+        worker_finished.set()
+        kwargs["log"].close()
+        kwargs["done"].set()
+
+    monkeypatch.setattr(
+        WebFace,
+        "live",
+        staticmethod(lambda _log, **_kwargs: StubFace()),
+    )
+    monkeypatch.setattr(headless_module, "_run_worker", blocked_worker)
+    monkeypatch.setattr(
+        headless_module,
+        "_stream_log",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    timer.start()
+    try:
+        assert (
+            run_debate_command(
+                "AAPL",
+                committee=object(),
+                interactive=True,
+                no_open=True,
+                out=io.StringIO(),
+                err=io.StringIO(),
+            )
+            == 3
+        )
+    finally:
+        release_worker.set()
+        timer.cancel()
+    assert calls == ["start", "finished", "shutdown"]
+
+
+def test_web_stream_failure_stops_worker_before_face_shutdown(monkeypatch):
+    from tinyic.web import WebFace
+
+    worker_finished = threading.Event()
+    saw_stop = threading.Event()
+    calls = []
+
+    class StubFace:
+        def start(self):
+            calls.append("start")
+
+        def mark_run_finished(self):
+            assert worker_finished.is_set()
+            calls.append("finished")
+
+        def shutdown(self, *, timeout=None):
+            assert worker_finished.is_set()
+            calls.append("shutdown")
+
+    def stoppable_worker(**kwargs):
+        deadline = time.monotonic() + 2.0
+        while not kwargs["phase_gate"].snapshot().stopped:
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.005)
+        if kwargs["phase_gate"].snapshot().stopped:
+            saw_stop.set()
+        worker_finished.set()
+        kwargs["log"].close()
+        kwargs["done"].set()
+
+    monkeypatch.setattr(
+        WebFace,
+        "live",
+        staticmethod(lambda _log, **_kwargs: StubFace()),
+    )
+    monkeypatch.setattr(headless_module, "_run_worker", stoppable_worker)
+    monkeypatch.setattr(
+        headless_module,
+        "_stream_log",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("viewer failed")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="viewer failed"):
+        run_debate_command(
+            "AAPL",
+            committee=object(),
+            interactive=True,
+            no_open=True,
+            out=io.StringIO(),
+            err=io.StringIO(),
+        )
+
+    assert saw_stop.is_set()
+    assert calls == ["start", "finished", "shutdown"]
 
 
 def test_assemble_result_reports_truncated_log_as_incomplete(tmp_path):

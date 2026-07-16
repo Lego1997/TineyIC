@@ -1,0 +1,209 @@
+name: stage npm package
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing exact release tag, for example v2.2.1
+        required: true
+        type: string
+
+concurrency:
+  group: npm-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: validate exact package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+
+    steps:
+      - name: Check out the exact tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+          registry-url: https://registry.npmjs.org
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: 0.11.28
+          enable-cache: false
+
+      - name: Pin the release npm CLI
+        run: npm install --global npm@11.18.0 --ignore-scripts --no-audit --no-fund
+
+      - name: Verify release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "Lego1997/TineyIC"
+          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
+          test "$GITHUB_SHA" = "$(git rev-parse HEAD)"
+          test -z "$(git status --porcelain=v1)"
+          version="$(node -p 'require("./package.json").version')"
+          test "$RELEASE_TAG" = "v$version"
+          test "$(git describe --tags --exact-match)" = "$RELEASE_TAG"
+          test "$(node -p 'require("./package.json").repository.url')" = "git+https://github.com/Lego1997/TineyIC.git"
+          git fetch origin main --no-tags
+          git merge-base --is-ancestor HEAD origin/main
+          node scripts/verify-npm-package.mjs
+
+      - name: Refuse an unsafe release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./package.json").version')"
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::the latest staged lane accepts stable semantic versions only"
+            exit 1
+          fi
+          if ! npm view tinyic name --json --registry=https://registry.npmjs.org/ > /dev/null; then
+            echo "::error::the first tinyic release must be published interactively with 2FA"
+            exit 1
+          fi
+          if npm view "tinyic@$version" version --json --registry=https://registry.npmjs.org/ > /dev/null 2> npm-view.err; then
+            echo "::error::tinyic@$version already exists"
+            exit 1
+          fi
+          if ! grep -q "E404" npm-view.err; then
+            cat npm-view.err >&2
+            echo "::error::registry lookup failed without an E404"
+            exit 1
+          fi
+          latest="$(npm view tinyic dist-tags.latest --registry=https://registry.npmjs.org/)"
+          if ! node - "$version" "$latest" <<'NODE'
+          const [candidate, current] = process.argv.slice(2);
+          const parse = (value) => value.split(".").map(BigInt);
+          const left = parse(candidate);
+          const right = parse(current);
+          for (let index = 0; index < 3; index += 1) {
+            if (left[index] > right[index]) process.exit(0);
+            if (left[index] < right[index]) process.exit(1);
+          }
+          process.exit(1);
+          NODE
+          then
+            echo "::error::tinyic@$version must be newer than the current latest tinyic@$latest"
+            exit 1
+          fi
+
+      - name: Install the locked workspace
+        run: |
+          uv python install 3.12
+          uv sync --frozen
+          npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Run the full offline release gate
+        env:
+          UV_OFFLINE: "1"
+          UV_PYTHON_DOWNLOADS: never
+        run: |
+          uv lock --check --offline
+          npm run test:offline
+
+      - name: Pack and test the exact artifact
+        id: pack
+        shell: bash
+        env:
+          UV_OFFLINE: "1"
+          UV_PYTHON_DOWNLOADS: never
+        run: |
+          set -euo pipefail
+          npm pack --json > npm-pack.json
+          tarball="$(node -e 'const fs = require("node:fs"); const [entry] = JSON.parse(fs.readFileSync("npm-pack.json", "utf8")); process.stdout.write(entry.filename)')"
+          test -f "$tarball"
+          TINYIC_NPM_TARBALL="$tarball" uv run --offline pytest -q tests/test_npm_packaging.py
+          sha256sum "$tarball" > "$tarball.sha256"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the immutable release candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tinyic-npm-release
+          path: |
+            ${{ steps.pack.outputs.tarball }}
+            ${{ steps.pack.outputs.tarball }}.sha256
+            npm-pack.json
+          if-no-files-found: error
+          retention-days: 1
+
+  stage:
+    name: stage for 2FA approval
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: npm-production
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+          registry-url: https://registry.npmjs.org
+
+      - name: Pin the release npm CLI
+        run: npm install --global npm@11.18.0 --ignore-scripts --no-audit --no-fund
+
+      - name: Download the validated artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tinyic-npm-release
+          path: release-artifact
+
+      - name: Verify and stage the exact tarball
+        shell: bash
+        working-directory: release-artifact
+        run: |
+          set -euo pipefail
+          tarball="$(node -e 'const fs = require("node:fs"); const [entry] = JSON.parse(fs.readFileSync("npm-pack.json", "utf8")); process.stdout.write(entry.filename)')"
+          test -f "$tarball"
+          sha256sum --check "$tarball.sha256"
+          version="$(node -e 'const fs = require("node:fs"); const [entry] = JSON.parse(fs.readFileSync("npm-pack.json", "utf8")); process.stdout.write(entry.version)')"
+          if npm view "tinyic@$version" version --json --registry=https://registry.npmjs.org/ > /dev/null 2> npm-view.err; then
+            echo "::error::tinyic@$version appeared after validation"
+            exit 1
+          fi
+          if ! grep -q "E404" npm-view.err; then
+            cat npm-view.err >&2
+            echo "::error::registry lookup failed without an E404"
+            exit 1
+          fi
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::the latest staged lane accepts stable semantic versions only"
+            exit 1
+          fi
+          latest="$(npm view tinyic dist-tags.latest --registry=https://registry.npmjs.org/)"
+          if ! node - "$version" "$latest" <<'NODE'
+          const [candidate, current] = process.argv.slice(2);
+          const parse = (value) => value.split(".").map(BigInt);
+          const left = parse(candidate);
+          const right = parse(current);
+          for (let index = 0; index < 3; index += 1) {
+            if (left[index] > right[index]) process.exit(0);
+            if (left[index] < right[index]) process.exit(1);
+          }
+          process.exit(1);
+          NODE
+          then
+            echo "::error::tinyic@$version must still be newer than the current latest tinyic@$latest"
+            exit 1
+          fi
+          npm stage publish "$tarball" --access public --tag latest --registry=https://registry.npmjs.org/

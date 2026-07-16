@@ -89,7 +89,9 @@ Threading model: the debate loop runs in one worker thread owned by the session 
 
 **FR-0.3 Packaging.** `uv` workspace stays; `uv sync` alone must produce a working dev environment; `uv.lock` committed; `tinyic` console entry point via `[project.scripts]`; `uvx tinyic` works from a clean machine — meaning source-based invocation from a clean clone (`uvx --from <clone>/src/tinyic tinyic`) and, once public, `uvx --from git+<repo-url>#subdirectory=src/tinyic tinyic`.
 
-**FR-0.4 Distribution & publication (owner decision, 2026-07-13).** v1 distributes as **git-source only**; registry (PyPI) publication is out of scope. Rationale: the `tinyic` wheel's `Requires-Dist: tinytroupe` would resolve to Microsoft's upstream PyPI distribution — not the vendored fork — on any registry install (uv workspace source mappings are not serialized into wheel metadata). Fail-safe: both workspace packages carry the `Private :: Do Not Upload` trove classifier (PyPI rejects unknown classifiers, so accidental uploads fail), asserted by a packaging test. If post-v1 publication is desired, the recorded direction is to **bundle the vendored fork inside the `tinyic` distribution** (ship both import packages in one wheel, drop the external `tinytroupe` requirement), accepting and documenting the import-name-shadowing caveat if upstream `tinytroupe` is co-installed; publishing the fork as a separately named distribution is rejected (two artifacts to maintain, same collision).
+**FR-0.4 Distribution & publication (owner decisions, 2026-07-13 and 2026-07-15).** The Python distributions remain **git-source only**; PyPI publication is out of scope. Rationale: the `tinyic` wheel's `Requires-Dist: tinytroupe` would resolve to Microsoft's upstream PyPI distribution — not the vendored fork — on any registry install (uv workspace source mappings are not serialized into wheel metadata). Fail-safe: both workspace packages carry the `Private :: Do Not Upload` trove classifier (PyPI rejects unknown classifiers, so accidental uploads fail), asserted by a packaging test. If a Python-registry release is desired later, the recorded direction is to **bundle the vendored fork inside the `tinyic` distribution** (ship both import packages in one wheel, drop the external `tinytroupe` requirement), accepting and documenting the import-name-shadowing caveat if upstream `tinytroupe` is co-installed; publishing the fork as a separately named Python distribution is rejected (two artifacts to maintain, same collision).
+
+The 2026-07-15 amendment permits an unscoped public **npm CLI distribution**. This is a source-bundling launcher, not a Python-registry release: its tarball carries the root lock/config plus both workspace packages, and a zero-npm-dependency Node.js shim stages those files into a user-writable cache keyed by TinyIC version, lock hash, and packaged-source digest. The staged copy semantically merges the committed root `config.ini` over the untouched vendored default, preserving the source-checkout configuration precedence without changing `src/tinytroupe/`. First use serializes a frozen, non-editable `uv sync` behind an atomic cross-process lock, builds from a disposable source copy, and writes a readiness marker only after success; commands then use `uv run --no-sync --frozen --no-dev --no-editable --package tinyic`. An interrupted bootstrap cleans up safely, while an unclean stale lock fails with cache-removal guidance instead of risking concurrent mutation. The npm package must have no consumer install lifecycle hooks, must never resolve `tinytroupe` from PyPI, and must preserve caller cwd, argv, stdin, JSONL-only STDOUT, STDERR diagnostics, SIGINT/SIGTERM (plus POSIX SIGHUP), and TinyIC exit codes. Exact pack inspection, isolated global install, concurrent real first-launch, immutable-prefix, secret-scan, and complete offline-suite checks gate publication. Registry publication requires an owner-controlled npm account with current npm publishing protections; documentation must not promote an unowned package name, and publication remains a separate explicit release action.
 
 ---
 
@@ -149,7 +151,7 @@ Threading model: the debate loop runs in one worker thread owned by the session 
 
 **FR-5.2 Keys.** `enter` send · `tab` steer/queue toggle · `esc` hard interrupt · `t` toggle thinking on selected turn · `T` toggle all thinking · `space` pause/resume auto-advance · `n` next phase (when paused) · `m` cycle persona mind view · `d` cycle the registered `tinyic-dark`/`tinyic-light` theme (v2.1 polish) · `q` quit (with confirm while a debate runs). The onboarding wizard (FR-2.4) shares the same `d` theme key alongside its own drive keys (`↑↓`/`j`/`k` move · `1-9` select · `enter` activate · `esc` back · `q` quit); in both apps, while a text field has focus — the composer, the wizard's masked API-key field — typed characters (including `d`, `j`, `k`, `q`, digits) always belong to the field, never to key routing.
 
-**FR-5.3 Steering (Codex semantics).** Composer always active. Two explicit modes shown as a chip: **Steer** (delivered at the next speaker-turn boundary within the current phase) and **Queue** (delivered at the next phase boundary). `@name` targets a persona (moderator relays to others as observation, as today). Messages appear in the transcript immediately with `queued` state, flip to `delivered` at injection, are delivered **one at a time** (never flushed simultaneously — a documented Codex bug class to avoid), and `esc` interrupts the current speaker: their in-flight call is cancelled, the steering message lands, and they retake the turn with it in context.
+**FR-5.3 Steering (Codex semantics).** Composer always active. Two explicit modes shown as a chip: **Steer** (delivered at the next speaker-turn boundary within the current phase) and **Queue** (delivered at the next phase boundary). `@name` targets a persona (moderator relays to others as observation, as today). Messages appear in the transcript immediately with `queued` state, flip to `delivered` at injection, and are delivered **one at a time** (never flushed simultaneously — a documented Codex bug class to avoid). Interrupt requests share one latest-wins slot, so targeted and untargeted requests may overwrite each other. An untargeted interrupt retains the existing next-in-flight behavior. A targeted interrupt matches normalized persona names and may discard only that persona's own in-flight turn. At the consumption check, a different in-flight speaker or a target naming no committee member causes the interrupt to expire without waiting, with one WARNING on STDERR and no event. Unlike an unknown targeted steer, an unknown targeted interrupt never falls back to broadcast. When an interrupt matches, the in-flight call is cancelled when supported or its result is discarded on arrival, the steering message lands, and the speaker retakes the turn with it in context. A speaker gets at most one retake; an interrupt consumed during that bounded retake is warned and ignored rather than recursively retaking or waiting for another speaker.
 
 **FR-5.4 Phase flow.** Default auto-advance with a pause toggle; paused mode stops at each phase boundary with a banner (`n` to continue) — the between-phases reflection moment from the interview, preserved.
 
@@ -169,7 +171,7 @@ tinyic replay <id|path> · tinyic export <id> --html|--md · tinyic result <id> 
 tinyic runs list · tinyic models list [--provider P] · tinyic auth login|status|logout
 ```
 
-**FR-6.2 Agent mode.** `--headless --json`: no TUI; the event stream (schema §7) is written line-by-line to stdout as it happens; stderr carries human-readable progress; `--steer-stdin` accepts JSON lines (`{"type":"steer"|"queue", "target":..., "text":...}`) for programmatic steering; `tinyic result <id> --json` returns the final scorecard/memo document. Exit codes: `0` complete, `2` partial (some phases failed), `3` setup/auth error. Non-interactive runs never prompt (`--yes` semantics; missing auth → exit 3 with a `doctor`-style reason).
+**FR-6.2 Agent mode.** `--headless --json`: no TUI; the event stream (schema §7) is written line-by-line to stdout as it happens; stderr carries human-readable progress; `--steer-stdin` accepts JSON lines (`{"type":"steer"|"queue"|"interrupt", "target":..., "text":...}`) for programmatic steering; `tinyic result <id> --json` returns the final scorecard/memo document. Exit codes: `0` complete, `2` partial (some phases failed), `3` setup/auth error. Non-interactive runs never prompt (`--yes` semantics; missing auth → exit 3 with a `doctor`-style reason).
 
 **FR-6.3 AGENTS.md.** Repo root gains an `AGENTS.md` teaching AI agents to drive TinyIC: install line, the three commands that matter, the event schema pointer, steering examples, and expected costs/durations. This file is part of the product surface.
 
@@ -261,3 +263,202 @@ The `default` preset (FR-1.4) is now `openai/gpt-5.6-sol` @ `high`; the bundled 
 ### 15.5 Onboarding hub (amends FR-2.4, 2026-07-14)
 
 The wizard's DETECT overview is now the **hub**, replacing the linear provider walk. Every provider is a selectable row (`↑↓`/`1-9` move, `enter` opens) showing its lane statuses and the model its lanes would serve, followed by a closing **Finish & review →** row that opens the summary card. A provider's menu offers its lanes (subscription / API key / local), **Choose the model…** (the §15.3 picker, reachable without first connecting a lane), and a back row; every completed or abandoned action returns to the hub with detection re-run and the same provider highlighted, so individual adjustments stay one keypress away. A verified lane still flows straight into the MODEL step before returning. On an already-working provider the menu's default lands on the harmless back row ("← Back — leave unchanged"), preserving FR-2.4's idempotent verify-and-repair guarantee.
+
+---
+
+## 16. v2.2 amendment (2026-07-14) — Web Town Hall and Persona Factory
+
+> **Status: implemented.** This section amends the implemented v2/v2.1 product;
+> where it conflicts with §§1–15, this section wins. §§1–15 remain unchanged as
+> the historical specification. In particular, the Textual debate face and the
+> prohibition on user-created personas are superseded; the Textual onboarding
+> wizard remains supported.
+
+### 16.1 Product surface and amended requirements
+
+The vision remains one engine with an append-only event stream, but the human
+face is now the **Web Town Hall**. This amends §1, FR-3.2/FR-3.3,
+FR-5.1–FR-5.5, and FR-6.1 as follows:
+
+- `tinyic debate <ticker|company>` starts the engine behind a secured localhost
+  browser viewer by default. `--port N` chooses the loopback port, `--no-open`
+  suppresses browser launch, and `--no-wait` gives automation bounded viewer
+  lifecycle semantics. Existing committee, model, thinking, research,
+  phase-step, headless, JSON, and stdin-steering flags remain.
+- `tinyic replay <id|path>` serves the same browser page in read-only replay
+  mode with zero model calls and the same three web lifecycle flags. HTML and
+  Markdown CLI export remain separate, self-contained artifact paths.
+- The Textual Town Hall, its debate widgets, and its pilot renderer tests are
+  retired. `tinyic onboard` remains the FR-2.4 Textual TUI, including its model
+  selector and verify-and-repair behavior.
+- The v1 non-goal "no web app" now means **no hosted or multi-user web
+  service**. The Web Town Hall is an in-process, loopback-only local capability.
+  The no-trading/brokerage boundary is unchanged.
+
+### 16.2 Web Town Hall architecture and lifecycle
+
+The engine worker continues to append the authoritative JSONL log. A stdlib
+`ThreadingHTTPServer` binds exactly to `127.0.0.1`; every SSE connection tails
+the file independently, so live viewing, reconnect/resume, and replay all read
+the same source of truth. The server has no engine imports: live mode receives
+injected steering/control seams, while replay receives neither.
+
+The user-facing routes are:
+
+| Route | Contract |
+|---|---|
+| `GET /` and `/assets/*` | zero-build HTML/CSS/JS Town Hall assets |
+| `GET /events` | resumable SSE (`Last-Event-ID` over `from_seq`), heartbeat, clean terminal close |
+| `GET /api/meta` | live/completed/error/replay status and high sequence |
+| `GET /api/result?fmt=html|md` | existing report renderers as downloads |
+| `POST /api/steering` | `steer`, `queue`, or `interrupt` through the existing inbox |
+| `POST /api/control` | `pause`, `resume`, `next_phase`, or graceful `stop` |
+
+The server binds before the worker can emit `debate_started`. On a normal live
+run, completion leaves the viewer available until Ctrl-C. With `--no-wait`, a
+browser is given time to attach and its active SSE connection drains before
+shutdown; `--no-open --no-wait` returns after the run when no client is active.
+Shutdown stops accepting requests and gives active handlers a one-second drain.
+Replay is always read-only and rejects steering/control.
+
+The investment-memo page shows the ticker/phase/connection state, streaming
+turns and collapsible reasoning, committee/model roster, scorecard,
+disagreements, and steering acknowledgements. Usage remains available in the
+event log, assembled result, and exports. Its composer targets the
+committee or one persona and distinguishes next-turn steering from next-phase
+queueing. Pause/resume, next phase, confirmed interrupt, confirmed stop,
+reasoning visibility, jump-to-live, and HTML/Markdown export are first-class
+controls. The layout is light-first with a system dark-mode variant and a
+responsive right rail. Event/model text is untrusted: the renderer escapes HTML
+before applying its dependency-free Markdown subset, and unknown event types or
+fields are ignored explicitly.
+
+### 16.3 Local web security requirements
+
+Loopback binding alone is not the trust boundary. Every Web Town Hall instance
+therefore enforces all of the following independently:
+
+1. A fresh 32-byte URL-safe capability token is disclosed only through the
+   launch URL. First navigation exchanges it for an
+   `HttpOnly; SameSite=Strict; Path=/` cookie; Bearer authentication is also
+   accepted for command-line clients.
+2. Literal Host allowlisting (`127.0.0.1`, `localhost`, `[::1]` at the chosen
+   port) blocks DNS rebinding. A present Origin must be the same literal local
+   origin. Invalid values return 403.
+3. State-changing endpoints require exactly `application/json`, are
+   authenticated, reject oversized/non-object bodies, and emit no CORS grant.
+4. All responses use `Cache-Control: no-store`, the CSP
+   `default-src 'self'; img-src 'self' data:`, `nosniff`, and a no-referrer
+   policy. Request logging is suppressed so the first token-bearing URL cannot
+   leak through the stdlib access log.
+
+### 16.4 Persona Factory CLI (extends FR-1.4, FR-4.3, and FR-6.1)
+
+The fixed six are now the protected built-in layer of an extensible persona
+registry. The CLI surface is:
+
+```text
+tinyic persona research NAME [--model REF] [--slug SLUG] [--max-searches N] [--yes] [--force]
+tinyic persona list [--json]
+tinyic persona show SLUG [--json]
+```
+
+`research` resolves and checks the slug **before credential/backend setup**.
+Built-in slugs can never be replaced, including with `--force`; either existing
+user artifact requires `--force` to run the guarded pair replacement. An explicit
+`--model` is exact. Google research accepts only
+`google/gemini-2.5-flash`; Gemini 3 cannot impose a per-prompt query ceiling, so
+explicit Gemini 3 research bindings fail before provider calls with
+`model_not_search_budget_capable` and automatic selection skips them. (Gemini
+3 remains in the ordinary debate catalog.) Otherwise TinyIC considers
+budget-capable configured bindings plus one recommended binding per research
+provider and selects the first usable API-key lane in fixed priority
+`openai → grok → google → kimi`. Subscription and local lanes are not search
+backends. No usable lane exits `3` with the stable reason
+`no_search_capable_lane` and onboarding guidance.
+
+Before any network provider call, the command prints a tool-fee-plus-token cost
+estimate to STDERR. Interactive callers must confirm; non-interactive callers
+must pass `--yes` and are never prompted. Progress remains on STDERR, while the
+success summary reports both paths, source/domain counts, quality, calls, and
+captured actual cost. OpenAI tool invocations, successful Grok server-side tool
+uses, and Gemini 2.5 grounded prompts use a default run-wide cap of 12; Kimi
+uses a cap of 16 `$web_search` echo rounds. `--max-searches` sets an explicit
+1–16 cap. Grok sends `max_turns` with parallel tool calls disabled. A Gemini
+grounded prompt counts as one unit regardless of its internal queries and is
+priced with Google's worst-case $0.035 grounding fee. The Kimi counter persists
+across logical queries.
+
+`list` and `show` read metadata without instantiating TinyTroupe agents. Their
+`--json` forms emit one stable schema-versioned document; list output is
+stable-sorted and origin-tagged.
+
+### 16.5 Cited research, verification, and artifact gates
+
+The Persona Factory is an injectable, provider-neutral pipeline:
+
+1. Plan six public-record angles (philosophy, decision process, risk, track
+   record, voice, criticism) and add curated seed hints for canonical names.
+2. Search through provider-side tools only: OpenAI/Grok Responses web search,
+   Gemini 2.5 Flash Google Search grounding, or Kimi's degraded prose-URL echo
+   lane. TinyIC does not fetch arbitrary cited pages locally. Results become a
+   canonical-URL-deduped evidence ledger.
+3. Draft five dossier sections using only numbered evidence, then synthesize a
+   TinyTroupe-compatible persona plus the TinyIC extension metadata.
+4. Run a second FActScore-lite pass over atomic dossier/persona claims. Claims
+   without ledger support are dropped; quotations must appear verbatim in an
+   evidence excerpt. Kimi additionally relies on the stricter URL visibility
+   checks appropriate to its degraded citation lane.
+5. Gate before writing: fewer than three independent domains raises
+   `insufficient_sources` and writes nothing; three or four domains are marked
+   `thin` with a prominent LOW-SOURCE warning; normal quality requires at least
+   five domains and a primary/self-authored source. Schema validation completes
+   before both files are staged, installed with per-file atomic replacements,
+   and rolled back if a replacement failure is detected.
+
+Successful output lives under `~/.tinyic/personas/` (overridable with
+`TINYIC_PERSONAS_DIR`) as `<slug>.agent.json` plus `<slug>.dossier.md`. Both
+carry public-record-only educational disclaimers; the agent records sources,
+model/date/search metadata, quality, philosophy hook, temperament, decision
+checklist, signals, red flags, and verified quotations. Personal-life content
+and affiliation/endorsement claims are out of scope.
+
+### 16.6 Registry, built-ins, and committee resolution
+
+The registry layers valid user `*.agent.json` files underneath the six shipped
+configs. Built-ins always win: a colliding user file is ignored with a concise
+STDERR warning, and malformed user files are excluded without echoing their
+contents. Built-in configs now expose their epithet, byte-preserved philosophy
+hook, temperament, and sources through the `tinyic` metadata block; debate
+reinforcement reads the hook from the persona object rather than a parallel
+hard-coded map.
+
+Committees resolve in this order:
+
+1. `tinyic debate --personas a,b,c`
+2. top-level `committee = [...]` in the user config overlay
+3. the built-in six
+
+Every committee contains two to six distinct, resolvable registry slugs.
+Invalid overlay members surface through existing persona-error behavior and the
+additive doctor reason `unknown_persona`; TinyIC never silently substitutes a
+different member.
+
+### 16.7 Guarantees unchanged by v2.2
+
+- **Event schema v1 is unchanged:** no new event types, no payload changes, and
+  no changed meanings. The compatibility promises in `event-schema.md` remain
+  authoritative.
+- `--headless --json` keeps its byte/channel contract: only event JSONL on
+  STDOUT; diagnostics on STDERR. The stdin steering protocol, result document,
+  replayability, truncated-log handling, and exit-code families remain.
+- The core implementation and browser assets add no JavaScript runtime
+  dependency or frontend build step; Textual remains only because the
+  onboarding wizard still needs it. The optional npm distribution adds only a
+  zero-dependency Node.js launcher around the same locked Python workspace.
+- No v2.2 work changes `src/tinytroupe/`; the vendored-fork discipline and
+  Python git-source/PyPI boundary remain. The npm tarball bundles that vendored
+  source rather than publishing or resolving a separate Python distribution.
+- Secrets remain excluded from event logs, exports, generated persona
+  artifacts, HTTP diagnostics, and tests. The browser capability appears only
+  in its intended launch URL/cookie authentication flow.

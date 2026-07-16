@@ -1,15 +1,13 @@
 """Pure, framework-free view state for the Town Hall renderer.
 
 ``TownHallState`` folds the :class:`~tinyic.tui.events.Event` stream into the
-data every renderer needs: header rollups, an ordered transcript of
+data the static report needs: header rollups, an ordered transcript of
 turns / phase banners / steering notes / artifacts, and a live per-persona
 committee snapshot (cognitive state, votes, stance).
 
-The single entry point is :meth:`TownHallState.dispatch`. **This is the code
-path the TUI, the (future) live event queue, and any test all share** — replay
-is nothing more than calling ``dispatch`` for each recorded event in order, and
-a live debate is calling ``dispatch`` for each event pulled off a
-``queue.Queue``. Nothing in this module imports Textual, ``rich``, or any engine
+The single entry point is :meth:`TownHallState.dispatch`. Replay is calling
+``dispatch`` for each recorded event in order. Nothing in this module imports
+Textual, ``rich``, or any engine
 internals, so it stays trivially unit-testable and cheap to fold thousands of
 events through.
 
@@ -217,7 +215,7 @@ class ArtifactState:
 
     ``rows`` is an optional *derived* tabular form of the artifact (one mapping
     per row), populated by the fold for artifacts that render as real tables in
-    the TUI (the scorecard's per-persona votes, the end-of-debate per-model
+    the report (the scorecard's per-persona votes, the end-of-debate per-model
     usage rollup). ``body`` always remains a plain-text rendition so any
     renderer that ignores ``rows`` still shows something faithful.
     """
@@ -257,7 +255,7 @@ class TownHallState:
         self.errored: bool = False
         # Log-level flag: the recorded stream ended without a terminal event (a
         # mid-debate crash). Not folded per-event — the app sets it once from the
-        # whole parsed log (see ``TownHallApp.on_mount``) so the header can show
+        # whole parsed log so the report header can show
         # an explicit "incomplete" indicator for a truncated replay.
         self.truncated: bool = False
         # Mode flag: this view is fed by a live event queue rather than a recorded

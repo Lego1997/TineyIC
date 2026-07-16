@@ -1,10 +1,4 @@
-"""Tests for the Stage-1 theme layer (``tinyic.tui.theme``).
-
-Covers: the two registered themes and their polarity, the dark-default +
-``d``-key cycle on both apps (Town Hall and the onboarding wizard), the
-pill/muted/accent style seam under both variants (the light-terminal-breaker
-fix), and that composer typing still owns the ``d`` key.
-"""
+"""Tests for the shared Textual theme used by the onboarding wizard."""
 
 from __future__ import annotations
 
@@ -15,11 +9,8 @@ from pathlib import Path
 from textual.widgets import Input
 
 from tinyic.tui import theme
-from tinyic.tui.app import TownHallApp
 from tinyic.tui.onboard import OnboardApp, OnboardScreen
-from tinyic.tui.widgets import SteeringNote
 
-from tests.support import synthetic_events as G
 from tests.test_m3_onboard_wizard import _controller
 
 
@@ -89,83 +80,6 @@ def test_declared_textual_floor_supports_the_theme_layer():
     assert match is not None, f"textual needs a >= floor: {requirement!r}"
     floor = (int(match.group(1)), int(match.group(2)))
     assert floor >= (0, 86), f"theme layer needs textual >= 0.86: {requirement!r}"
-
-
-# --------------------------------------------------------------------------- #
-# Town Hall: registered, dark by default, `d` cycles
-# --------------------------------------------------------------------------- #
-
-async def test_town_hall_registers_and_defaults_to_tinyic_dark():
-    app = TownHallApp(G.FIXTURE_PATH, auto_replay=False)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        assert app.theme == theme.DARK_THEME_NAME
-        assert theme.DARK_THEME_NAME in app.available_themes
-        assert theme.LIGHT_THEME_NAME in app.available_themes
-        assert app.current_theme.dark is True
-
-
-async def test_town_hall_d_key_cycles_dark_light_dark():
-    app = TownHallApp(G.FIXTURE_PATH, auto_replay=False)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("d")
-        await pilot.pause()
-        assert app.theme == theme.LIGHT_THEME_NAME
-        assert app.current_theme.dark is False
-        await pilot.press("d")
-        await pilot.pause()
-        assert app.theme == theme.DARK_THEME_NAME
-
-
-async def test_composer_typing_still_owns_the_d_key():
-    app = TownHallApp(G.FIXTURE_PATH, auto_replay=False)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.set_focus(app._composer_input)
-        await pilot.pause()
-        await pilot.press("d")
-        await pilot.pause()
-        # Typing wins: the character lands in the input, the theme stays put.
-        assert app._composer_input.value == "d"
-        assert app.theme == theme.DARK_THEME_NAME
-
-
-# --------------------------------------------------------------------------- #
-# The pill fix under both themes (the old "bold black on yellow" breaker)
-# --------------------------------------------------------------------------- #
-
-async def test_steering_note_pill_tracks_the_active_theme():
-    app = TownHallApp(G.FIXTURE_PATH, auto_replay=False)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.replay_all_now()
-        await pilot.pause()
-        note = app.query(SteeringNote).first()
-        mode = note.steer.mode or "steer"
-
-        spans = note.render().spans
-        assert spans[0].style == theme.pill(mode, dark=True)
-
-        await pilot.press("d")  # -> tinyic-light
-        await pilot.pause()
-        spans = note.render().spans
-        assert spans[0].style == theme.pill(mode, dark=False)
-
-
-async def test_mode_chip_uses_the_pill_seam_in_both_themes():
-    app = TownHallApp(G.FIXTURE_PATH, auto_replay=False)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        chip = app._mode_chip.content
-        assert chip.plain.strip() == "STEER"
-        assert chip.spans[0].style == theme.pill("steer", dark=True)
-
-        await pilot.press("d")  # -> tinyic-light; _sync re-renders the chip
-        await pilot.pause()
-        chip = app._mode_chip.content
-        assert chip.spans[0].style == theme.pill("steer", dark=False)
-        assert "black" not in str(chip.spans[0].style)
 
 
 # --------------------------------------------------------------------------- #

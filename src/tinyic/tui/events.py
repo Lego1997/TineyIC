@@ -2,7 +2,7 @@
 
 This module is the *read* side of the engine -> renderer contract frozen in
 ``docs/event-schema.md``. The debate engine (later milestones) writes the
-append-only JSONL log; the TUI, headless renderer, and HTML exporter all consume
+append-only JSONL log; the web viewer, headless renderer, and HTML exporter consume
 it through this reader. Nothing here imports engine internals.
 
 Design rules taken straight from the schema's compatibility promises:

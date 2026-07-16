@@ -1,5 +1,10 @@
 # PRD Acceptance — TinyIC v2 Success Criteria (§14)
 
+> **Historical v1 snapshot.** This closing artifact records the 2026-07-13 M6
+> acceptance run. Its test counts and Textual Town Hall paths are intentionally
+> not current after the v2.2 Web Town Hall amendment; use
+> `uv run pytest tests/ -m "not live_api"` for the current offline gate.
+
 | | |
 |---|---|
 | **Status** | M6 complete — this is the closing artifact of the v1 implementation |

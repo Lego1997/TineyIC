@@ -3,12 +3,15 @@
 import hashlib
 import json
 import logging
+import traceback
 from datetime import datetime, timezone
+from pathlib import Path
 
 from tinyic import __version__ as tinyic_version
 from tinyic.events import EventLog, make_debate_id
 from .models import DebatePhase, VoteChoice, Confidence, Vote, Scorecard, DebateResult
 from .models import InvestmentMemo, MemoSection, DisagreementAnalysis, Disagreement
+from .control import DebateStopRequested
 from .moderator import Moderator
 from .orchestrator import CANONICAL_PHASE_NAMES, DebateOrchestrator
 from .extraction import extract_votes, build_scorecard
@@ -25,6 +28,20 @@ from tinyic.usage import (
 from tinytroupe.session import Session
 
 logger = logging.getLogger(__name__)
+
+
+def _failing_component(exc: BaseException) -> str:
+    """Name the innermost failing frame as ``module.function`` (secret-free).
+
+    Only the module stem and function name are surfaced -- never a file path or
+    the exception's own args -- so ``debate_error.message`` points at the crash
+    site without carrying request/credential material.
+    """
+    frames = traceback.extract_tb(exc.__traceback__)
+    if not frames:
+        return "unknown"
+    innermost = frames[-1]
+    return f"{Path(innermost.filename).stem}.{innermost.name}"
 
 
 def _canonical_model_ref() -> str:
@@ -340,6 +357,30 @@ _MEMO_SECTION_KEYS = (
 )
 
 
+def _check_run_stop(phase_gate) -> None:
+    """Honor a ``RunControl`` stop while remaining inert for legacy gates."""
+    check = getattr(phase_gate, "check_stop", None)
+    if callable(check):
+        check()
+
+
+def _embedding_credential_available(credentials) -> bool:
+    """Whether an OpenAI embedding credential can be resolved (TIC-007).
+
+    Resolves ``OPENAI_API_KEY`` through the credential seam: an explicit
+    provider when one is supplied, otherwise the environment (which is what the
+    process-global llama-index embedding client itself reads). Any resolution
+    failure is treated as absence.
+    """
+    from tinyic.models.credentials import EnvCredentialProvider
+
+    provider = credentials if credentials is not None else EnvCredentialProvider()
+    try:
+        return bool(provider("OPENAI_API_KEY"))
+    except Exception:
+        return False
+
+
 def _emit_synthesis(
     event_log: EventLog,
     *,
@@ -347,6 +388,7 @@ def _emit_synthesis(
     data_package,
     moderator,
     committee,
+    phase_gate=None,
 ) -> None:
     """Run FR-4.5 synthesis through the aggregator and emit its artifacts.
 
@@ -365,18 +407,53 @@ def _emit_synthesis(
     aggregator_client = committee.aggregator
     synthesis_before = snapshot_cost_counters(aggregator_client)
     cached_before = _client_cached_tokens(aggregator_client)
-    with _activate_binding(aggregator_client):
-        memo = generate_memo(result, data_package, theses=theses)
-        disagreement_analysis = extract_disagreements(result, theses=theses)
-    synthesis_after = snapshot_cost_counters(aggregator_client)
-    cached_after = _client_cached_tokens(aggregator_client)
-    _emit_aggregate_usage(
-        event_log,
-        purpose="memo",
-        usage_delta=diff_cost_counters(synthesis_after, synthesis_before),
-        model_ref=committee.aggregator_binding.model_ref,
-        cached_tokens=max(0, cached_after - cached_before),
+    usage_cursor_getter = getattr(aggregator_client, "usage_cursor", None)
+    usage_cursor = (
+        usage_cursor_getter() if callable(usage_cursor_getter) else 0
     )
+    previous_window_sink = getattr(
+        aggregator_client, "on_usage_window", None
+    )
+
+    def emit_synthesis_usage_window(snapshot) -> None:
+        event_log.emit("usage_window", snapshot.as_payload())
+        if previous_window_sink is not None:
+            previous_window_sink(snapshot)
+
+    checkpoint = getattr(phase_gate, "check_stop", None)
+    if not callable(checkpoint):
+        checkpoint = None
+    _check_run_stop(phase_gate)
+    aggregator_client.on_usage_window = emit_synthesis_usage_window
+    try:
+        with _activate_binding(aggregator_client):
+            memo = generate_memo(
+                result,
+                data_package,
+                theses=theses,
+                checkpoint=checkpoint,
+            )
+            disagreement_analysis = extract_disagreements(
+                result,
+                theses=theses,
+                checkpoint=checkpoint,
+            )
+    finally:
+        # A stop accepted during a paid provider call must not erase its usage.
+        aggregator_client.on_usage_window = previous_window_sink
+        synthesis_after = snapshot_cost_counters(aggregator_client)
+        cached_after = _client_cached_tokens(aggregator_client)
+        _emit_aggregate_usage(
+            event_log,
+            purpose="memo",
+            usage_delta=diff_cost_counters(synthesis_after, synthesis_before),
+            model_ref=committee.aggregator_binding.model_ref,
+            cached_tokens=max(0, cached_after - cached_before),
+            billable_usage_delta=_billable_usage_since(
+                aggregator_client, usage_cursor
+            ),
+        )
+    _check_run_stop(phase_gate)
 
     result.memo = memo
     result.disagreement_analysis = disagreement_analysis
@@ -434,6 +511,7 @@ def run_debate(
     model: str | None = None,
     thinking: str | None = None,
     da: str | None = None,
+    deep_research: bool = True,
     committee=None,
     config_path=None,
     credentials=None,
@@ -464,6 +542,8 @@ def run_debate(
         da: Devil's-advocate override (``--da``), a persona display or registry
             name that pins the cross-exam devil's advocate; ``None`` uses the
             moderator's persisted rotation (FR-4.3).
+        deep_research: Whether data-package construction may run its optional
+            web-research synthesis. ``False`` preserves ``--no-research``.
         committee: Pre-resolved ``tinyic.models.Committee`` (programmatic/tests);
             takes precedence over ``preset``/``model``/``thinking``.
         config_path: Location of ``tinyic.toml`` (defaults to cwd / env).
@@ -480,8 +560,8 @@ def run_debate(
             with an explicit ``steering_dropped`` before the terminal event.
         message_queue: Optional legacy ``queue.Queue`` of ``(text, target)`` tuples
             (pre-M6 steering path), delivered without steering events.
-        phase_gate: Optional ``threading.Event`` for inter-phase pausing (the TUI
-            pause/step control); ``None`` runs straight through.
+        phase_gate: Optional ``RunControl`` (pause/step/stop) or legacy
+            ``threading.Event`` (inter-phase step gate); ``None`` runs through.
 
     Returns:
         DebateResult with scorecard, transcript, and phase history.
@@ -502,6 +582,7 @@ def run_debate(
     debate_session = session
     resolved_client = None
     resolved_committee = committee
+    resolved_credentials = credentials
     usage_baseline: dict = {}
     personas = []
     orchestrator = None
@@ -516,6 +597,12 @@ def run_debate(
     run_started_at = None
     stage = "setup"
     research_usage: dict = {}
+    research_binding_usage: dict = {}
+    research_binding_billable: dict | None = None
+    research_binding_cached = 0
+    research_binding_model_ref: str | None = None
+    research_usage_windows: list = []
+    research_usage_emitted = False
 
     try:
         if debate_session is None:
@@ -523,8 +610,27 @@ def run_debate(
         resolved_client = resolve_client()
         usage_baseline = snapshot_cost_counters(resolved_client)
 
+        # TinyTroupe embeds every consolidated engram through the process-global
+        # llama-index OpenAI embedding client, which reads OPENAI_API_KEY from
+        # the environment. Without that credential the store fails per engram, so
+        # disable semantic-memory consolidation up front (TIC-007) rather than
+        # spend subscription-routed quota producing engrams that can never be
+        # embedded, and note it once for the operator.
+        semantic_consolidation = _embedding_credential_available(credentials)
+        if not semantic_consolidation:
+            logger.warning(
+                "semantic memory consolidation disabled: no OpenAI embedding "
+                "credential configured"
+            )
+
         for name in persona_names:
-            personas.append(load_persona(name, session=debate_session))
+            personas.append(
+                load_persona(
+                    name,
+                    session=debate_session,
+                    semantic_consolidation=semantic_consolidation,
+                )
+            )
 
         if resolved_committee is None and (
             preset is not None or model is not None or thinking is not None
@@ -579,12 +685,76 @@ def run_debate(
 
         if data_package is None:
             stage = "data"
+            _check_run_stop(phase_gate)
             research_before = snapshot_cost_counters(resolved_client)
-            data_package = _build_data_package(ticker)
-            research_after = snapshot_cost_counters(resolved_client)
-            research_usage = diff_cost_counters(
-                research_after, research_before
-            )
+            data_checkpoint = getattr(phase_gate, "check_stop", None)
+            data_kwargs = {}
+            if not deep_research:
+                data_kwargs["deep_research"] = False
+            if callable(data_checkpoint):
+                data_kwargs["checkpoint"] = data_checkpoint
+            if resolved_credentials is not None:
+                data_kwargs["credentials"] = resolved_credentials
+
+            research_aggregator = None
+            research_binding_before: dict = {}
+            research_cached_before = 0
+            research_usage_cursor = 0
+            previous_window_sink = None
+            if resolved_committee is not None:
+                research_aggregator = resolved_committee.aggregator
+                data_kwargs["aggregator_client"] = research_aggregator
+                research_binding_model_ref = (
+                    resolved_committee.aggregator_binding.model_ref
+                )
+                research_binding_before = snapshot_cost_counters(
+                    research_aggregator
+                )
+                research_cached_before = _client_cached_tokens(
+                    research_aggregator
+                )
+                usage_cursor_getter = getattr(
+                    research_aggregator, "usage_cursor", None
+                )
+                if callable(usage_cursor_getter):
+                    research_usage_cursor = usage_cursor_getter()
+                previous_window_sink = getattr(
+                    research_aggregator, "on_usage_window", None
+                )
+
+                def collect_research_usage_window(snapshot) -> None:
+                    research_usage_windows.append(snapshot)
+                    if previous_window_sink is not None:
+                        previous_window_sink(snapshot)
+
+                research_aggregator.on_usage_window = (
+                    collect_research_usage_window
+                )
+            try:
+                data_package = _build_data_package(ticker, **data_kwargs)
+            finally:
+                # Preserve usage from source calls completed before a stop or
+                # failure. The exception path emits this after debate_started.
+                research_after = snapshot_cost_counters(resolved_client)
+                research_usage = diff_cost_counters(
+                    research_after, research_before
+                )
+                if research_aggregator is not None:
+                    research_aggregator.on_usage_window = previous_window_sink
+                    research_binding_after = snapshot_cost_counters(
+                        research_aggregator
+                    )
+                    research_binding_usage = diff_cost_counters(
+                        research_binding_after, research_binding_before
+                    )
+                    research_binding_cached = max(
+                        0,
+                        _client_cached_tokens(research_aggregator)
+                        - research_cached_before,
+                    )
+                    research_binding_billable = _billable_usage_since(
+                        research_aggregator, research_usage_cursor
+                    )
 
         run_started_at = active_event_log.now()
         active_event_log.emit(
@@ -601,11 +771,26 @@ def run_debate(
         active_event_log.emit(
             "data_ready", _data_ready_payload(data_package)
         )
+        for snapshot in research_usage_windows:
+            active_event_log.emit("usage_window", snapshot.as_payload())
         _emit_aggregate_usage(
             active_event_log,
             purpose="research",
             usage_delta=research_usage,
         )
+        if research_binding_model_ref is not None:
+            _emit_aggregate_usage(
+                active_event_log,
+                purpose="research",
+                usage_delta=research_binding_usage,
+                model_ref=research_binding_model_ref,
+                cached_tokens=research_binding_cached,
+                billable_usage_delta=research_binding_billable,
+            )
+        research_usage_emitted = True
+        # Defer the post-research check until after its cost-bearing work and
+        # usage are durably represented in the event stream.
+        _check_run_stop(phase_gate)
 
         stage = "debate"
         orchestrator = DebateOrchestrator(
@@ -622,8 +807,16 @@ def run_debate(
         orchestrator.message_queue = message_queue
         orchestrator.phase_gate = phase_gate
         orchestrator.run_debate()
+        _check_run_stop(phase_gate)
 
         stage = "extraction"
+        checkpoint = getattr(phase_gate, "check_stop", None)
+        if not callable(checkpoint):
+            checkpoint = None
+        extraction_kwargs = (
+            {"checkpoint": checkpoint} if checkpoint is not None else {}
+        )
+        _check_run_stop(phase_gate)
         if resolved_committee is not None:
             # Vote extraction is aggregation work: route it through the
             # aggregator binding and capture its native per-call usage.
@@ -652,36 +845,42 @@ def run_debate(
             aggregator_client.on_usage_window = emit_usage_window
             try:
                 with _activate_binding(aggregator_client):
-                    votes = extract_votes(orchestrator)
+                    votes = extract_votes(
+                        orchestrator,
+                        **extraction_kwargs,
+                    )
             finally:
                 aggregator_client.on_usage_window = previous_window_sink
-            extraction_after = snapshot_cost_counters(aggregator_client)
-            cached_after = _client_cached_tokens(aggregator_client)
-            extraction_usage = diff_cost_counters(
-                extraction_after, extraction_before
-            )
-            _emit_aggregate_usage(
-                active_event_log,
-                purpose="extraction",
-                usage_delta=extraction_usage,
-                model_ref=resolved_committee.aggregator_binding.model_ref,
-                cached_tokens=max(0, cached_after - cached_before),
-                billable_usage_delta=_billable_usage_since(
-                    aggregator_client, usage_cursor
-                ),
-            )
+                extraction_after = snapshot_cost_counters(aggregator_client)
+                cached_after = _client_cached_tokens(aggregator_client)
+                extraction_usage = diff_cost_counters(
+                    extraction_after, extraction_before
+                )
+                _emit_aggregate_usage(
+                    active_event_log,
+                    purpose="extraction",
+                    usage_delta=extraction_usage,
+                    model_ref=resolved_committee.aggregator_binding.model_ref,
+                    cached_tokens=max(0, cached_after - cached_before),
+                    billable_usage_delta=_billable_usage_since(
+                        aggregator_client, usage_cursor
+                    ),
+                )
         else:
             extraction_before = snapshot_cost_counters(resolved_client)
-            votes = extract_votes(orchestrator)
-            extraction_after = snapshot_cost_counters(resolved_client)
-            extraction_usage = diff_cost_counters(
-                extraction_after, extraction_before
-            )
-            _emit_aggregate_usage(
-                active_event_log,
-                purpose="extraction",
-                usage_delta=extraction_usage,
-            )
+            try:
+                votes = extract_votes(orchestrator, **extraction_kwargs)
+            finally:
+                extraction_after = snapshot_cost_counters(resolved_client)
+                extraction_usage = diff_cost_counters(
+                    extraction_after, extraction_before
+                )
+                _emit_aggregate_usage(
+                    active_event_log,
+                    purpose="extraction",
+                    usage_delta=extraction_usage,
+                )
+        _check_run_stop(phase_gate)
 
         stage = "finalization"
         scorecard = build_scorecard(votes, ticker, data_package.company_name)
@@ -760,6 +959,7 @@ def run_debate(
                 data_package=data_package,
                 moderator=moderator,
                 committee=resolved_committee,
+                phase_gate=phase_gate,
             )
 
         canonical_by_value = {
@@ -791,11 +991,18 @@ def run_debate(
         )
         return result
     except Exception as exc:
+        stopped_by_user = isinstance(exc, DebateStopRequested)
+        if not stopped_by_user:
+            # The public event names only the failing component, so the full
+            # traceback is preserved here (STDERR-safe under --json, M6).
+            logger.error(
+                "debate failed at stage %s (%s)",
+                stage,
+                type(exc).__name__,
+                exc_info=exc,
+            )
         if not active_event_log.terminal:
             try:
-                if steering is not None:
-                    # Drop undelivered steering before the terminal error event.
-                    steering.close(reason="debate_error")
                 if not active_event_log.started:
                     failed_ticker = str(
                         getattr(data_package, "ticker", None) or ticker
@@ -827,17 +1034,48 @@ def run_debate(
                             ),
                         ),
                     )
+                if steering is not None:
+                    # The lifecycle must start before close emits the deferred
+                    # submitted+dropped acknowledgement pair for any preloaded
+                    # commands.  The terminal error remains last.
+                    steering.close(reason="debate_error")
+                if not research_usage_emitted:
+                    for snapshot in research_usage_windows:
+                        active_event_log.emit(
+                            "usage_window", snapshot.as_payload()
+                        )
+                    _emit_aggregate_usage(
+                        active_event_log,
+                        purpose="research",
+                        usage_delta=research_usage,
+                    )
+                    if research_binding_model_ref is not None:
+                        _emit_aggregate_usage(
+                            active_event_log,
+                            purpose="research",
+                            usage_delta=research_binding_usage,
+                            model_ref=research_binding_model_ref,
+                            cached_tokens=research_binding_cached,
+                            billable_usage_delta=research_binding_billable,
+                        )
+                    research_usage_emitted = True
                 active_event_log.emit(
                     "debate_error",
                     {
-                        "stage": stage,
+                        "stage": "stopped" if stopped_by_user else stage,
                         # Raw provider/auth exceptions can contain request or
-                        # credential material. The detailed exception remains
-                        # in application logs, never in the public event file.
+                        # credential material, so the public event names only the
+                        # failing component; the full traceback stays in the
+                        # application log, never in the event file.
                         "message": (
-                            f"{type(exc).__name__} while running {stage}"
+                            "Debate stopped by user"
+                            if stopped_by_user
+                            else (
+                                f"{type(exc).__name__} in "
+                                f"{_failing_component(exc)} while running {stage}"
+                            )
                         ),
-                        "recoverable": False,
+                        "recoverable": stopped_by_user,
                     },
                 )
             except Exception:

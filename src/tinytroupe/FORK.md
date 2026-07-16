@@ -176,6 +176,23 @@ Defaulting to INFO closes that cwd-gated prompt-to-disk leak (review D2) so the
 divergence matches TinyIC's root `config.ini`; prompts remain DEBUG-only and
 gated behind an explicit debug flag rather than the current directory.
 
+### Episode-consolidation None guard (`agent/tiny_person.py`)
+
+`consolidate_episode_memories` previously chained `.get("consolidation", None)`
+directly onto `EpisodicConsolidator.process(...)`. The single-batch path of
+`process` returns whatever `_consolidate` returns, and `_consolidate`'s
+`@utils.llm` wrapper returns `None` on any LLM failure ("Will return None
+instead of failing"), so the chained `.get` raised
+`AttributeError: 'NoneType' object has no attribute 'get'`, converting a
+designed-graceful `None` into a debate-killing exception (TIC-001). The call is
+split so a non-dict `process` result yields `consolidated_memories = None`,
+taking the existing "No memories to consolidate" branch that still commits the
+episode and resets the counter. This matches the batch path, which already
+guards its `_consolidate` results with `isinstance` checks. Behavior is
+otherwise byte-identical to upstream; TinyIC debates additionally shield this
+path with an `InvestorPersona.consolidate_episode_memories` override, so this
+vendored guard is defense-in-depth for other `TinyPerson` consumers.
+
 ### Known session-scope limits retained from upstream
 
 M0 scopes the TinyIC debate path and the core agent/world complete-state APIs.

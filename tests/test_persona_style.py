@@ -1,8 +1,6 @@
 """Unit tests for :mod:`tinyic.persona_style` — the single persona-identity source.
 
-Stage-1 of the TUI polish moved the committee palette out of its two duplicated
-homes (``tinyic.tui.widgets`` and ``tinyic.report``) into one app-level module.
-These tests lock down the product facts that every renderer now shares: the
+These tests lock down the product facts that every renderer shares: the
 historical dark hues, a complete light counterpart set, the two-letter
 monograms, and the deterministic (SHA-1, never salted-``hash``) fallback
 rotation for unknown personas.
@@ -109,17 +107,6 @@ def test_monogram_fallbacks_are_deterministic_initials():
     assert ps.persona_monogram("Ackman") == "AC"
     assert ps.persona_monogram("X") == "XX"
     assert ps.persona_monogram("") == "??"
-
-
-# --------------------------------------------------------------------------- #
-# Consumers actually share this module (no palette duplication anywhere)
-# --------------------------------------------------------------------------- #
-
-def test_tui_widgets_reexport_matches_the_source():
-    from tinyic.tui.widgets import _FALLBACK_COLORS, persona_color
-
-    assert persona_color is ps.persona_color
-    assert tuple(_FALLBACK_COLORS) == ps.FALLBACK_COLORS_DARK
 
 
 def test_report_delegates_to_persona_style():

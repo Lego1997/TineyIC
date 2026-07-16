@@ -1,7 +1,7 @@
 """TinyIC command-line entry point.
 
-M0 established the console script and ``--help`` path; M5 adds ``tinyic replay``
-to render a recorded event log in the Textual TUI. M3 adds the headless
+M0 established the console script and ``--help`` path; ``tinyic replay`` serves
+a recorded event log in the read-only web viewer. M3 adds the headless
 ``doctor`` seam and its interactive twin ``tinyic onboard`` (the FR-2.4 wizard).
 M6 adds the flagship ``tinyic debate`` (interactive Town Hall or headless/JSON
 agent mode, FR-6.1/6.2) plus ``tinyic runs list`` and ``tinyic result`` for
@@ -21,12 +21,19 @@ import json as _json
 import sys
 from collections.abc import Sequence
 
+from tinyic import __version__
+
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the CLI parser with optional subcommands."""
     parser = argparse.ArgumentParser(
         prog="tinyic",
         description="TinyIC — an AI investment committee simulator.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
 
@@ -35,19 +42,21 @@ def build_parser() -> argparse.ArgumentParser:
     _add_result_parser(subparsers)
     _add_export_parser(subparsers)
     _add_models_parser(subparsers)
+    _add_persona_parser(subparsers)
 
     replay = subparsers.add_parser(
         "replay",
-        help="Replay a recorded debate event log in the TUI (no LLM calls).",
+        help="Replay a recorded debate in the read-only web viewer (no LLM calls).",
         description=(
-            "Replay a recorded TinyIC debate by re-feeding its JSONL event log "
-            "to the Town Hall TUI. Accepts a path to a .jsonl log."
+            "Replay a recorded TinyIC debate by serving its JSONL event log "
+            "to the same localhost Town Hall used for live debates."
         ),
     )
     replay.add_argument(
         "path",
-        help="Path to a recorded debate event log (.jsonl).",
+        help="Debate id or path to a recorded .jsonl event log.",
     )
+    _add_web_flags(replay)
     replay.set_defaults(func=_cmd_replay)
 
     doctor = subparsers.add_parser(
@@ -68,7 +77,16 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument(
         "--live",
         action="store_true",
-        help="Run explicit one-token provider checks (may consume quota).",
+        help="Run explicit one-token checks for the preset's required bindings (may consume quota).",
+    )
+    doctor.add_argument(
+        "--live-all",
+        dest="live_all",
+        action="store_true",
+        help=(
+            "Extend live one-token checks to every discovered lane, not just the "
+            "preset's required bindings (implies --live; may consume more quota)."
+        ),
     )
     doctor.set_defaults(func=_cmd_doctor)
 
@@ -94,8 +112,8 @@ def _add_debate_parser(subparsers) -> None:
         "debate",
         help="Convene the investment committee on a ticker or company.",
         description=(
-            "Run a four-phase investment-committee debate. In a terminal this "
-            "opens the live Town Hall TUI; with --headless/--json it runs as a "
+            "Run a four-phase investment-committee debate. By default this "
+            "opens the localhost Town Hall; with --headless/--json it runs as a "
             "headless agent, streaming the event log to STDOUT."
         ),
     )
@@ -123,7 +141,7 @@ def _add_debate_parser(subparsers) -> None:
     debate.add_argument(
         "--headless",
         action="store_true",
-        help="Never launch the TUI (agent/CI mode).",
+        help="Do not start the web viewer (agent/CI mode).",
     )
     debate.add_argument(
         "--json",
@@ -149,7 +167,39 @@ def _add_debate_parser(subparsers) -> None:
         help="Assume yes / never prompt (non-interactive runs).",
     )
     debate.add_argument("--config", help="Path to tinyic.toml.")
+    _add_web_flags(debate)
     debate.set_defaults(func=_cmd_debate)
+
+
+def _port_number(value: str) -> int:
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("port must be an integer") from exc
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return port
+
+
+def _add_web_flags(parser: argparse.ArgumentParser) -> None:
+    """Add the shared localhost viewer lifecycle flags without importing it."""
+    parser.add_argument(
+        "--port",
+        type=_port_number,
+        default=0,
+        metavar="N",
+        help="Bind the localhost viewer to port N (default: an ephemeral port).",
+    )
+    parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Print the viewer URL without opening a browser.",
+    )
+    parser.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="Exit after the run and any active SSE viewer disconnect.",
+    )
 
 
 def _add_runs_parser(subparsers) -> None:
@@ -272,6 +322,97 @@ def _add_models_parser(subparsers) -> None:
     models.set_defaults(func=_cmd_models)
 
 
+def _max_searches(value: str) -> int:
+    """Validate the persona factory's bounded provider-search budget."""
+    try:
+        searches = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("max searches must be an integer") from exc
+    if not 1 <= searches <= 16:
+        raise argparse.ArgumentTypeError("max searches must be between 1 and 16")
+    return searches
+
+
+def _add_persona_parser(subparsers) -> None:
+    """Register the import-light ``tinyic persona`` command family."""
+    persona = subparsers.add_parser(
+        "persona",
+        help="Research, list, or inspect investor personas.",
+        description=(
+            "Create cited investor personas from public sources, or inspect "
+            "the layered built-in and user persona registry."
+        ),
+    )
+    persona_commands = persona.add_subparsers(
+        dest="persona_command", metavar="<command>", required=True
+    )
+
+    research = persona_commands.add_parser(
+        "research",
+        help="Research an investor and create cited persona artifacts.",
+        description=(
+            "Research an investor through a configured search-capable API lane "
+            "and write an agent JSON file plus a cited Markdown dossier."
+        ),
+    )
+    research.add_argument("name", metavar="NAME", help="Public investor name.")
+    research.add_argument(
+        "--model",
+        metavar="REF",
+        help="Explicit search-capable provider/model binding.",
+    )
+    research.add_argument(
+        "--slug",
+        help="Artifact slug (default: snake-case investor name).",
+    )
+    research.add_argument(
+        "--max-searches",
+        type=_max_searches,
+        default=None,
+        metavar="N",
+        help=(
+            "Maximum billable search units/echo rounds, 1-16 "
+            "(default: 12; Kimi: 16)."
+        ),
+    )
+    research.add_argument(
+        "--yes",
+        action="store_true",
+        help="Accept the displayed cost estimate without prompting.",
+    )
+    research.add_argument(
+        "--force",
+        action="store_true",
+        help="Atomically replace an existing user persona's two artifacts.",
+    )
+    research.set_defaults(func=_cmd_persona_research)
+
+    list_command = persona_commands.add_parser(
+        "list",
+        help="List built-in and user personas.",
+    )
+    list_command.add_argument(
+        "--json",
+        dest="json_mode",
+        action="store_true",
+        help="Write one stable schema-v1 JSON document.",
+    )
+    list_command.set_defaults(func=_cmd_persona_list)
+
+    show = persona_commands.add_parser(
+        "show",
+        help="Show a persona summary and its artifact paths.",
+    )
+    show.add_argument("slug", metavar="SLUG", help="Persona registry slug.")
+    show.add_argument(
+        "--json",
+        dest="json_mode",
+        action="store_true",
+        help="Write one stable schema-v1 JSON document.",
+    )
+    show.set_defaults(func=_cmd_persona_show)
+
+
 def _cmd_models(args: argparse.Namespace) -> int:
     """List the merged model catalog (human table or ``--json``)."""
     # Imported lazily so ``--help`` and the other light commands never pull the
@@ -300,6 +441,34 @@ def _cmd_models(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_persona_research(args: argparse.Namespace) -> int:
+    """Create one cited persona through the lazy command service."""
+    from .persona_cli import research_persona
+
+    return research_persona(
+        args.name,
+        model=args.model,
+        slug=args.slug,
+        max_searches=args.max_searches,
+        yes=args.yes,
+        force=args.force,
+    )
+
+
+def _cmd_persona_list(args: argparse.Namespace) -> int:
+    """List the layered persona registry without loading persona agents."""
+    from .persona_cli import list_personas_command
+
+    return list_personas_command(json_mode=args.json_mode)
+
+
+def _cmd_persona_show(args: argparse.Namespace) -> int:
+    """Render one registry persona's metadata summary."""
+    from .persona_cli import show_persona_command
+
+    return show_persona_command(args.slug, json_mode=args.json_mode)
+
+
 def _cmd_debate(args: argparse.Namespace) -> int:
     """Dispatch to the headless/interactive debate runner (FR-6.1/6.2)."""
     # Imported lazily so the (heavy) engine + TinyTroupe import stays out of
@@ -319,6 +488,9 @@ def _cmd_debate(args: argparse.Namespace) -> int:
         phase_step=args.phase_step,
         steer_stdin=args.steer_stdin,
         yes=args.yes,
+        port=args.port,
+        no_open=args.no_open,
+        no_wait=args.no_wait,
         config_path=args.config,
     )
 
@@ -432,13 +604,15 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
 
 def _cmd_replay(args: argparse.Namespace) -> int:
-    """Launch the Town Hall TUI to replay ``args.path``."""
-    # Import lazily so the (heavy) Textual stack is only loaded when replaying,
-    # keeping ``tinyic --help`` and other commands fast and import-light.
-    from .tui.app import run_replay
+    """Serve ``args.path`` in the read-only localhost Town Hall."""
+    from .headless import run_replay_command
 
-    run_replay(args.path)
-    return 0
+    return run_replay_command(
+        args.path,
+        port=args.port,
+        no_open=args.no_open,
+        no_wait=args.no_wait,
+    )
 
 
 def _cmd_onboard(args: argparse.Namespace) -> int:
@@ -466,7 +640,8 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         report = doctor_module.run_doctor(
             preset=args.preset,
             config_path=args.config,
-            live=args.live,
+            live=args.live or args.live_all,
+            live_optional=args.live_all,
         )
     if args.json:
         print(report.to_json())

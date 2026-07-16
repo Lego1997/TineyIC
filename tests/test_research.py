@@ -323,3 +323,117 @@ class TestPipelineResearchIntegration:
         )
         ctx = pkg.to_context_string()
         assert "research_brief" not in ctx
+
+
+# ---------------------------------------------------------------------------
+# Test: credential seam + synthesis routing (TIC-006)
+# ---------------------------------------------------------------------------
+
+from tinyic.auth.manager import AuthManager
+from tinyic.auth.profiles import AuthLane, AuthProfile, ProfileKind, ProfileStore
+from tinyic.data.research import research_lane_available
+
+
+class _MemoryKeyring:
+    def __init__(self):
+        self.value = None
+
+    def get_password(self, _service, _username):
+        return self.value
+
+    def set_password(self, _service, _username, value):
+        self.value = value
+
+
+def _openai_api_key_manager(tmp_path, secret, *, environ=None):
+    store = ProfileStore(
+        keyring_backend=_MemoryKeyring(), path=tmp_path / "creds.json"
+    )
+    store.put(
+        AuthProfile("openai:apikey", ProfileKind.API_KEY, AuthLane.API_KEY, secret)
+    )
+    store.set_auth_order("openai", ["openai:apikey"])
+    return AuthManager(store, environ=environ or {})
+
+
+def _openai_subscription_manager(tmp_path, *, environ=None):
+    store = ProfileStore(
+        keyring_backend=_MemoryKeyring(), path=tmp_path / "creds.json"
+    )
+    store.put(
+        AuthProfile(
+            "openai:codex", ProfileKind.CODEX_READTHROUGH, AuthLane.SUBSCRIPTION
+        )
+    )
+    store.set_auth_order("openai", ["openai:codex"])
+    return AuthManager(store, environ=environ or {})
+
+
+class TestResearchCredentialSeam:
+    @patch("tinyic.data.research._web_search")
+    def test_named_api_key_beats_env_and_routes_synthesis(
+        self, mock_search, tmp_path
+    ):
+        manager = _openai_api_key_manager(
+            tmp_path, "profile-key", environ={"OPENAI_API_KEY": "env-key"}
+        )
+        mock_search.side_effect = [MOCK_SEARCH_COMPANY, MOCK_SEARCH_ENVIRONMENT]
+        aggregator = MagicMock()
+        aggregator.send_message.return_value = {
+            "role": "assistant",
+            "content": json.dumps(MOCK_SYNTHESIS_RESPONSE),
+        }
+
+        result = build_research_brief(
+            "AAPL",
+            "Apple Inc.",
+            "Tech company",
+            credentials=manager,
+            aggregator_client=aggregator,
+        )
+        assert result is not None
+        # The named profile secret, not the env value, reaches the search call.
+        assert mock_search.call_args.kwargs["api_key"] == "profile-key"
+        # Synthesis is routed through the injected aggregator client.
+        aggregator.send_message.assert_called_once()
+
+    @patch("tinyic.data.research._web_search")
+    def test_skips_when_only_subscription_lane(self, mock_search, tmp_path):
+        manager = _openai_subscription_manager(tmp_path)
+        result = build_research_brief(
+            "AAPL", "Apple Inc.", None, credentials=manager
+        )
+        assert result is None
+        mock_search.assert_not_called()
+
+    def test_pipeline_research_warning_names_lane(self, tmp_path):
+        from tinyic.data.pipeline import build_data_package
+
+        manager = _openai_subscription_manager(tmp_path)
+        with (
+            patch(
+                "tinyic.data.pipeline.resolve_ticker",
+                return_value=(True, "AAPL", "Apple Inc."),
+            ),
+            patch("tinyic.data.pipeline._fetch_description", return_value=None),
+            patch("tinyic.data.pipeline.fetch_financials", return_value=None),
+            patch("tinyic.data.pipeline.fetch_filings", return_value=None),
+            patch("tinyic.data.pipeline.fetch_news", return_value=None),
+            patch("tinyic.data.pipeline.fetch_social_sentiment", return_value=None),
+            patch("tinyic.data.pipeline.detect_cn_market", return_value=None),
+        ):
+            pkg = build_data_package(
+                "AAPL", deep_research=True, credentials=manager
+            )
+        research = [w for w in pkg.warnings if "research" in w.lower()]
+        assert research
+        assert "OpenAI API-key lane not configured" in research[0]
+
+    def test_research_lane_available_reflects_api_key_profile(self, tmp_path):
+        assert research_lane_available(_openai_subscription_manager(tmp_path)) is False
+        assert (
+            research_lane_available(
+                _openai_api_key_manager(tmp_path, "profile-key")
+            )
+            is True
+        )

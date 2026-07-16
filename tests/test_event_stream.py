@@ -304,6 +304,26 @@ def test_fresh_writer_rejects_a_log_for_another_debate_id(tmp_path):
             pass
 
 
+def test_reader_and_resumed_writer_reject_sequence_not_starting_at_one(tmp_path):
+    _, EventLog, read_event_log = _events_api()
+    path = tmp_path / f"{DEBATE_ID}.jsonl"
+    envelope = {
+        "v": 1,
+        "seq": 2,
+        "ts": FIXED_NOW.isoformat().replace("+00:00", "Z"),
+        "debate_id": DEBATE_ID,
+        "type": "debate_started",
+        "payload": _started_payload(),
+    }
+    path.write_text(json.dumps(envelope) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="begin at 1"):
+        read_event_log(path)
+    with pytest.raises(ValueError, match="begin at 1"):
+        with EventLog(DEBATE_ID, path=path, clock=lambda: FIXED_NOW):
+            pass
+
+
 def test_event_log_defaults_to_private_run_directory(tmp_path, monkeypatch):
     """Without an override, persistence follows the documented home path."""
     fake_home = tmp_path / "home"
@@ -476,6 +496,86 @@ def test_opaque_credentials_are_redacted_in_all_json_compatible_shapes(
     persisted = event_log.path.read_text(encoding="utf-8")
     assert secret not in persisted
     assert persisted.count("[REDACTED]") >= 4
+
+
+def test_camel_case_credentials_and_content_are_structurally_redacted_with_aliases(
+    tmp_path,
+):
+    """Common provider camelCase fields get the same two-pass protection."""
+    values = {
+        "accessToken": "opaque-access-value",
+        "refreshToken": "opaque-refresh-value",
+        "sessionToken": "opaque-session-value",
+        "IDToken": "opaque-uppercase-id-value",
+        "clientSecret": "opaque-client-value",
+        "signingSecret": "opaque-signing-value",
+        "dbPassword": "opaque-password-value",
+        "proxyAuthorization": "opaque-authorization-value",
+        "idToken": "opaque-id-value",
+        "oauthToken": "opaque-oauth-value",
+        "fullPrompt": "opaque-full-prompt-value",
+        "userPrompt": "opaque-user-prompt-value",
+        "chatMessages": "opaque-chat-messages-value",
+        "modelOutput": "opaque-model-output-value",
+    }
+    with _new_log(tmp_path) as event_log:
+        event_log.emit("debate_started", _started_payload())
+        event_log.emit(
+            "debate_error",
+            {
+                "stage": "provider",
+                "message": "provider failed safely",
+                "recoverable": False,
+                "details": values,
+                "aliases": list(values.values()),
+                "alias_map": {
+                    value: "ordinary" for value in values.values()
+                },
+            },
+        )
+
+    terminal = json.loads(
+        event_log.path.read_text(encoding="utf-8").splitlines()[-1]
+    )
+    assert terminal["payload"]["details"] == {
+        key: "[REDACTED]" for key in values
+    }
+    assert terminal["payload"]["aliases"] == [
+        "[REDACTED]" for _value in values.values()
+    ]
+    assert terminal["payload"]["alias_map"] == {"[REDACTED]": "ordinary"}
+    persisted = event_log.path.read_text(encoding="utf-8")
+    assert not any(value in persisted for value in values.values())
+
+
+def test_camel_case_redaction_does_not_match_benign_related_fields(tmp_path):
+    benign = {
+        "tokenCount": 17,
+        "accessTokenCount": 3,
+        "clientSecretary": "public role",
+        "passwordPolicy": "minimum length 12",
+        "secretRotation": "every 90 days",
+        "authorizationStatus": "configured",
+        "fullPromptCount": 2,
+        "promptTemplate": "Discuss valuation without private context.",
+        "responseTime": "120ms",
+    }
+    with _new_log(tmp_path) as event_log:
+        event_log.emit("debate_started", _started_payload())
+        event_log.emit(
+            "debate_error",
+            {
+                "stage": "provider",
+                "message": "provider failed safely",
+                "recoverable": False,
+                "details": benign,
+            },
+        )
+
+    terminal = json.loads(
+        event_log.path.read_text(encoding="utf-8").splitlines()[-1]
+    )
+    assert terminal["payload"]["details"] == benign
 
 
 def test_replay_ignores_only_a_crash_truncated_final_json_line(tmp_path):
@@ -758,7 +858,10 @@ def test_mocked_debate_failure_is_a_sanitized_terminal_event(
     assert events[-1].type == "debate_error"
     assert events[-1].payload == {
         "stage": "debate",
-        "message": "RuntimeError while running debate",
+        # The message names the innermost failing component (module.function)
+        # without exposing exception args (TIC-001); here the test throws via a
+        # generator expression, so the frame is ``<genexpr>``.
+        "message": "RuntimeError in test_event_stream.<genexpr> while running debate",
         "recoverable": False,
     }
     assert "SECRET" not in event_log.path.read_text(encoding="utf-8")
@@ -792,7 +895,9 @@ def test_setup_failure_still_creates_a_replayable_terminal_log(
     ]
     assert events[-1].payload == {
         "stage": "setup",
-        "message": "KeyError while running setup",
+        # Enriched with the innermost failing component, still secret-free
+        # (TIC-001); the generator-expression throw makes the frame ``<genexpr>``.
+        "message": "KeyError in test_event_stream.<genexpr> while running setup",
         "recoverable": False,
     }
     assert "SECRET" not in event_log.path.read_text(encoding="utf-8")
@@ -916,6 +1021,11 @@ def test_mocked_debate_generation_matches_normalized_golden(
         for document in documents:
             if document["type"] == "debate_completed":
                 document["payload"]["result_ref"] = "<RESULT_REF>"
+            # tinyic_version is sourced from install metadata (TIC-011), so it is
+            # environment-derived rather than a frozen literal; normalize it like
+            # any other per-run field so the golden is not version-coupled.
+            if document["type"] == "debate_started":
+                document["payload"]["tinyic_version"] = "<TINYIC_VERSION>"
         return documents
 
     assert normalized(event_log.path) == normalized(GOLDEN_PATH)

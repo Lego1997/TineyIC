@@ -1,0 +1,38 @@
+[
+  {
+    "url": "https://letters.example/source-1",
+    "title": "Source 1",
+    "excerpt": "Buy only with a margin of safety and demand evidence before conviction.",
+    "source_type": "primary"
+  },
+  {
+    "url": "https://archive.example/source-2",
+    "title": "Source 2",
+    "excerpt": "Public record excerpt 2 documents investment method and risk discipline.",
+    "source_type": "secondary"
+  },
+  {
+    "url": "https://regulator.example/source-3",
+    "title": "Source 3",
+    "excerpt": "Public record excerpt 3 documents investment method and risk discipline.",
+    "source_type": "secondary"
+  },
+  {
+    "url": "https://university.example/source-4",
+    "title": "Source 4",
+    "excerpt": "Public record excerpt 4 documents investment method and risk discipline.",
+    "source_type": "secondary"
+  },
+  {
+    "url": "https://newspaper.example/source-5",
+    "title": "Source 5",
+    "excerpt": "Public record excerpt 5 documents investment method and risk discipline.",
+    "source_type": "secondary"
+  },
+  {
+    "url": "https://journal.example/source-6",
+    "title": "Source 6",
+    "excerpt": "Public record excerpt 6 documents investment method and risk discipline.",
+    "source_type": "secondary"
+  }
+]

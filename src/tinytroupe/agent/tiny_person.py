@@ -1552,12 +1552,17 @@ class TinyPerson(JsonSerializableRegistry):
                     item_types=["action", "stimulus"],
                 )
                 logger.debug(f"[{self.name}] Current episode: {episode}")
-                consolidated_memories = episodic_consolidator.process(
+                consolidation_result = episodic_consolidator.process(
                     episode,
                     timestamp=self._mental_state["datetime"],
                     context=self._mental_state,
                     persona=self.minibio(),
-                ).get("consolidation", None)
+                )
+                consolidated_memories = (
+                    consolidation_result.get("consolidation", None)
+                    if isinstance(consolidation_result, dict)
+                    else None
+                )
                 if consolidated_memories is not None:
                     logger.info(
                         f"[{self.name}] Consolidating current {len(episode)} episodic events as consolidated semantic memories."

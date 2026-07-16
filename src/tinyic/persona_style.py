@@ -1,10 +1,8 @@
 """Single source of truth for the committee's visual identity.
 
-App-level on purpose (not ``tui/``): both the Textual Town Hall
-(:mod:`tinyic.tui.widgets`) and the static HTML exporter (:mod:`tinyic.report`)
-colorize personas, and they must colorize *identically* — one palette here,
-consumed by every renderer, with no Textual import so the export path stays
-TUI-free.
+App-level on purpose (not ``tui/``): the static HTML exporter
+(:mod:`tinyic.report`) consumes this palette, and the zero-build web assets keep
+a test-pinned hand-synchronized copy. No Textual import reaches export paths.
 
 Each canonical committee member has:
 

@@ -11,9 +11,8 @@ in both polarities (Stage-1 of the TUI polish):
   amber/steel accents), not an inversion; every token was picked to keep the
   same hierarchy readable on light terminals.
 
-Both :class:`~tinyic.tui.app.TownHallApp` and
-:class:`~tinyic.tui.onboard.OnboardApp` call :func:`register` at construction
-and default to dark; the documented ``d`` key cycles dark ↔ light via
+:class:`~tinyic.tui.onboard.OnboardApp` calls :func:`register` at construction
+and defaults to dark; the documented ``d`` key cycles dark ↔ light via
 :func:`toggle`.
 
 **The style seam.** Textual CSS resolves ``$tokens`` per theme automatically,

@@ -1,12 +1,13 @@
 [project]
 name = "tinyic"
-version = "0.1.0"
+version = "2.2.0"
 requires-python = ">=3.12"
 classifiers = [
     "Private :: Do Not Upload",
 ]
 dependencies = [
     "tinytroupe",
+    "httpx[socks]",
     "claude-agent-sdk>=0.2.116",
     "keyring>=25.6",
     "python-dotenv",
@@ -34,10 +35,19 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["tinyic", "tinyic.auth", "tinyic.personas", "tinyic.data", "tinyic.debate", "tinyic.models", "tinyic.models.adapters", "tinyic.tui"]
+include-package-data = false
+packages = ["tinyic", "tinyic.auth", "tinyic.personas", "tinyic.personas.factory", "tinyic.data", "tinyic.debate", "tinyic.models", "tinyic.models.adapters", "tinyic.models.research", "tinyic.tui", "tinyic.web"]
 
 [tool.setuptools.package-dir]
 tinyic = "."
 
 [tool.setuptools.package-data]
-"tinyic.personas" = ["configs/*.agent.json"]
+"tinyic.personas" = [
+    "configs/benjamin_graham.agent.json",
+    "configs/charlie_munger.agent.json",
+    "configs/howard_marks.agent.json",
+    "configs/li_lu.agent.json",
+    "configs/peter_lynch.agent.json",
+    "configs/warren_buffett.agent.json",
+]
+"tinyic.web" = ["assets/*.html", "assets/*.js", "assets/*.css"]

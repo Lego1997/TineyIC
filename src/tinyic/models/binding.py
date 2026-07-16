@@ -4,7 +4,7 @@ FR-1.1: every LLM consumer (each persona, moderator, aggregator, extraction,
 data-pipeline synthesis) resolves a
 ``ModelBinding = {model_ref, auth_profile, thinking_level, params}`` where
 ``model_ref = "provider/model"``.  Bindings come from config presets (FR-1.4)
-with per-debate CLI/TUI overrides; this module owns the immutable value type
+with per-debate CLI overrides; this module owns the immutable value type
 and the reference grammar.
 """
 

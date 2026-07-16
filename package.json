@@ -1,0 +1,72 @@
+{
+  "name": "tinyic",
+  "version": "2.2.0",
+  "description": "A local AI investment committee with a live Town Hall, JSONL automation, replay, and export.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "tinyic": "bin/tinyic.mjs"
+  },
+  "files": [
+    "bin/tinyic.mjs",
+    "scripts/verify-npm-package.mjs",
+    ".python-version",
+    "config.ini",
+    "pyproject.toml",
+    "uv.lock",
+    "tinyic.toml",
+    "src/tinyic/**/*.py",
+    "src/tinyic/**/*.json",
+    "src/tinyic/**/*.md",
+    "src/tinyic/web/assets/*.html",
+    "src/tinyic/web/assets/*.js",
+    "src/tinyic/web/assets/*.css",
+    "src/tinyic/pyproject.toml",
+    "src/tinytroupe/**/*.py",
+    "src/tinytroupe/**/*.json",
+    "src/tinytroupe/**/*.md",
+    "src/tinytroupe/**/*.mustache",
+    "src/tinytroupe/pyproject.toml",
+    "src/tinytroupe/config.ini",
+    "src/tinytroupe/LICENSE",
+    "docs/assets/*.jpg",
+    "!src/tinyic/build/**",
+    "!src/tinytroupe/build/**",
+    "!src/**/__pycache__/**",
+    "!src/**/*.pyc",
+    "!src/**/*.egg-info/**"
+  ],
+  "scripts": {
+    "test": "node --test tests/npm/*.test.mjs",
+    "test:package": "uv run --offline pytest -q tests/test_npm_packaging.py",
+    "test:offline": "npm test && uv run --offline pytest -q",
+    "prepack": "node scripts/verify-npm-package.mjs",
+    "prepublishOnly": "npm run test:offline"
+  },
+  "engines": {
+    "node": ">=22.14"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Lego1997/TineyIC.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Lego1997/TineyIC/issues"
+  },
+  "homepage": "https://github.com/Lego1997/TineyIC#readme",
+  "keywords": [
+    "ai",
+    "investment",
+    "multi-agent",
+    "jsonl",
+    "llm"
+  ]
+}

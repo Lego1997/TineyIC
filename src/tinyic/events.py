@@ -304,14 +304,22 @@ _SENSITIVE_KEYS = frozenset(
 )
 _FORBIDDEN_CONTENT_KEYS = frozenset(
     {
+        "prompt",
         "full_prompt",
         "raw_prompt",
         "system_prompt",
+        "model_input",
+        "model_output",
         "provider_request",
         "provider_response",
         "provider_exception",
+        "request",
+        "response",
+        "request_body",
+        "response_body",
         "raw_request",
         "raw_response",
+        "raw_output",
         "exception",
         "traceback",
         "stack_trace",
@@ -353,23 +361,39 @@ _TOKEN_PATTERN = re.compile(
 )
 
 
+def _canonicalize_payload_key(key: object) -> str:
+    """Normalize snake/kebab/spaced and camel-case payload field names."""
+    # Split only lower/digit -> upper boundaries.  This handles ``accessToken``
+    # and ``OAuthToken`` without turning initialisms such as ``APIKey`` into
+    # surprising one-letter components; ``apikey`` is an explicit alias below.
+    separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key))
+    return re.sub(r"[^a-z0-9]+", "_", separated.lower()).strip("_")
+
+
 def _is_sensitive_key(key: object) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", "_", str(key).lower()).strip("_")
+    normalized = _canonicalize_payload_key(key)
     return (
         normalized in _SENSITIVE_KEYS
+        or normalized.endswith("token")
+        or normalized.endswith("_password")
+        or normalized.endswith("_passwd")
+        or normalized.endswith("_secret")
+        or normalized.endswith("_authorization")
+        or normalized.endswith("_cookie")
+        or normalized.endswith("_credentials")
         or normalized.endswith("_api_key")
-        or normalized.endswith("_access_token")
-        or normalized.endswith("_refresh_token")
-        or normalized.endswith("_client_secret")
     )
 
 
 def _is_forbidden_content_key(key: object) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", "_", str(key).lower()).strip("_")
+    normalized = _canonicalize_payload_key(key)
     return (
         normalized in _FORBIDDEN_CONTENT_KEYS
-        or normalized.endswith("_full_prompt")
-        or normalized.endswith("_provider_exception")
+        or normalized.endswith("_prompt")
+        or normalized.endswith("_messages")
+        or normalized.endswith("_request")
+        or normalized.endswith("_response")
+        or normalized.endswith("_exception")
         or normalized.endswith("_traceback")
     )
 
@@ -427,7 +451,7 @@ def _redact(value: Any, sensitive_values: set[str] | None = None) -> Any:
         )
     if isinstance(value, Mapping):
         return {
-            str(key): (
+            _redact(str(key), sensitive_values): (
                 "[REDACTED]"
                 if _must_redact_key(key)
                 else _redact(item, sensitive_values)
@@ -858,6 +882,8 @@ def read_event_log(path: str | Path) -> list[EventEnvelope]:
         return []
     if events[0].type != "debate_started":
         raise ValueError("event log must begin with debate_started")
+    if events[0].seq != 1:
+        raise ValueError("event sequence numbers must begin at 1")
 
     debate_id = events[0].debate_id
     previous_seq = events[0].seq

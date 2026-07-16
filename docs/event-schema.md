@@ -1,6 +1,6 @@
 # TinyIC Event Schema v1
 
-The append-only JSONL event stream is the single channel between the debate engine and every renderer (TUI, headless stdout, HTML export, future notebook widget), the persistence format for replay, and the **public contract for AI agents** consuming TinyIC headlessly. Within schema v1, changes must be additive (new event types / new optional payload fields). Renderers must ignore unknown event types and unknown payload fields.
+The append-only JSONL event stream is the single channel between the debate engine and every renderer (web Town Hall, headless stdout, HTML export, future notebook widget), the persistence format for replay, and the **public contract for AI agents** consuming TinyIC headlessly. Within schema v1, changes must be additive (new event types / new optional payload fields). Renderers must ignore unknown event types and unknown payload fields.
 
 ## Envelope
 
@@ -72,7 +72,13 @@ Secrets, API keys, and OAuth material MUST never appear in any payload. Full LLM
 
 ## Headless stdin steering (input, not events)
 
-With `--steer-stdin`, each stdin line is `{"type": "steer"|"queue"|"interrupt", "target": "Warren Buffett"?, "text": "..."}`. Acknowledgement differs by command: `steer`/`queue` lines are acknowledged by a `steering_submitted` event (then `steering_delivered` or `steering_dropped`); an `interrupt` line is acknowledged by the authoritative `turn_interrupted` event on the affected turn — or by nothing at all when no turn is in flight to interrupt (the command is then a no-op by design).
+With `--steer-stdin`, each stdin line is `{"type": "steer"|"queue"|"interrupt", "target": "Warren Buffett"?, "text": "..."}`. Acknowledgement differs by command: `steer`/`queue` lines are acknowledged by a `steering_submitted` event (then `steering_delivered` or `steering_dropped`); an `interrupt` line is acknowledged by the authoritative `turn_interrupted` event only when it affects a turn. Interrupt requests share one latest-wins slot, and an untargeted interrupt submitted between turns applies to the next in-flight turn. A targeted interrupt affects only its normalized matching persona's own in-flight turn; if another persona is in flight, it expires without waiting, and a target naming no committee member likewise expires rather than falling back to broadcast. Mismatched or unknown targets produce one WARNING on STDERR and no event. Each speaker gets at most one retake: an interrupt consumed during that bounded retake is diagnosed and ignored rather than causing a recursive retake.
+
+Already-streamed `think_delta` / `talk_delta` records from an interrupted attempt
+remain in the append-only log as an audit trail and render with the interrupted
+disposition. They are not a committed turn: no `turn_completed` is emitted, and
+the attempt is rolled back before peer memories, the debate transcript, votes,
+or synthesis consume it.
 
 ## Compatibility promises
 

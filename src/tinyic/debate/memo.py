@@ -15,12 +15,13 @@ with the windowed prose as corroborating context.
 
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from tinytroupe.clients import client
 from tinytroupe.utils import extract_json
 
 from .analytics import analyze_collapse, render_structured_grounding
+from .control import DebateStopRequested
 from .models import (
     DebateResult,
     Disagreement,
@@ -32,6 +33,12 @@ from .models import (
 from .structured import StructuredThesis
 
 logger = logging.getLogger(__name__)
+
+
+def _run_checkpoint(checkpoint: Callable[[], None] | None) -> None:
+    if checkpoint is not None:
+        checkpoint()
+
 
 # A transcript is processed losslessly in sequential windows. Each later call
 # receives a bounded representation of the structured draft from earlier
@@ -210,6 +217,7 @@ def generate_memo(
     data_package,
     *,
     theses: Mapping[str, StructuredThesis] | None = None,
+    checkpoint: Callable[[], None] | None = None,
 ) -> InvestmentMemo:
     """Generate an investment memo from debate results via LLM synthesis.
 
@@ -260,12 +268,19 @@ def generate_memo(
             {"role": "user", "content": user_prompt},
         ]
         try:
-            response = client().send_message(messages, temperature=0.7)
+            llm_client = client()
+            _run_checkpoint(checkpoint)
+            try:
+                response = llm_client.send_message(messages, temperature=0.7)
+            finally:
+                _run_checkpoint(checkpoint)
             parsed = extract_json(response["content"])
             if not isinstance(parsed, dict) or not parsed:
                 raise ValueError(
                     f"Invalid JSON response for transcript window {index}"
                 )
+        except DebateStopRequested:
+            raise
         except Exception as e:  # noqa: BLE001 -- degrade, do not discard the draft
             last_error = e
             logger.warning(
@@ -306,6 +321,7 @@ def extract_disagreements(
     debate_result: DebateResult,
     *,
     theses: Mapping[str, StructuredThesis] | None = None,
+    checkpoint: Callable[[], None] | None = None,
 ) -> DisagreementAnalysis:
     """Extract top disagreements from a debate transcript via LLM analysis.
 
@@ -357,12 +373,19 @@ def extract_disagreements(
             {"role": "user", "content": user_prompt},
         ]
         try:
-            response = client().send_message(messages, temperature=0.7)
+            llm_client = client()
+            _run_checkpoint(checkpoint)
+            try:
+                response = llm_client.send_message(messages, temperature=0.7)
+            finally:
+                _run_checkpoint(checkpoint)
             parsed = extract_json(response["content"])
             if not isinstance(parsed, dict) or "disagreements" not in parsed:
                 raise ValueError(
                     f"Invalid JSON response for transcript window {index}"
                 )
+        except DebateStopRequested:
+            raise
         except Exception as e:  # noqa: BLE001 -- degrade, do not discard the draft
             last_error = e
             logger.warning(

@@ -1,5 +1,7 @@
 """DebateOrchestrator -- a TinyWorld subclass for structured investment debates."""
 
+import logging
+
 from tinytroupe import config_manager
 from tinytroupe.agent import TinyPerson
 from tinytroupe.environment.tiny_world import TinyWorld
@@ -21,11 +23,13 @@ from .prompts import (
     CONTEXT_PREAMBLE,
     DEVILS_ADVOCATE_PROMPT,
     PHASE_PROMPTS,
-    PHILOSOPHY_HOOKS,
     REINFORCEMENT_TEMPLATE,
     ROLE_RELEASE_PROMPT,
     temperament_clause,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 CANONICAL_PHASE_NAMES: dict[DebatePhase, str] = {
@@ -161,13 +165,14 @@ class DebateOrchestrator(TinyWorld):
             # Optional message queue for user steering (set by UI)
             self.message_queue = None  # Optional[queue.Queue] -- items are (message_str, target_agent_name_or_None)
             # Optional engine-backed steering inbox (M6): the headless
-            # ``--steer-stdin`` reader and the live TUI composer push
+            # ``--steer-stdin`` reader and the web composer push
             # SteeringCommands/interrupts here; the loop drains them at turn/phase
             # boundaries and emits the authoritative steering_* / turn_interrupted
             # events. ``None`` keeps the pre-M6 behavior (legacy message_queue only).
             self.steering_inbox = None  # Optional[tinyic.debate.steering.SteeringInbox]
-            # Optional phase gate for inter-phase pausing (set by UI)
-            self.phase_gate = None     # Optional[threading.Event] -- if set, _step waits for it before proceeding
+            # Optional phase/run controller. A legacy ``threading.Event`` still
+            # works; the web face supplies ``RunControl`` for pause/step/stop.
+            self.phase_gate = None
 
             # Devil's-advocate rotation is owned by the moderator (persisted
             # per-install counter, B8 fix); the orchestrator only caches the
@@ -202,8 +207,11 @@ class DebateOrchestrator(TinyWorld):
 
     def _get_reinforcement_prompt(self, agent) -> str:
         """Build the one-line, temperament-aware reinforcement for *agent* (FR-4.3)."""
-        hook = PHILOSOPHY_HOOKS.get(
-            agent.name, "Stay true to your unique perspective."
+        raw_hook = getattr(agent, "philosophy_hook", None)
+        hook = (
+            raw_hook.strip()
+            if isinstance(raw_hook, str) and raw_hook.strip()
+            else "Stay true to your unique perspective."
         )
         temperament = getattr(agent, "temperament", None)
         return REINFORCEMENT_TEMPLATE.format(
@@ -384,7 +392,6 @@ class DebateOrchestrator(TinyWorld):
             binding_client.on_think = None
 
         latest = agent.pop_latest_actions()
-        self._handle_actions(agent, latest)
         binding_usage = self._aggregate_turn_usage(
             turn_usages, binding_client.binding.model_ref
         )
@@ -501,7 +508,7 @@ class DebateOrchestrator(TinyWorld):
         actions: list,
         committed_actions,
         usage_delta: dict,
-        binding_usage: dict | None = None,
+        binding_usage: dict | None,
     ) -> None:
         """Emit the completed action parts and state for one committed turn."""
         if self.event_log is None:
@@ -535,10 +542,35 @@ class DebateOrchestrator(TinyWorld):
             )
         self._emit_event("cognitive_state", state_payload)
 
-        usage_ref = None
+        usage_ref = self._emit_turn_usage(
+            agent=agent,
+            turn_id=turn_id,
+            usage_delta=usage_delta,
+            binding_usage=binding_usage,
+        )
+
+        canonical_phase = self._canonical_phase(phase)
+        self._emit_event(
+            "turn_completed",
+            {
+                "turn_id": turn_id,
+                "persona": agent.name,
+                "phase": canonical_phase,
+                "interrupted": False,
+                "usage_ref": usage_ref,
+            },
+        )
+
+    def _emit_turn_usage(
+        self,
+        *,
+        agent,
+        turn_id: str,
+        usage_delta: dict,
+        binding_usage: dict | None,
+    ) -> int | None:
+        """Persist paid-call usage before any stop/interrupt can discard output."""
         if binding_usage is not None:
-            # Binding-routed turn: native per-call usage from the adapter,
-            # replacing the M1 snapshot-delta interim for this turn.
             usage_ref = self._emit_binding_usage(agent, turn_id, binding_usage)
         elif any(
             usage_delta.get(field, 0)
@@ -567,21 +599,38 @@ class DebateOrchestrator(TinyWorld):
             if cost is not None:
                 usage_payload["cost_usd"] = round(cost, 8)
             usage_event = self._emit_event("usage", usage_payload)
-            if usage_event is not None:
-                usage_ref = usage_event.seq
+            usage_ref = usage_event.seq if usage_event is not None else None
+        else:
+            usage_ref = None
         self.turn_usage_refs[turn_id] = usage_ref
+        return usage_ref
 
-        canonical_phase = self._canonical_phase(phase)
-        self._emit_event(
-            "turn_completed",
-            {
-                "turn_id": turn_id,
-                "persona": agent.name,
-                "phase": canonical_phase,
-                "interrupted": False,
-                "usage_ref": usage_ref,
-            },
-        )
+    def _snapshot_uncommitted_turn(self, agent):
+        """Capture mutable speaker state when output may need to be discarded."""
+        if self.steering_inbox is None and not callable(
+            getattr(self.phase_gate, "check_stop", None)
+        ):
+            return None
+        encoder = getattr(agent, "encode_complete_state", None)
+        if not callable(encoder):
+            raise RuntimeError(
+                f"persona {getattr(agent, 'name', '?')!r} cannot isolate an "
+                "interruptible turn"
+            )
+        return encoder()
+
+    @staticmethod
+    def _restore_uncommitted_turn(agent, snapshot) -> None:
+        """Roll back a speaker attempt without modifying the vendored engine."""
+        if snapshot is None:
+            return
+        decoder = getattr(agent, "decode_complete_state", None)
+        if not callable(decoder):
+            raise RuntimeError(
+                f"persona {getattr(agent, 'name', '?')!r} cannot restore an "
+                "interrupted turn"
+            )
+        decoder(snapshot)
 
     # ------------------------------------------------------------------
     # Step override (replaces TinyWorld._step entirely)
@@ -633,12 +682,16 @@ class DebateOrchestrator(TinyWorld):
         first_turn_of_phase = True
         for _exchange in range(rounds):
             for agent in self.agents:
+                self._check_control_stop()
                 # Drain user steering before each agent acts. The legacy tuple
                 # message_queue keeps its pre-M6 semantics; the engine inbox
                 # additionally emits steering_submitted/delivered and honors the
                 # steer-vs-queue delivery boundary (FR-5.3).
                 self._process_message_queue()
-                self._deliver_inbox_steering(phase_boundary=first_turn_of_phase)
+                self._deliver_inbox_steering(
+                    phase_boundary=first_turn_of_phase,
+                    upcoming_speaker=agent.name,
+                )
                 first_turn_of_phase = False
 
                 # Anti-convergence: inject persona-specific reinforcement (ALL phases)
@@ -656,6 +709,7 @@ class DebateOrchestrator(TinyWorld):
                 # let the speaker retake. At most one retake keeps this bounded.
                 latest = None
                 for attempt in range(2):
+                    turn_snapshot = self._snapshot_uncommitted_turn(agent)
                     turn_id = self._next_turn_id()
                     turn_count += 1
                     self._emit_event(
@@ -673,16 +727,43 @@ class DebateOrchestrator(TinyWorld):
                         self.on_agent_start(agent.name, phase.value)
 
                     outcome = self._run_turn(agent, phase, turn_id)
+                    # A stop cannot pre-empt a provider call safely. Discard its
+                    # uncommitted output as soon as the call returns instead.
+                    try:
+                        self._check_control_stop()
+                    except BaseException:
+                        try:
+                            self._emit_turn_usage(
+                                agent=agent,
+                                turn_id=turn_id,
+                                usage_delta=outcome["usage_delta"],
+                                binding_usage=outcome["binding_usage"],
+                            )
+                        finally:
+                            self._restore_uncommitted_turn(agent, turn_snapshot)
+                        raise
 
-                    # Only the first attempt can be interrupted; an interrupt that
-                    # arrives during the retake is left in the inbox for the next
-                    # turn rather than consumed here (bounded, at most one retake).
-                    interrupt = (
-                        self.steering_inbox.take_interrupt()
-                        if (self.steering_inbox is not None and attempt == 0)
-                        else None
-                    )
-                    if interrupt is not None:
+                    # Inspect the latest-wins slot after every attempt.  A
+                    # request aimed at another in-flight persona expires here;
+                    # it never waits for a later speaker.  The one permitted
+                    # retake is final, so a matching second interrupt is
+                    # consumed and diagnosed but cannot recursively retake.
+                    interrupt = None
+                    if self.steering_inbox is not None:
+                        interrupt = self.steering_inbox.take_interrupt(
+                            in_flight=agent.name,
+                            known_targets=set(self.name_to_agent),
+                        )
+                    if interrupt is not None and attempt == 0:
+                        try:
+                            self._emit_turn_usage(
+                                agent=agent,
+                                turn_id=turn_id,
+                                usage_delta=outcome["usage_delta"],
+                                binding_usage=outcome["binding_usage"],
+                            )
+                        finally:
+                            self._restore_uncommitted_turn(agent, turn_snapshot)
                         self._emit_event(
                             "turn_interrupted",
                             {
@@ -694,8 +775,18 @@ class DebateOrchestrator(TinyWorld):
                         )
                         self._land_interrupt_message(agent, interrupt)
                         continue
+                    if interrupt is not None:
+                        logger.warning(
+                            "Ignoring interrupt for %r during bounded retake; "
+                            "the retake is being committed",
+                            agent.name,
+                        )
 
                     latest = outcome["latest"]
+                    # TinyPerson.act persists the speaker's action locally.  Do
+                    # not broadcast it to peers until the interrupt/stop decision
+                    # above has committed this attempt.
+                    self._handle_actions(agent, latest)
                     agents_actions[agent.name] = latest
                     self._emit_committed_turn(
                         agent=agent,
@@ -734,6 +825,12 @@ class DebateOrchestrator(TinyWorld):
 
         return agents_actions
 
+    def _check_control_stop(self) -> None:
+        """Honor a web stop request at the nearest safe engine checkpoint."""
+        check = getattr(self.phase_gate, "check_stop", None)
+        if callable(check):
+            check()
+
     def _run_turn(self, agent, phase, turn_id) -> dict:
         """Execute one persona turn, streaming its deltas; return commit inputs.
 
@@ -761,7 +858,6 @@ class DebateOrchestrator(TinyWorld):
         usage_before = self._usage_snapshot()
         committed_actions = agent.act(return_actions=True)
         latest = agent.pop_latest_actions()
-        self._handle_actions(agent, latest)
         usage_after = self._usage_snapshot()
         usage_delta = (
             diff_cost_counters(usage_after, usage_before)
@@ -775,30 +871,50 @@ class DebateOrchestrator(TinyWorld):
             "binding_usage": None,
         }
 
-    def _deliver_inbox_steering(self, *, phase_boundary: bool) -> None:
+    def _deliver_inbox_steering(
+        self, *, phase_boundary: bool, upcoming_speaker: str | None = None
+    ) -> None:
         """Drain the M6 engine inbox at this boundary and emit delivery events.
 
-        ``steer`` commands are delivered at every speaker-turn boundary; ``queue``
-        commands only at a phase boundary (the first turn of a phase). Each
-        delivered command is relayed through the moderator's procedure framing and
-        acknowledged with a ``steering_delivered`` referencing the imminent turn.
+        ``queue`` commands are delivered at a phase boundary (the first turn of a
+        phase); ``steer`` commands at every speaker-turn boundary, except that a
+        steer addressed to a specific persona waits for ``upcoming_speaker`` to be
+        that persona. Each delivered command is relayed through the moderator's
+        procedure framing and acknowledged with a ``steering_delivered``
+        referencing the imminent turn. A relay that raises mid-batch requeues the
+        undelivered remainder so the terminal ``close`` drops it explicitly rather
+        than losing it in the drained-but-unacknowledged window.
         """
         inbox = self.steering_inbox
         if inbox is None:
             return
-        commands = inbox.drain(phase_boundary=phase_boundary)
+        commands = inbox.drain(
+            phase_boundary=phase_boundary,
+            upcoming_speaker=upcoming_speaker,
+            known_targets=set(self.name_to_agent),
+        )
         if not commands:
             return
         before_turn_id = self._peek_next_turn_id()
-        for command in commands:
-            self.moderator.relay_message(
-                command.text,
-                command.target,
-                agents=self.agents,
-                name_to_agent=self.name_to_agent,
-                broadcast=self.broadcast,
-            )
-            inbox.emit_delivered(command.msg_id, before_turn_id=before_turn_id)
+        for index, command in enumerate(commands):
+            try:
+                self.moderator.relay_message(
+                    command.text,
+                    command.target,
+                    agents=self.agents,
+                    name_to_agent=self.name_to_agent,
+                    broadcast=self.broadcast,
+                )
+                if not inbox.emit_delivered(
+                    command.msg_id, before_turn_id=before_turn_id
+                ):
+                    raise RuntimeError(
+                        f"could not persist delivery acknowledgement for "
+                        f"{command.msg_id!r}"
+                    )
+            except BaseException:
+                inbox.requeue(commands[index:])
+                raise
 
     def _land_interrupt_message(self, agent, interrupt) -> None:
         """Land an interrupt's accompanying steering message on the speaker.
@@ -833,8 +949,11 @@ class DebateOrchestrator(TinyWorld):
     def run_debate(self) -> None:
         """Run the full debate: inject context, then execute all phases."""
         self.inject_context()
-        # If phase_gate is set, signal it for the first phase
-        if self.phase_gate is not None:
+        # Legacy Event gates start released for the opening phase. ``RunControl``
+        # owns its own pause/step budget and deliberately has no ``set`` method.
+        if self.phase_gate is not None and not callable(
+            getattr(self.phase_gate, "wait_for_phase", None)
+        ):
             self.phase_gate.set()
         self.run(
             steps=len(self.PHASE_ORDER),

@@ -23,6 +23,10 @@ class FinancialData(BaseModel):
     dividend_yield: Optional[float] = None
     currency: Optional[str] = None
     dividend_yield_source_unit: Optional[str] = None
+    # Recent-listing note (e.g. fresh IPO) used by the pipeline to contextualize
+    # a "market data but no SEC filing" signal; not part of the LLM-facing
+    # context dict (it rides the pipeline warning instead).
+    listing_note: Optional[str] = None
     # Summarized statements (most recent year, key rows as dict)
     income_summary: Optional[dict] = None
     balance_summary: Optional[dict] = None
