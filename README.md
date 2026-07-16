@@ -24,19 +24,18 @@ investment memo, disagreement analysis, and measured usage.
 
 ## Quick start
 
-Until the first verified npm release owns the `tinyic` registry name, install
-from Git source. You need [uv](https://docs.astral.sh/uv/getting-started/installation/)
-and one usable model lane: an API key, a supported subscription runtime, or
-local Ollama. `uv` selects or downloads Python 3.12 as needed.
+Install TinyIC from the official npm registry on macOS or Linux:
 
 ```bash
-git clone https://github.com/Lego1997/TineyIC.git
-cd TineyIC
-
-uv sync
-uv run tinyic onboard
-uv run tinyic debate AAPL
+npm install --global tinyic
+tinyic onboard
+tinyic debate AAPL
 ```
+
+You need a supported [Node.js 22.14+](https://nodejs.org/) release,
+[uv 0.7.12+](https://docs.astral.sh/uv/getting-started/installation/), and one
+usable model lane: an API key, a supported subscription runtime, or local
+Ollama. Windows is not yet a supported npm target.
 
 `onboard` detects available providers, verifies the lane you choose, and stores
 verified credentials in a keyring-first profile store (with a mode-`0600` file
@@ -46,39 +45,34 @@ live under `~/.tinyic/runs/`.
 Check setup without starting a debate:
 
 ```bash
-uv run tinyic doctor --json
-uv run tinyic models --json
+tinyic doctor --json
+tinyic models --json
 ```
 
 `doctor --live` performs an explicit remote model probe; `models --refresh`
 queries provider catalogs. The commands above use only local configuration and
 the shipped static catalog.
 
-### npm package (pending first release)
-
-> [!IMPORTANT]
-> The official npm registry currently returns `E404` for `tinyic`. Do not
-> install that name until this repository announces the first release; an
-> unowned package name can be claimed by someone else.
-
-After the verified release, the install will be:
-
-```bash
-npm install --global tinyic
-
-tinyic onboard
-tinyic debate AAPL
-```
-
-The npm path supports macOS and Linux and requires a supported
-[Node.js 22.14+](https://nodejs.org/) release plus `uv` 0.7.12+ (the current
-minimum validated launcher version). Windows is not yet a supported npm target.
 The package has zero npm/JavaScript dependencies and no install lifecycle hooks,
 but it is not a self-contained Python binary: the first `tinyic` command
 may download Python 3.12 plus roughly 284 locked Python packages and can take a
 few minutes. The launcher caches that runtime outside `node_modules`; later
 commands reuse it. A project-local install uses `npm install tinyic` followed
 by `npx tinyic`.
+
+### Install from Git source
+
+The Python distributions are intentionally absent from PyPI. To develop TinyIC
+or run the repository checkout directly:
+
+```bash
+git clone https://github.com/Lego1997/TineyIC.git
+cd TineyIC
+
+uv sync
+uv run tinyic onboard
+uv run tinyic debate AAPL
+```
 
 For a one-shot command from a clone:
 
@@ -92,8 +86,8 @@ Or run directly from the Git repository:
 uvx --from 'git+https://github.com/Lego1997/TineyIC.git#subdirectory=src/tinyic' tinyic --help
 ```
 
-The examples below use the current Git-source form, `uv run tinyic`. After the
-npm release, you can use the shorter `tinyic` command instead.
+The examples below assume the global npm installation and use `tinyic`. From a
+source checkout, replace that command with `uv run tinyic`.
 
 ## Interface preview
 
@@ -153,11 +147,11 @@ grounded in the committed debate transcript.
 The default command launches the six-member committee in a browser:
 
 ```bash
-uv run tinyic debate AAPL
-uv run tinyic debate NVDA --personas warren_buffett,howard_marks,li_lu
-uv run tinyic debate Costco --thinking high
-uv run tinyic debate AAPL --no-open
-uv run tinyic debate AAPL --port 8765 --no-wait
+tinyic debate AAPL
+tinyic debate NVDA --personas warren_buffett,howard_marks,li_lu
+tinyic debate Costco --thinking high
+tinyic debate AAPL --no-open
+tinyic debate AAPL --port 8765 --no-wait
 ```
 
 Prefer an exact ticker when you know it. Company-name input uses best-effort
@@ -183,7 +177,7 @@ write action disabled.
 ## Drive TinyIC headlessly
 
 ```bash
-uv run tinyic debate AAPL --headless --json > aapl.events.jsonl
+tinyic debate AAPL --headless --json > aapl.events.jsonl
 ```
 
 In `--json` mode, STDOUT contains only one event object per line. Progress and
@@ -196,7 +190,7 @@ Steer a live headless run through STDIN:
 printf '%s\n' \
   '{"type":"steer","target":"Warren Buffett","text":"Press the China supply-chain risk."}' \
   '{"type":"queue","text":"Tie every verdict to a valuation multiple."}' \
-  | uv run tinyic debate AAPL --headless --json --steer-stdin > aapl.events.jsonl
+  | tinyic debate AAPL --headless --json --steer-stdin > aapl.events.jsonl
 ```
 
 `steer` and `queue` emit `steering_submitted` followed by exactly one
@@ -211,11 +205,11 @@ See [AGENTS.md](AGENTS.md) for the complete headless contract and
 Every recorded log can be consumed with zero additional LLM calls:
 
 ```bash
-uv run tinyic runs list --json
-uv run tinyic replay <debate_id>
-uv run tinyic result <debate_id> --json
-uv run tinyic export <debate_id> --html -o debate.html
-uv run tinyic export <debate_id> --md -o debate.md
+tinyic runs list --json
+tinyic replay <debate_id>
+tinyic result <debate_id> --json
+tinyic export <debate_id> --html -o debate.html
+tinyic export <debate_id> --md -o debate.md
 ```
 
 `replay` accepts a debate ID or JSONL path and supports `--port`, `--no-open`,
@@ -230,11 +224,11 @@ Persona research creates an educational, public-record simulation as two
 artifacts: an agent configuration and a cited Markdown dossier.
 
 ```bash
-uv run tinyic persona research "Howard Marks" \
+tinyic persona research "Howard Marks" \
   --slug howard_marks_researched --max-searches 4
 
-uv run tinyic persona list --json
-uv run tinyic persona show howard_marks_researched --json
+tinyic persona list --json
+tinyic persona show howard_marks_researched --json
 ```
 
 Research requires a search-capable **API-key lane**. TinyIC shows a cost
@@ -286,9 +280,9 @@ overflow.
 Use a named preset or override every role for one run:
 
 ```bash
-uv run tinyic debate AAPL --preset heterogeneous
-uv run tinyic debate AAPL --model anthropic/claude-opus-4-8 --thinking high
-uv run tinyic models anthropic --json
+tinyic debate AAPL --preset heterogeneous
+tinyic debate AAPL --model anthropic/claude-opus-4-8 --thinking high
+tinyic models anthropic --json
 ```
 
 The shipped `heterogeneous` preset is an advanced example that needs usable

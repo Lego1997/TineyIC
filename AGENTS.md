@@ -15,9 +15,21 @@ STDOUT line-by-line; never scrape STDERR.
 
 ## Install & run
 
+Install the public CLI from npm on macOS or Linux:
+
+```bash
+npm install --global tinyic
+tinyic --help
+```
+
+The npm package bundles the locked TinyIC + vendored TinyTroupe workspace and
+launches it through `uv`. It requires Node.js 22.14+ plus `uv` 0.7.12+ (the
+minimum validated launcher version), but no separate `pip` install. Windows is
+not yet a supported npm target. Its first command may download Python 3.12 and
+the locked Python dependencies.
+
 TinyIC's Python distributions remain **git-source only** and are never resolved
-from PyPI. Until this repository announces the first verified npm release, run
-from source:
+from PyPI. To run from a source checkout:
 
 ```bash
 # One-shot, from a clone on disk:
@@ -30,20 +42,7 @@ uv sync            # installs both workspace packages (tinyic + the vendored tin
 uv run tinyic --help
 ```
 
-The npm release candidate bundles the locked TinyIC + vendored TinyTroupe
-workspace and launches it through `uv`. The official registry currently
-returns `E404` for the unowned name; do not install it before the release
-announcement. After publication, the install is:
-
-```bash
-npm install --global tinyic
-tinyic --help
-```
-
-That path supports macOS and Linux and requires Node.js 22.14+ plus `uv` 0.7.12+
-(the minimum validated launcher version), but no separate `pip` install. Windows
-is not yet a supported npm target. Its first command may download Python 3.12
-and the locked Python dependencies. The commands below use bare
+The commands below use bare
 `tinyic`; from a source checkout, replace that prefix
 with `uv run tinyic`.
 
