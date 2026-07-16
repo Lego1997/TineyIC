@@ -24,10 +24,12 @@ investment memo, disagreement analysis, and measured usage.
 
 ## Quick start
 
-Install TinyIC from the official npm registry on macOS or Linux:
+Install TinyIC from the
+[official npm package](https://www.npmjs.com/package/@lego1997/tinyic) on
+macOS or Linux:
 
 ```bash
-npm install --global tinyic
+npm install --global @lego1997/tinyic
 tinyic onboard
 tinyic debate AAPL
 ```
@@ -57,8 +59,8 @@ The package has zero npm/JavaScript dependencies and no install lifecycle hooks,
 but it is not a self-contained Python binary: the first `tinyic` command
 may download Python 3.12 plus roughly 284 locked Python packages and can take a
 few minutes. The launcher caches that runtime outside `node_modules`; later
-commands reuse it. A project-local install uses `npm install tinyic` followed
-by `npx tinyic`.
+commands reuse it. A project-local install uses
+`npm install @lego1997/tinyic` followed by `npx tinyic`.
 
 ### Install from Git source
 

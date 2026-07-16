@@ -18,7 +18,7 @@ STDOUT line-by-line; never scrape STDERR.
 Install the public CLI from npm on macOS or Linux:
 
 ```bash
-npm install --global tinyic
+npm install --global @lego1997/tinyic
 tinyic --help
 ```
 

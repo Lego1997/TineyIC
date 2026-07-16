@@ -22,21 +22,22 @@ long-lived publish token. GitHub has
 that bypass-2FA granular tokens will lose direct-publish access, while OIDC
 trusted publishing is the supported automation path.
 
-The unscoped name `tinyic` was unclaimed when this package was prepared on
-2026-07-16. Availability is not a reservation, so check it again immediately
-before the release:
+The public npm identity is `@lego1997/tinyic`; the installed executable
+remains `tinyic`. npm rejected the similar unscoped name during the first
+publication attempt, before creating a package. Check the approved scoped name
+again immediately before the release:
 
 ```bash
-npm view tinyic name version --registry=https://registry.npmjs.org/
+npm view "@lego1997/tinyic" name version --registry=https://registry.npmjs.org/
 ```
 
-An `E404` means no public package currently owns the name. If a package is
-returned, stop and choose an approved scope/name; do not publish under a
-look-alike name.
+An `E404` means the public package has not been created yet. If a package is
+returned before the first release, stop and inspect its ownership and contents.
 
 Neither trusted publishing nor staged publishing can create a brand-new npm
-package. The first `tinyic` release therefore has to be an interactive direct
-publish with 2FA. Every later release uses the staged GitHub OIDC path below.
+package. The first `@lego1997/tinyic` release therefore has to be an
+interactive direct publish with 2FA. Every later release uses the staged GitHub
+OIDC path below.
 
 ## Release gate
 
@@ -69,12 +70,12 @@ that restriction or claim Windows support until the real install, stdin
 steering, signal, keyring, and browser paths pass there.
 
 For the first release only, prepare—but do not push—a final documentation
-commit that removes the pending-`E404` warning and makes npm the primary install
-path. Create its exact matching tag locally so the release gate above validates
-the revision, but do not push the commit or tag yet. Publish the tested tarball
+commit that makes the approved scoped npm identity the primary install path.
+Create its exact matching tag locally so the release gate above validates the
+revision, but do not push the commit or tag yet. Publish the tested tarball
 under `next`, verify it, then push that exact commit and its pre-created tag
-before promoting `latest`. If publication fails, do not push install
-instructions for the still-unowned name.
+before promoting `latest`. If publication fails, do not push registry install
+instructions for an unpublished package.
 
 Create and exercise the exact tarball before sending it to the registry:
 
@@ -105,7 +106,7 @@ trees, egg-info, or inherited untracked files.
 
 ## First publication
 
-The initial unscoped release cannot be staged. Publish the already-tested
+The initial scoped release cannot be staged. Publish the already-tested
 tarball under the non-default `next` tag, complete the 2FA challenge, compare
 its registry integrity, and install the explicit version before exposing it as
 `latest`:
@@ -113,11 +114,11 @@ its registry integrity, and install the explicit version before exposing it as
 ```bash
 npm publish "$tarball" --tag next \
   --access public --registry=https://registry.npmjs.org/
-npm view tinyic@2.2.0 name version dist-tags dist.integrity --json \
+npm view "@lego1997/tinyic@2.2.0" name version dist-tags dist.integrity --json \
   --registry=https://registry.npmjs.org/
 
 first_install="$(mktemp -d)"
-npm install --global --prefix "$first_install" tinyic@2.2.0 \
+npm install --global --prefix "$first_install" "@lego1997/tinyic@2.2.0" \
   --ignore-scripts --no-audit --no-fund \
   --registry=https://registry.npmjs.org/
 PATH="$first_install/bin:$PATH" tinyic --version
@@ -131,9 +132,9 @@ version:
 
 ```bash
 git push --atomic origin main v2.2.0
-npm dist-tag add tinyic@2.2.0 latest \
+npm dist-tag add "@lego1997/tinyic@2.2.0" latest \
   --registry=https://registry.npmjs.org/
-npm view tinyic@2.2.0 dist-tags dist.integrity --json \
+npm view "@lego1997/tinyic@2.2.0" dist-tags dist.integrity --json \
   --registry=https://registry.npmjs.org/
 ```
 
@@ -154,13 +155,13 @@ publish:
 
 ```bash
 npm install --global npm@11.18.0
-npm trust github tinyic \
+npm trust github "@lego1997/tinyic" \
   --file publish-npm.yml \
   --repository Lego1997/TineyIC \
   --environment npm-production \
   --allow-stage-publish \
   --registry=https://registry.npmjs.org/
-npm trust list tinyic --registry=https://registry.npmjs.org/
+npm trust list "@lego1997/tinyic" --registry=https://registry.npmjs.org/
 ```
 
 In npm package settings, select **Require two-factor authentication and disallow
@@ -182,4 +183,4 @@ After the workflow succeeds, inspect the entry under npm's **Staged Packages**,
 download it if desired, and approve it with 2FA. Staged publishing requires npm
 11.15+ and an existing package; basic trusted publishing alone requires npm
 11.5.1+. Keep the number of package owners small and review it with
-`npm owner ls tinyic` after ownership changes.
+`npm owner ls "@lego1997/tinyic"` after ownership changes.

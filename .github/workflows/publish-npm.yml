@@ -57,6 +57,7 @@ jobs:
           version="$(node -p 'require("./package.json").version')"
           test "$RELEASE_TAG" = "v$version"
           test "$(git describe --tags --exact-match)" = "$RELEASE_TAG"
+          test "$(node -p 'require("./package.json").name')" = "@lego1997/tinyic"
           test "$(node -p 'require("./package.json").repository.url')" = "git+https://github.com/Lego1997/TineyIC.git"
           git fetch origin main --no-tags
           git merge-base --is-ancestor HEAD origin/main
@@ -66,17 +67,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          package_name="$(node -p 'require("./package.json").name')"
           version="$(node -p 'require("./package.json").version')"
           if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
             echo "::error::the latest staged lane accepts stable semantic versions only"
             exit 1
           fi
-          if ! npm view tinyic name --json --registry=https://registry.npmjs.org/ > /dev/null; then
-            echo "::error::the first tinyic release must be published interactively with 2FA"
+          if ! npm view "$package_name" name --json --registry=https://registry.npmjs.org/ > /dev/null; then
+            echo "::error::the first $package_name release must be published interactively with 2FA"
             exit 1
           fi
-          if npm view "tinyic@$version" version --json --registry=https://registry.npmjs.org/ > /dev/null 2> npm-view.err; then
-            echo "::error::tinyic@$version already exists"
+          if npm view "$package_name@$version" version --json --registry=https://registry.npmjs.org/ > /dev/null 2> npm-view.err; then
+            echo "::error::$package_name@$version already exists"
             exit 1
           fi
           if ! grep -q "E404" npm-view.err; then
@@ -84,7 +86,7 @@ jobs:
             echo "::error::registry lookup failed without an E404"
             exit 1
           fi
-          latest="$(npm view tinyic dist-tags.latest --registry=https://registry.npmjs.org/)"
+          latest="$(npm view "$package_name" dist-tags.latest --registry=https://registry.npmjs.org/)"
           if ! node - "$version" "$latest" <<'NODE'
           const [candidate, current] = process.argv.slice(2);
           const parse = (value) => value.split(".").map(BigInt);
@@ -97,7 +99,7 @@ jobs:
           process.exit(1);
           NODE
           then
-            echo "::error::tinyic@$version must be newer than the current latest tinyic@$latest"
+            echo "::error::$package_name@$version must be newer than the current latest $package_name@$latest"
             exit 1
           fi
 
@@ -176,9 +178,11 @@ jobs:
           tarball="$(node -e 'const fs = require("node:fs"); const [entry] = JSON.parse(fs.readFileSync("npm-pack.json", "utf8")); process.stdout.write(entry.filename)')"
           test -f "$tarball"
           sha256sum --check "$tarball.sha256"
+          package_name="$(node -e 'const fs = require("node:fs"); const [entry] = JSON.parse(fs.readFileSync("npm-pack.json", "utf8")); process.stdout.write(entry.name)')"
           version="$(node -e 'const fs = require("node:fs"); const [entry] = JSON.parse(fs.readFileSync("npm-pack.json", "utf8")); process.stdout.write(entry.version)')"
-          if npm view "tinyic@$version" version --json --registry=https://registry.npmjs.org/ > /dev/null 2> npm-view.err; then
-            echo "::error::tinyic@$version appeared after validation"
+          test "$package_name" = "@lego1997/tinyic"
+          if npm view "$package_name@$version" version --json --registry=https://registry.npmjs.org/ > /dev/null 2> npm-view.err; then
+            echo "::error::$package_name@$version appeared after validation"
             exit 1
           fi
           if ! grep -q "E404" npm-view.err; then
@@ -190,7 +194,7 @@ jobs:
             echo "::error::the latest staged lane accepts stable semantic versions only"
             exit 1
           fi
-          latest="$(npm view tinyic dist-tags.latest --registry=https://registry.npmjs.org/)"
+          latest="$(npm view "$package_name" dist-tags.latest --registry=https://registry.npmjs.org/)"
           if ! node - "$version" "$latest" <<'NODE'
           const [candidate, current] = process.argv.slice(2);
           const parse = (value) => value.split(".").map(BigInt);
@@ -203,7 +207,7 @@ jobs:
           process.exit(1);
           NODE
           then
-            echo "::error::tinyic@$version must still be newer than the current latest tinyic@$latest"
+            echo "::error::$package_name@$version must still be newer than the current latest $package_name@$latest"
             exit 1
           fi
           npm stage publish "$tarball" --access public --tag latest --registry=https://registry.npmjs.org/

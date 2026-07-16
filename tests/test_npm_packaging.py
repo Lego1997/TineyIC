@@ -99,7 +99,7 @@ def installed_npm_package(
     assert result.returncode == 0, result.stdout + result.stderr
     root_result = _run(["npm", "root", "--global", "--prefix", str(prefix)])
     assert root_result.returncode == 0, root_result.stdout + root_result.stderr
-    package_root = Path(root_result.stdout.strip()) / "tinyic"
+    package_root = Path(root_result.stdout.strip()) / "@lego1997" / "tinyic"
     executable_directory = prefix if os.name == "nt" else prefix / "bin"
     assert package_root.is_dir()
     assert (executable_directory / ("tinyic.cmd" if os.name == "nt" else "tinyic")).exists()
@@ -123,7 +123,7 @@ def test_npm_metadata_matches_python_distribution():
     with (ROOT / "src" / "tinyic" / "pyproject.toml").open("rb") as stream:
         python_project = tomllib.load(stream)
 
-    assert metadata["name"] == "tinyic"
+    assert metadata["name"] == "@lego1997/tinyic"
     assert metadata["version"] == python_project["project"]["version"]
     assert metadata["bin"] == {"tinyic": "bin/tinyic.mjs"}
     assert metadata["license"] == "MIT"
@@ -228,7 +228,7 @@ def test_npm_bin_is_executable(npm_tarball: Path):
 
 def test_readme_documents_npm_install_and_interface_screenshots():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "npm install --global tinyic" in readme
+    assert "npm install --global @lego1997/tinyic" in readme
     assert "docs/assets/tinyic-town-hall.jpg" in readme
     assert "docs/assets/tinyic-debate-transcript.jpg" in readme
 
@@ -255,6 +255,8 @@ def test_npm_release_workflow_is_tokenless_and_staged():
     assert "id-token: write" in workflow
     assert 'test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"' in workflow
     assert 'test "$GITHUB_SHA" = "$(git rev-parse HEAD)"' in workflow
+    assert "@lego1997/tinyic" in workflow
+    assert "npm view tinyic" not in workflow
     assert "stable semantic versions only" in workflow
     assert "must still be newer than the current latest" in workflow
     assert "npm stage publish" in workflow

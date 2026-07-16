@@ -19,7 +19,10 @@ function requireCondition(condition, message) {
   }
 }
 
-requireCondition(metadata.name === "tinyic", "npm package name must be tinyic");
+requireCondition(
+  metadata.name === "@lego1997/tinyic",
+  "npm package name must be @lego1997/tinyic",
+);
 requireCondition(
   metadata.version === pythonVersion,
   `npm version ${metadata.version} does not match TinyIC ${pythonVersion}`,
@@ -27,6 +30,7 @@ requireCondition(
 requireCondition(
   npmLock.name === metadata.name &&
   npmLock.version === metadata.version &&
+  npmLock.packages?.[""]?.name === metadata.name &&
   npmLock.packages?.[""]?.version === metadata.version &&
   npmLock.packages?.[""]?.engines?.node === metadata.engines?.node &&
   JSON.stringify(npmLock.packages?.[""]?.os) === JSON.stringify(metadata.os),

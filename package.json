@@ -1,5 +1,5 @@
 {
-  "name": "tinyic",
+  "name": "@lego1997/tinyic",
   "version": "2.2.0",
   "description": "A local AI investment committee with a live Town Hall, JSONL automation, replay, and export.",
   "license": "MIT",
