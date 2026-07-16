@@ -1,8 +1,9 @@
 """Pydantic data models for the debate engine."""
 
+import re
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -33,6 +34,23 @@ class Confidence(str, Enum):
     MEDIUM = "MEDIUM"
     LOW = "LOW"
 
+    @classmethod
+    def _missing_(cls, value: object):
+        """Resolve confidence strings without making callers match enum case."""
+        if isinstance(value, str):
+            normalized = value.strip().upper()
+            return cls.__members__.get(normalized)
+        return None
+
+
+_VOTE_PREFIX_PATTERN = re.compile(
+    r"^\s*"
+    r"(?:(?:FINAL\s+)?(?:VOTE|VERDICT|RECOMMENDATION)\s*[:=\-]\s*)?"
+    r"(?:(?:STRONG|CONDITIONAL)\s+)?"
+    r"(?P<vote>BUY|HOLD|SELL)\b",
+    re.IGNORECASE,
+)
+
 
 class Vote(BaseModel):
     """An individual investor's final vote after debate."""
@@ -43,17 +61,21 @@ class Vote(BaseModel):
     reasoning: list[str] = Field(default_factory=list)
     key_risks: list[str] = Field(default_factory=list)
     changed_mind: bool = False
+    #: Where the vote came from (FR-4.4): ``structured`` when parsed from the
+    #: persona's mandated verdict block, ``extracted`` when derived by the
+    #: LLM extraction fallback. Surfaced verbatim in ``vote_recorded.source``.
+    source: Literal["structured", "extracted"] = "extracted"
 
     @field_validator("vote", mode="before")
     @classmethod
     def fuzzy_match_vote(cls, v: object) -> object:
-        """Fuzzy-match vote strings like 'STRONG BUY' -> BUY."""
+        """Parse an explicit leading verdict without scanning explanatory prose."""
+        if v is None:
+            return VoteChoice.HOLD
         if isinstance(v, str):
-            upper = v.upper()
-            if "BUY" in upper:
-                return VoteChoice.BUY
-            if "SELL" in upper:
-                return VoteChoice.SELL
+            match = _VOTE_PREFIX_PATTERN.match(v)
+            if match:
+                return VoteChoice(match.group("vote").upper())
             return VoteChoice.HOLD
         return v
 
@@ -150,11 +172,67 @@ class Disagreement(BaseModel):
     resolution: str = ""
 
 
+class StanceShift(BaseModel):
+    """One persona's opening->verdict stance trajectory (FR-4.5).
+
+    ``caved`` flags a disagreement collapse: a contrarian opening stance dropped
+    to join the majority at the verdict without citing new evidence. Surfaced
+    verbatim in the ``collapse_metric`` event and the DCR summary.
+    """
+
+    persona: str
+    stance_before: str
+    stance_after: str
+    caved: bool = False
+    note: str = ""
+
+
+class CollapseSummary(BaseModel):
+    """DCR-style summary of disagreement collapse across the committee (FR-4.5).
+
+    The Disagreement-Collapse-Rate is the fraction of *assessed* personas (those
+    with both an opening thesis and a final vote) flagged as having caved.
+    """
+
+    disagreement_collapse_rate: float = 0.0
+    assessed_count: int = 0
+    caved_count: int = 0
+    caved_personas: list[str] = Field(default_factory=list)
+    majority_stance: Optional[str] = None
+    shifts: list[StanceShift] = Field(default_factory=list)
+
+    def to_markdown(self) -> str:
+        """Render the collapse summary as a Markdown block."""
+        pct = round(self.disagreement_collapse_rate * 100, 1)
+        majority = self.majority_stance or "no clear majority"
+        lines = [
+            "## Disagreement Collapse (DCR)",
+            "",
+            f"**Collapse rate:** {pct}% "
+            f"({self.caved_count} of {self.assessed_count} assessed personas caved) "
+            f"| Majority stance: {majority}",
+            "",
+        ]
+        if self.caved_personas:
+            lines.append(f"**Caved under pressure:** {', '.join(self.caved_personas)}")
+            lines.append("")
+        for shift in self.shifts:
+            flag = "CAVED" if shift.caved else "held"
+            lines.append(
+                f"- {shift.persona}: {shift.stance_before} -> "
+                f"{shift.stance_after} [{flag}] — {shift.note}"
+            )
+        return "\n".join(lines)
+
+
 class DisagreementAnalysis(BaseModel):
     """Top disagreements extracted from the debate."""
     ticker: str
     company_name: str
     disagreements: list[Disagreement] = Field(default_factory=list)
+    #: Optional DCR summary (FR-4.5) attached when the writer is given the
+    #: structured records; ``None`` for the legacy transcript-only path.
+    collapse_summary: Optional["CollapseSummary"] = None
     generated_at: datetime = Field(default_factory=datetime.now)
 
     def to_markdown(self) -> str:
@@ -177,6 +255,9 @@ class DisagreementAnalysis(BaseModel):
             if d.resolution:
                 lines.append(f"**Resolution:** {d.resolution}")
                 lines.append("")
+        if self.collapse_summary is not None:
+            lines.append(self.collapse_summary.to_markdown())
+            lines.append("")
         return "\n".join(lines)
 
 

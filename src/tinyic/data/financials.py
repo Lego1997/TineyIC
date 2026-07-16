@@ -1,6 +1,9 @@
 """yfinance financial fundamentals fetcher."""
 
 import logging
+import math
+from datetime import datetime, timezone
+from numbers import Real
 from typing import Optional
 
 import pandas as pd
@@ -9,6 +12,78 @@ import yfinance as yf
 from .models import FinancialData
 
 logger = logging.getLogger(__name__)
+
+# A first-trade date within this window marks a recently-listed issuer whose
+# 10-K/10-Q may not exist yet.
+_RECENT_LISTING_DAYS = 120
+
+
+def _listing_note(info: dict) -> Optional[str]:
+    """Return a recent-listing note from yfinance ``info``, or None.
+
+    Reads the first-trade date already present in the info dict so a genuinely
+    fresh IPO is not mistaken (by personas with pre-listing training cutoffs)
+    for fabricated data. Best-effort: any malformed value yields None.
+    """
+    try:
+        ms = info.get("firstTradeDateMilliseconds")
+        if not isinstance(ms, (int, float)) or isinstance(ms, bool):
+            return None
+        first_trade = datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
+        days_ago = (datetime.now(timezone.utc) - first_trade).days
+        if 0 <= days_ago <= _RECENT_LISTING_DAYS:
+            return (
+                f"Recently listed: first traded {first_trade:%Y-%m-%d} "
+                f"({days_ago} days ago); a 10-K/10-Q may not exist yet"
+            )
+    except Exception:
+        return None
+    return None
+
+
+def _finite_number(value) -> Optional[float]:
+    """Return a finite float for provider numerics, otherwise ``None``."""
+    if not isinstance(value, Real) or isinstance(value, bool):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) else None
+
+
+def _normalize_dividend_yield(info: dict) -> tuple[Optional[float], Optional[str]]:
+    """Normalize either yfinance dividend-yield convention to a ratio.
+
+    yfinance installations have returned both fractions (``0.0055``) and
+    percentages (``0.55``).  When annual dividend and price are available,
+    select the interpretation closest to that independent ratio.  Otherwise,
+    use a conservative magnitude heuristic and retain the detected source unit.
+    """
+    raw = _finite_number(info.get("dividendYield"))
+    if raw is None:
+        return None, None
+
+    fraction_candidate = raw
+    percent_candidate = raw / 100.0
+    dividend_rate = _finite_number(info.get("dividendRate"))
+    current_price = _finite_number(info.get("currentPrice"))
+    corroborated = (
+        dividend_rate / current_price
+        if dividend_rate is not None
+        and current_price is not None
+        and current_price > 0
+        else None
+    )
+
+    if corroborated is not None:
+        if abs(percent_candidate - corroborated) < abs(
+            fraction_candidate - corroborated
+        ):
+            return percent_candidate, "percent"
+        return fraction_candidate, "fraction"
+
+    # A raw yield above 20% is much more likely to be percentage-form data.
+    if raw > 0.20:
+        return percent_candidate, "percent"
+    return fraction_candidate, "fraction"
 
 
 def fetch_financials(ticker: str) -> Optional[FinancialData]:
@@ -23,18 +98,31 @@ def fetch_financials(ticker: str) -> Optional[FinancialData]:
         t = yf.Ticker(ticker.upper().strip())
         info = t.info or {}
 
-        # Key ratios from .info
+        raw_debt_to_equity = _finite_number(info.get("debtToEquity"))
+        debt_to_equity = (
+            raw_debt_to_equity / 100.0
+            if raw_debt_to_equity is not None
+            else None
+        )
+        dividend_yield, dividend_yield_source_unit = _normalize_dividend_yield(
+            info
+        )
+
+        # Key ratios from .info.  yfinance reports debtToEquity as a percent;
+        # FinancialData stores model-boundary ratios as fractions.
         ratios = {
             "pe_ratio": info.get("trailingPE"),
             "pb_ratio": info.get("priceToBook"),
             "profit_margin": info.get("profitMargins"),
             "roe": info.get("returnOnEquity"),
-            "debt_to_equity": info.get("debtToEquity"),
+            "debt_to_equity": debt_to_equity,
             "market_cap": info.get("marketCap"),
             "revenue": info.get("totalRevenue"),
             "net_income": info.get("netIncomeToCommon"),
             "free_cash_flow": info.get("freeCashflow"),
-            "dividend_yield": info.get("dividendYield"),
+            "dividend_yield": dividend_yield,
+            "currency": info.get("currency"),
+            "dividend_yield_source_unit": dividend_yield_source_unit,
         }
 
         # Income statement summary (most recent year)
@@ -72,6 +160,7 @@ def fetch_financials(ticker: str) -> Optional[FinancialData]:
         return FinancialData(
             income_summary=income_summary,
             balance_summary=balance_summary,
+            listing_note=_listing_note(info),
             **{k: v for k, v in ratios.items() if v is not None},
         )
 

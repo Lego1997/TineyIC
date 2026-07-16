@@ -1,0 +1,5 @@
+data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"Local"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":" model."},"finish_reason":"stop"}]}
+
+data: [DONE]

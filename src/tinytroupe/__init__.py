@@ -16,7 +16,7 @@ print(
     """
 !!!!
 DISCLAIMER: TinyTroupe relies on Artificial Intelligence (AI) models to generate content. 
-The AI models are not perfect and may produce inappropriate or inacurate results. 
+The AI models are not perfect and may produce inappropriate or inaccurate results. 
 For any serious or consequential use, please review the generated content before using it.
 !!!!
 """
@@ -99,6 +99,13 @@ class ConfigManager:
             "REASONING_MODEL", "o3-mini"
         )
 
+        # Vision model: used for image understanding. Falls back to MODEL if not set.
+        _vision_model_raw = config["OpenAI"].get("VISION_MODEL", None)
+        self._config["vision_model"] = _vision_model_raw if _vision_model_raw else None
+
+        # Vision detail level: auto, low, or high (controls token cost for images)
+        self._config["vision_detail"] = config["OpenAI"].get("VISION_DETAIL", "auto")
+
         self._config["max_completion_tokens"] = int(
             config["OpenAI"].get("MAX_COMPLETION_TOKENS", "1024")
         )
@@ -134,7 +141,7 @@ class ConfigManager:
             "CACHE_API_CALLS", False
         )
         self._config["cache_file_name"] = config["OpenAI"].get(
-            "CACHE_FILE_NAME", "openai_api_cache.pickle"
+            "CACHE_FILE_NAME", "openai_api_cache.json"
         )
 
         self._config["max_content_display_length"] = config["OpenAI"].getint(
@@ -313,6 +320,23 @@ class ConfigManager:
 
         return self._config.get(key, default)
 
+    def get_with_fallback(self, key, fallback_key, default=None):
+        """
+        Get a configuration value, falling back to another key if the primary key is absent or None.
+
+        Args:
+            key (str): The primary configuration key to try first.
+            fallback_key (str): The fallback configuration key if the primary is not set.
+            default: The default value if neither key is found.
+
+        Returns:
+            The configuration value.
+        """
+        value = self.get(key)
+        if value is not None:
+            return value
+        return self.get(fallback_key, default)
+
     def reset(self):
         """Reset all configuration values to their original values from the config file."""
         self._initialize_from_config()
@@ -324,7 +348,13 @@ class ConfigManager:
 
     def config_defaults(self, **config_mappings):
         """
-        Returns a decorator that replaces None default values with current config values.
+        Returns a decorator that fills unset arguments with current config values.
+
+        Upstream APIs use ``None`` to request the configured default. The one
+        intentional exception is ``max_content_display_length``: an explicit
+        ``None`` means unlimited text, while omission still applies the
+        configured display cap. Keeping that exception keyed to the relevant
+        config value avoids changing model, timeout, retry, and cache APIs.
 
         Args:
             **config_mappings: Mapping of parameter names to config keys
@@ -332,7 +362,7 @@ class ConfigManager:
         Example:
             @config_manager.config_defaults(model="model", temp="temperature")
             def generate(prompt, model=None, temp=None):
-                # model will be the current config value for "model" if None is passed
+                # model and temp inherit configuration when omitted or None.
                 # ...
         """
         import functools
@@ -341,21 +371,28 @@ class ConfigManager:
         def decorator(func):
             @functools.wraps(func)
             def wrapper(*args, **kwargs):
-                # Get the function's signature
                 sig = inspect.signature(func)
                 bound_args = sig.bind_partial(*args, **kwargs)
-                bound_args.apply_defaults()
 
                 # For each parameter that maps to a config key
                 for param_name, config_key in config_mappings.items():
-                    # If the parameter is None, replace with config value
-                    if (
-                        param_name in bound_args.arguments
+                    is_omitted = param_name not in bound_args.arguments
+                    is_explicit_none = (
+                        not is_omitted
                         and bound_args.arguments[param_name] is None
+                    )
+                    none_means_value = (
+                        config_key == "max_content_display_length"
+                    )
+                    if is_omitted or (
+                        is_explicit_none and not none_means_value
                     ):
-                        kwargs[param_name] = self.get(config_key)
+                        bound_args.arguments[param_name] = self.get(config_key)
 
-                return func(*args, **kwargs)
+                # Reconstruct both positional and keyword arguments from the
+                # binding so replacing a positional None never creates a
+                # duplicate keyword argument.
+                return func(*bound_args.args, **bound_args.kwargs)
 
             return wrapper
 
@@ -391,40 +428,34 @@ def get_config(key, override_value=None):
 
 
 ## LLaMa-Index configs ########################################################
-# PATCH(tinyIC): Wrap llama-index imports in try/except to handle version
-# incompatibilities. Semantic memory (llama-index) is not used in Phase 1.
-# If llama-index is needed later, pin compatible versions.
-try:
-    # from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+# from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
-    if config_manager.get("api_type") == "azure":
-        from llama_index.embeddings.azure_openai import AzureOpenAIEmbedding
-    else:
-        from llama_index.embeddings.openai import OpenAIEmbedding
+if config_manager.get("api_type") == "azure":
+    from llama_index.embeddings.azure_openai import AzureOpenAIEmbedding
+else:
+    from llama_index.embeddings.openai import OpenAIEmbedding
 
-    from llama_index.core import Document, Settings, SimpleDirectoryReader, VectorStoreIndex
-    from llama_index.readers.web import SimpleWebPageReader
+from llama_index.core import Document, Settings, SimpleDirectoryReader, VectorStoreIndex
+from llama_index.readers.web import SimpleWebPageReader
 
-    # this will be cached locally by llama-index, in a OS-dependend location
+# this will be cached locally by llama-index, in a OS-dependend location
 
-    ##Settings.embed_model = HuggingFaceEmbedding(
-    ##    model_name="BAAI/bge-small-en-v1.5"
-    ##)
+##Settings.embed_model = HuggingFaceEmbedding(
+##    model_name="BAAI/bge-small-en-v1.5"
+##)
 
-    if config_manager.get("api_type") == "azure":
-        llamaindex_openai_embed_model = AzureOpenAIEmbedding(
-            model=config_manager.get("embedding_model"),
-            deployment_name=config_manager.get("embedding_model"),
-            api_version=config_manager.get("azure_embedding_model_api_version"),
-            embed_batch_size=10,
-        )
-    else:
-        llamaindex_openai_embed_model = OpenAIEmbedding(
-            model=config_manager.get("embedding_model"), embed_batch_size=10
-        )
-    Settings.embed_model = llamaindex_openai_embed_model
-except (ImportError, Exception) as e:
-    logging.getLogger("tinytroupe").warning(f"LLaMa-Index initialization failed: {e}. Semantic memory features will be unavailable.")
+if config_manager.get("api_type") == "azure":
+    llamaindex_openai_embed_model = AzureOpenAIEmbedding(
+        model=config_manager.get("embedding_model"),
+        deployment_name=config_manager.get("embedding_model"),
+        api_version=config_manager.get("azure_embedding_model_api_version"),
+        embed_batch_size=10,
+    )
+else:
+    llamaindex_openai_embed_model = OpenAIEmbedding(
+        model=config_manager.get("embedding_model"), embed_batch_size=10
+    )
+Settings.embed_model = llamaindex_openai_embed_model
 
 
 ###########################################################################

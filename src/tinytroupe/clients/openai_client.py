@@ -1,7 +1,7 @@
 import configparser
+import json
 import logging
 import os
-import pickle
 import threading
 import time
 from contextlib import contextmanager
@@ -21,11 +21,65 @@ logger = logging.getLogger("tinytroupe")
 config = utils.read_config_file()
 
 ###########################################################################
+# Base caching class
+###########################################################################
+
+
+class LLMCacheBase:
+    """
+    Base class providing a JSON-based caching mechanism for LLM API calls.
+    Subclasses inherit cache save/load functionality and the set_api_cache method.
+    """
+
+    def _save_cache(self):
+        """
+        Saves the API cache to disk as a JSON file.
+        """
+        with open(self.cache_file_name, "w", encoding="utf-8") as f:
+            json.dump(self.api_cache, f, ensure_ascii=False)
+
+    def _load_cache(self):
+        """
+        Loads the API cache from disk.
+        """
+        if os.path.exists(self.cache_file_name):
+            try:
+                with open(self.cache_file_name, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.warning(f"Cache file exists but could not be loaded: {e}. Starting with empty cache.")
+                return {}
+        return {}
+
+    @config_manager.config_defaults(cache_file_name="cache_file_name")
+    def set_api_cache(self, cache_api_calls, cache_file_name=None):
+        """
+        Enables or disables the caching of API calls.
+
+        Args:
+        cache_file_name (str): The name of the file to use for caching API calls.
+        """
+        self.cache_api_calls = cache_api_calls
+        self.cache_file_name = cache_file_name
+        if self.cache_api_calls:
+            abs_path = os.path.abspath(self.cache_file_name)
+            exists = os.path.exists(abs_path)
+            logger.info(
+                f"API cache file location: {abs_path} (exists: {exists})"
+            )
+            # load the cache, if any
+            self.api_cache = self._load_cache()
+            logger.info(
+                f"API cache loaded with {len(self.api_cache)} entries."
+            )
+
+
+###########################################################################
 # Client class
 ###########################################################################
 
 
-class OpenAIClient:
+class OpenAIClient(LLMCacheBase):
     """
     A utility class for interacting with the OpenAI API.
     """
@@ -56,6 +110,10 @@ class OpenAIClient:
         self._cost_stats_lock = threading.RLock()
         self._reset_cost_stats()
 
+        # Per-thread tracking of the last cache key used, so it can be
+        # selectively invalidated on retry without cross-thread interference.
+        self._thread_local = threading.local()
+
         self.set_api_cache(cache_api_calls, cache_file_name)
 
     @staticmethod
@@ -77,19 +135,22 @@ class OpenAIClient:
 
         return candidate
 
-    @config_manager.config_defaults(cache_file_name="cache_file_name")
-    def set_api_cache(self, cache_api_calls, cache_file_name=None):
-        """
-        Enables or disables the caching of API calls.
+    @staticmethod
+    def _prepare_chat_api_params(chat_api_params):
+        """Return an immutable, wire-ready copy of chat request parameters.
 
-        Args:
-        cache_file_name (str): The name of the file to use for caching API calls.
+        TinyIC's future streaming adapters reuse this preparation contract.
+        The legacy ``send_message`` path still supplies ``stream=False``;
+        this method does not turn streaming on.  It only guarantees that an
+        explicitly streamed request asks OpenAI to include authoritative usage
+        in the final chunk.
         """
-        self.cache_api_calls = cache_api_calls
-        self.cache_file_name = cache_file_name
-        if self.cache_api_calls:
-            # load the cache, if any
-            self.api_cache = self._load_cache()
+        prepared = dict(chat_api_params)
+        if prepared.get("stream") is True:
+            stream_options = dict(prepared.get("stream_options") or {})
+            stream_options["include_usage"] = True
+            prepared["stream_options"] = stream_options
+        return prepared
 
     def _reset_cost_stats(self):
         """
@@ -125,10 +186,8 @@ class OpenAIClient:
         )
 
         # we set max_retries to 0 because we do our own retrying with customized exponential backoff
-        base_url = config_manager.get("base_url")
         self.client = OpenAI(
-            api_key=os.getenv("OPENAI_API_KEY"), max_retries=0, http_client=httpx_client,
-            **({"base_url": base_url} if base_url else {})
+            api_key=os.getenv("OPENAI_API_KEY"), max_retries=0, http_client=httpx_client
         )
 
     @config_manager.config_defaults(
@@ -214,9 +273,10 @@ class OpenAIClient:
         self._setup_from_config()
 
         # dedent the messages (field 'content' only) if needed (using textwrap)
+        # Skip messages whose content is a list (multimodal content arrays).
         if dedent_messages:
             for message in current_messages:
-                if "content" in message:
+                if "content" in message and isinstance(message["content"], str):
                     message["content"] = utils.dedent(message["content"])
 
         # We need to adapt the parameters to the API type, so we create a dictionary with them first
@@ -239,6 +299,7 @@ class OpenAIClient:
 
         # remove any parameter that is None, so we use the API defaults
         chat_api_params = {k: v for k, v in chat_api_params.items() if v is not None}
+        chat_api_params = self._prepare_chat_api_params(chat_api_params)
 
         i = 0
         while i < max_attempts:
@@ -261,6 +322,7 @@ class OpenAIClient:
                 # call the model, either from the cache or from the API
                 ###############################################################
                 cache_key = str((model, chat_api_params))  # need string to be hashable
+                self._thread_local.last_cache_key = cache_key  # per-thread tracking
 
                 pre_cached_response = self._get_cached_response(cache_key)
 
@@ -361,18 +423,19 @@ class OpenAIClient:
         Calls the OpenAI API with the given parameters. Subclasses should
         override this method to implement their own API calls.
         """
-        # PATCH(tinyIC): Force stream=True — required by proxy gateway
-        chat_api_params["stream"] = True
+        # Model-specific adaptation below removes unsupported fields. Work on
+        # a copy so retries keep a stable logical request and cache key.
+        chat_api_params = self._prepare_chat_api_params(chat_api_params)
 
         # adjust parameters depending on the model
         if self._is_reasoning_model(model):
             # Reasoning models have slightly different parameters
-            for key in ("temperature", "top_p", "frequency_penalty", "presence_penalty"):
-                chat_api_params.pop(key, None)
-
-            # PATCH(tinyIC): Keep max_completion_tokens for reasoning models (GPT-5.2 needs it).
-            # Original code deleted it after self-assignment, which was a no-op then delete.
-            # max_completion_tokens is already set from config, just leave it.
+            chat_api_params.pop("stream", None)
+            chat_api_params.pop("stream_options", None)
+            chat_api_params.pop("temperature", None)
+            chat_api_params.pop("top_p", None)
+            chat_api_params.pop("frequency_penalty", None)
+            chat_api_params.pop("presence_penalty", None)
 
             chat_api_params["reasoning_effort"] = config_manager.get("reasoning_effort")
 
@@ -388,82 +451,32 @@ class OpenAIClient:
         logged_params = {k: v for k, v in chat_api_params.items() if k != "messages"}
 
         if "response_format" in chat_api_params:
-            # PATCH(tinyIC): proxy requires stream=True, but .parse() doesn't support streaming.
-            # Use regular .create() with streaming and let caller handle response_format.
-            chat_api_params.pop("response_format", None)
+            # to enforce the response format via pydantic, we need to use a different method
+
+            if "stream" in chat_api_params:
+                del chat_api_params["stream"]
+            chat_api_params.pop("stream_options", None)
 
             logger.debug(
-                f"Calling LLM model with these parameters: {logged_params}. Not showing 'messages' parameter."
+                f"Calling LLM model (using .parse too) with these parameters: {logged_params}. Not showing 'messages' parameter."
             )
+            # complete message
             logger.debug(
                 f"   --> Complete messages sent to LLM: {chat_api_params['messages']}"
             )
 
-            response = self.client.chat.completions.create(**chat_api_params)
-            if chat_api_params.get("stream"):
-                return self._collect_stream(response)
-            return response
+            result_message = self.client.beta.chat.completions.parse(**chat_api_params)
+
+            return result_message
 
         else:
             logger.debug(
                 f"Calling LLM model with these parameters: {logged_params}. Not showing 'messages' parameter."
             )
-            response = self.client.chat.completions.create(**chat_api_params)
-
-            # PATCH(tinyIC): Handle streaming responses — collect chunks into a
-            # ChatCompletion-like object so downstream extractors work unchanged.
-            if chat_api_params.get("stream"):
-                return self._collect_stream(response)
-
-            return response
-
-    def _collect_stream(self, stream):
-        """PATCH(tinyIC): Collect a streaming response into a single ChatCompletion."""
-        from openai.types.chat import ChatCompletion, ChatCompletionMessage
-        from openai.types.chat.chat_completion import Choice
-        from openai.types import CompletionUsage
-
-        content_parts = []
-        finish_reason = None
-        model_name = None
-        completion_id = None
-        usage = None
-
-        for chunk in stream:
-            if not model_name and chunk.model:
-                model_name = chunk.model
-            if not completion_id and chunk.id:
-                completion_id = chunk.id
-            if chunk.usage:
-                usage = chunk.usage
-            if chunk.choices:
-                delta = chunk.choices[0].delta
-                if delta and delta.content:
-                    content_parts.append(delta.content)
-                if chunk.choices[0].finish_reason:
-                    finish_reason = chunk.choices[0].finish_reason
-
-        return ChatCompletion(
-            id=completion_id or "stream",
-            model=model_name or "unknown",
-            object="chat.completion",
-            created=0,
-            choices=[Choice(
-                index=0,
-                message=ChatCompletionMessage(
-                    role="assistant",
-                    content="".join(content_parts),
-                ),
-                finish_reason=finish_reason or "stop",
-            )],
-            usage=usage,
-        )
+            return self.client.chat.completions.create(**chat_api_params)
 
     def _is_reasoning_model(self, model):
-        # PATCH(tinyIC): Include gpt-5 models as reasoning models so that
-        # reasoning_effort is passed and incompatible params (temperature,
-        # stream, top_p, etc.) are removed for gpt-5.2 with reasoning.
-        return "o1" in model or "o3" in model or "gpt-5" in model
+        return "o1" in model or "o3" in model
 
     def _raw_model_response_extractor(self, response):
         """
@@ -474,9 +487,9 @@ class OpenAIClient:
 
     def _to_cacheable_format(self, response):
         """
-        Converts an API response to a dictionary format that can be pickled.
+        Converts an API response to a dictionary format suitable for JSON caching.
         This is necessary because some response types (like ParsedChatCompletion
-        with generic types) cannot be pickled directly.
+        with generic types) are not directly JSON serializable.
         """
         try:
             # Try model_dump() first (Pydantic v2)
@@ -500,7 +513,7 @@ class OpenAIClient:
         """
         Reconstructs a ChatCompletion object from a cached dictionary.
         We use the base ChatCompletion class (not ParsedChatCompletion) to avoid
-        issues with generic type parameters that can't be pickled.
+        issues with generic type parameters that are not directly JSON serializable.
         """
         from openai.types.chat import ChatCompletion
         try:
@@ -508,6 +521,33 @@ class OpenAIClient:
         except Exception as e:
             logger.warning(f"Could not reconstruct response from cache: {e}")
             return None
+
+    def invalidate_last_cache_entry(self):
+        """
+        Removes the most recent cache entry (from the last ``send_message`` call
+        **on the current thread**).
+
+        Uses thread-local storage so that concurrent threads never
+        accidentally invalidate each other's cache entries.
+
+        This is intended to be called on retry paths (e.g., ``repeat_on_error``)
+        so that a bad cached response does not block all subsequent attempts.
+        """
+        key = getattr(self._thread_local, "last_cache_key", None)
+        if key is None:
+            return
+
+        cache_store = getattr(self, "api_cache", None)
+        if cache_store is None:
+            return
+
+        with self._cache_lock:
+            if key in cache_store:
+                del cache_store[key]
+                self._save_cache()
+                logger.info("Invalidated last API cache entry (retry path).")
+
+        self._thread_local.last_cache_key = None
 
     def _get_cached_response(self, cache_key):
         if not self.cache_api_calls:
@@ -521,6 +561,7 @@ class OpenAIClient:
             cached_dict = cache_store.get(cache_key)
             if cached_dict is None:
                 return None
+            logger.info("API cache hit — returning cached LLM response.")
             # Reconstruct the ChatCompletion object from the cached dict
             return self._from_cached_format(cached_dict)
 
@@ -599,7 +640,16 @@ class OpenAIClient:
             for message in messages:
                 num_tokens += tokens_per_message
                 for key, value in message.items():
-                    num_tokens += len(encoding.encode(value))
+                    if isinstance(value, list):
+                        # Multimodal content array: count only text parts
+                        for part in value:
+                            if isinstance(part, dict) and part.get("type") == "text":
+                                num_tokens += len(encoding.encode(part.get("text", "")))
+                            # Image parts contribute tokens too, but their exact count
+                            # depends on resolution and detail; we skip them here to avoid
+                            # over-counting.  OpenAI server-side billing is authoritative.
+                    elif isinstance(value, str):
+                        num_tokens += len(encoding.encode(value))
                     if key == "name":
                         num_tokens += tokens_per_name
             num_tokens += 3  # every reply is primed with <|start|>assistant<|message|>
@@ -608,28 +658,6 @@ class OpenAIClient:
         except Exception as e:
             logger.error(f"Error counting tokens: {e}")
             return None
-
-    def _save_cache(self):
-        """
-        Saves the API cache to disk. We use pickle to do that because some obj
-        are not JSON serializable.
-        """
-        # use pickle to save the cache
-        with open(self.cache_file_name, "wb") as f:
-            pickle.dump(self.api_cache, f)
-
-    def _load_cache(self):
-        """
-        Loads the API cache from disk.
-        """
-        if os.path.exists(self.cache_file_name):
-            try:
-                with open(self.cache_file_name, "rb") as f:
-                    return pickle.load(f)
-            except (EOFError, pickle.UnpicklingError) as e:
-                logger.warning(f"Cache file exists but could not be loaded: {e}. Starting with empty cache.")
-                return {}
-        return {}
 
     @config_manager.config_defaults(model="embedding_model")
     def get_embedding(self, text, model=None):
@@ -671,8 +699,12 @@ class OpenAIClient:
         with self._cost_stats_lock:
             if was_cached:
                 self._cached_calls += 1
-            else:
-                self._model_calls += 1
+                # A local response-cache hit makes no provider request. Its
+                # stored usage metadata describes the original call and must
+                # not be counted or priced a second time.
+                return
+
+            self._model_calls += 1
 
             # Extract token usage from response if available
             if hasattr(response, "usage") and response.usage is not None:

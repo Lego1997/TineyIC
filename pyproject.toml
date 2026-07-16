@@ -2,7 +2,16 @@
 name = "tinyic-workspace"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "tinyic",
+    "tinytroupe",
+]
+
+[project.optional-dependencies]
+# `uv sync --extra <name>` resolves extras against THIS root project, so the
+# documented `uv sync --extra cn` command must be forwarded to the tinyic
+# member (which declares the actual akshare dependency).
+cn = ["tinyic[cn]"]
 
 [tool.uv.workspace]
 members = ["src/tinytroupe", "src/tinyic"]
@@ -13,10 +22,12 @@ tinyic = { workspace = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not live_api'"
 markers = [
-    "live_api: tests that require a live OpenAI API key",
+    "live_api: tests that require live network/provider credentials or runtimes",
 ]
 timeout = 120
+asyncio_mode = "auto"
 filterwarnings = [
     "ignore::DeprecationWarning:edgar.files.*:",
     "ignore::DeprecationWarning:edgar._markdown:",
@@ -27,5 +38,6 @@ filterwarnings = [
 dev = [
     "pytest>=9.0.2",
     "pytest-timeout>=2.4.0",
+    "pytest-asyncio>=0.24",
     "python-dotenv>=1.2.2",
 ]

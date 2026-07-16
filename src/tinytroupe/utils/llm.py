@@ -956,7 +956,7 @@ class LLMChat:
     def _request_list_of_dict_llm_message(self):
         return {
             "role": "user",
-            "content": "The `value` field you generate **must** be a list of dictionaries, specified as a JSON structure embedded in a string. For example, `[\\{...\\}, \\{...\\}, ...]`. This is critical for later processing.",
+            "content": "The `value` field you generate **must** be a list of dictionaries, specified as a JSON structure embedded in a string. For example, `[\{...\}, \{...\}, ...]`. This is critical for later processing.",
         }
 
     def _coerce_to_list(self, llm_output: str):
@@ -1238,6 +1238,9 @@ def repeat_on_error(retries: int, exceptions: list):
     up to the specified number of retries. If that number of retries is exceeded, the
     exception is raised. If no exception occurs, the function returns normally.
 
+    On each retry the most recent API cache entry is invalidated so that a bad
+    cached response does not block all subsequent attempts.
+
     Args:
         retries (int): The number of retries to attempt.
         exceptions (list): The list of exception classes to catch.
@@ -1250,6 +1253,13 @@ def repeat_on_error(retries: int, exceptions: list):
                     return func(*args, **kwargs)
                 except tuple(exceptions) as e:
                     logger.debug(f"Exception occurred: {e}")
+                    # Invalidate the last cache entry so the retry gets a fresh
+                    # response instead of replaying the same bad one.
+                    try:
+                        from tinytroupe.clients import client as _client
+                        _client().invalidate_last_cache_entry()
+                    except Exception:
+                        pass  # best-effort; don't mask the original error
                     if i == retries - 1:
                         raise e
                     else:

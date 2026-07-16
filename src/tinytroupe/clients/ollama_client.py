@@ -1,16 +1,18 @@
+import json
 import logging
 import os
-import pickle
+import threading
 import time
 
 import requests
 
 from tinytroupe import config_manager, utils
+from tinytroupe.clients.openai_client import LLMCacheBase
 
 logger = logging.getLogger("tinytroupe")
 
 
-class OllamaClient:
+class OllamaClient(LLMCacheBase):
     """
     A client for interacting with the Ollama API using direct HTTP requests.
     """
@@ -20,27 +22,63 @@ class OllamaClient:
     )
     def __init__(self, cache_api_calls=None, cache_file_name=None) -> None:
         logger.debug("Initializing OllamaClient")
-        self.base_url = config_manager.get("base_url", "http://localhost:11434/v1")
+        self._cache_lock = threading.RLock()
+        self._thread_local = threading.local()
+        self.base_url = (
+            config_manager.get("base_url") or "http://localhost:11434/v1"
+        )
         logger.debug(f"base_url set to {self.base_url}")
 
-        # Set up caching
-        self.cache_api_calls = cache_api_calls
-        self.cache_file_name = cache_file_name
-        if self.cache_api_calls:
-            self.api_cache = self._load_cache()
+        # Set up caching via the base class method
+        self.set_api_cache(cache_api_calls, cache_file_name)
 
-    def set_api_cache(self, cache_api_calls, cache_file_name=None):
-        """
-        Enables or disables the caching of API calls.
+    @staticmethod
+    def _messages_with_structured_output_fallback(messages, response_format):
+        """Copy messages and add a schema instruction when one was requested.
 
-        Args:
-        cache_file_name (str): The name of the file to use for caching API calls.
+        The legacy Ollama client targets its OpenAI-compatible endpoint, whose
+        native schema capabilities vary by Ollama version. A prompt-level JSON
+        Schema instruction is the portable fallback; M2 adapters may replace
+        it with native schema transport when the selected runtime supports it.
         """
-        self.cache_api_calls = cache_api_calls
-        self.cache_file_name = cache_file_name
-        if self.cache_api_calls:
-            # load the cache, if any
-            self.api_cache = self._load_cache()
+        prepared_messages = [dict(message) for message in messages]
+        if response_format is None:
+            return prepared_messages
+
+        if (
+            isinstance(response_format, dict)
+            and response_format.get("type") == "json_object"
+        ):
+            instruction = {
+                "role": "system",
+                "content": (
+                    "Return only a valid JSON object. Do not include markdown "
+                    "fences or explanatory prose."
+                ),
+            }
+            return [instruction, *prepared_messages]
+
+        if hasattr(response_format, "model_json_schema"):
+            schema = response_format.model_json_schema()
+        elif isinstance(response_format, dict):
+            json_schema = response_format.get("json_schema")
+            if isinstance(json_schema, dict) and "schema" in json_schema:
+                schema = json_schema["schema"]
+            else:
+                schema = response_format
+        else:
+            schema = str(response_format)
+
+        schema_text = json.dumps(schema, ensure_ascii=False, sort_keys=True)
+        instruction = {
+            "role": "system",
+            "content": (
+                "Return only valid JSON matching the following JSON Schema. "
+                "Do not include markdown fences or explanatory prose.\n"
+                f"JSON Schema: {schema_text}"
+            ),
+        }
+        return [instruction, *prepared_messages]
 
     @config_manager.config_defaults(
         model="model",
@@ -94,10 +132,14 @@ class OllamaClient:
             time.sleep(waiting_time)
             waiting_time = waiting_time * exponential_backoff_factor
 
+        prepared_messages = self._messages_with_structured_output_fallback(
+            current_messages, response_format
+        )
+
         # Prepare the API parameters
         chat_api_params = {
             "model": model,
-            "messages": current_messages,
+            "messages": prepared_messages,
             "options": {
                 "temperature": temperature,
                 "top_p": top_p,
@@ -127,8 +169,15 @@ class OllamaClient:
 
                 # Check cache first
                 cache_key = str((model, chat_api_params))
-                if self.cache_api_calls and (cache_key in self.api_cache):
-                    response = self.api_cache[cache_key]
+                self._thread_local.last_cache_key = cache_key
+                with self._cache_lock:
+                    cached_response = (
+                        self.api_cache.get(cache_key)
+                        if self.cache_api_calls
+                        else None
+                    )
+                if cached_response is not None:
+                    response = cached_response
                 else:
                     logger.info(
                         f"Waiting {waiting_time} seconds before next API request..."
@@ -145,29 +194,49 @@ class OllamaClient:
 
                     # Cache the response if caching is enabled
                     if self.cache_api_calls:
-                        self.api_cache[cache_key] = response
-                        self._save_cache()
+                        with self._cache_lock:
+                            self.api_cache[cache_key] = response
+                            self._save_cache()
 
                 end_time = time.monotonic()
                 logger.debug(
                     f"Got response in {end_time - start_time:.2f} seconds after {i} attempts"
                 )
 
-                # Extract and return the relevant part of the response
-                return utils.sanitize_dict(self._extract_response(response))
+                # Extract and return the relevant part of the response while
+                # preserving the shared client contract for typed callers.
+                extracted = self._extract_response(response)
+                if enable_pydantic_model_return:
+                    return utils.to_pydantic_or_sanitized_dict(
+                        extracted, model=response_format
+                    )
+                return utils.sanitize_dict(extracted)
 
             except requests.exceptions.RequestException as e:
                 logger.error(f"[{i}] Request error: {e}")
+                self.invalidate_last_cache_entry()
                 if "Invalid request" in str(e):
                     raise InvalidRequestError(str(e))
                 aux_exponential_backoff()
 
             except Exception as e:
                 logger.error(f"[{i}] Error: {e}")
+                self.invalidate_last_cache_entry()
                 aux_exponential_backoff()
 
         logger.error(f"Failed to get response after {max_attempts} attempts")
         return None
+
+    def invalidate_last_cache_entry(self):
+        """Evict this thread's last request so structured retries can recover."""
+        cache_key = getattr(self._thread_local, "last_cache_key", None)
+        if cache_key is None or not self.cache_api_calls:
+            return
+        with self._cache_lock:
+            if cache_key in self.api_cache:
+                del self.api_cache[cache_key]
+                self._save_cache()
+        self._thread_local.last_cache_key = None
 
     def _make_request(self, endpoint, method="POST", **kwargs):
         """
@@ -196,26 +265,6 @@ class OllamaClient:
             logger.error(f"Error extracting response: {e}")
             logger.error(f"Response structure: {response}")
             raise ValueError("Invalid response format from Ollama")
-
-    def _save_cache(self):
-        """
-        Saves the API cache to disk using pickle.
-        """
-        with open(self.cache_file_name, "wb") as f:
-            pickle.dump(self.api_cache, f)
-
-    def _load_cache(self):
-        """
-        Loads the API cache from disk.
-        """
-        if os.path.exists(self.cache_file_name):
-            try:
-                with open(self.cache_file_name, "rb") as f:
-                    return pickle.load(f)
-            except (EOFError, pickle.UnpicklingError) as e:
-                logger.warning(f"Cache file exists but could not be loaded: {e}. Starting with empty cache.")
-                return {}
-        return {}
 
     def get_models(self):
         """

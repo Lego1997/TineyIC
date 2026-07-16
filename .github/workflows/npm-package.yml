@@ -1,0 +1,98 @@
+name: npm package
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - revamp/prd
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-package-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: ${{ matrix.os }} / Node ${{ matrix.node }} / uv ${{ matrix.uv }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            node: 22.14.0
+            uv: 0.7.12
+            retain_package: false
+          - os: ubuntu-24.04
+            node: 24
+            uv: 0.11.28
+            retain_package: true
+          - os: macos-15
+            node: 24
+            uv: 0.11.28
+            retain_package: false
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: ${{ matrix.uv }}
+          enable-cache: true
+
+      - name: Install the locked workspace
+        run: |
+          uv python install 3.12
+          uv sync --frozen
+          npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify the lock and full offline suite
+        env:
+          UV_OFFLINE: "1"
+          UV_PYTHON_DOWNLOADS: never
+        run: |
+          uv lock --check --offline
+          npm run test:offline
+
+      - name: Pack and test the exact release artifact
+        if: matrix.retain_package
+        id: pack
+        shell: bash
+        env:
+          UV_OFFLINE: "1"
+          UV_PYTHON_DOWNLOADS: never
+        run: |
+          set -euo pipefail
+          npm pack --json > npm-pack.json
+          tarball="$(node -e 'const fs = require("node:fs"); const [entry] = JSON.parse(fs.readFileSync("npm-pack.json", "utf8")); process.stdout.write(entry.filename)')"
+          test -f "$tarball"
+          TINYIC_NPM_TARBALL="$tarball" uv run --offline pytest -q tests/test_npm_packaging.py
+          sha256sum "$tarball" > "$tarball.sha256"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+
+      - name: Retain the reviewed package
+        if: matrix.retain_package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tinyic-npm-package
+          path: |
+            ${{ steps.pack.outputs.tarball }}
+            ${{ steps.pack.outputs.tarball }}.sha256
+            npm-pack.json
+          if-no-files-found: error
+          retention-days: 7

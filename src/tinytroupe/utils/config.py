@@ -1,5 +1,7 @@
 import configparser
 import logging
+import os
+import re
 import sys
 import threading
 from datetime import datetime
@@ -32,6 +34,11 @@ def _current_formatter():
 def _apply_formatter(handler):
     if handler is not None:
         handler.setFormatter(_current_formatter())
+        if not any(
+            isinstance(item, CredentialRedactionFilter)
+            for item in handler.filters
+        ):
+            handler.addFilter(CredentialRedactionFilter())
 
 
 def _refresh_handler_formatters_locked():
@@ -209,8 +216,74 @@ class ThreadSafeFileHandler(logging.FileHandler):
                 )
 
 
+class CredentialRedactionFilter(logging.Filter):
+    """Remove credential material before a record reaches any handler."""
+
+    _AUTH_PATTERN = re.compile(
+        r"(?i)(\bauthorization\s*:\s*(?:bearer|basic)|\bbearer)"
+        r"\s+[^\s,;\"']+"
+    )
+    _QUERY_PATTERN = re.compile(
+        r"(?i)([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|"
+        r"token|secret|key)=)[^&\s\"']+"
+    )
+    _TOKEN_PATTERN = re.compile(
+        r"(?<![A-Za-z0-9_-])(?:"
+        r"(?:sk|xai|ghp|gho|github_pat)-[A-Za-z0-9_-]{8,}"
+        r"|AIza[0-9A-Za-z_-]{20,}"
+        r"|AKIA[0-9A-Z]{16}"
+        r"|eyJ[0-9A-Za-z_-]{8,}\.[0-9A-Za-z_-]{8,}\."
+        r"[0-9A-Za-z_-]{8,}"
+        r")"
+    )
+    _CREDENTIAL_ENV_VARS = (
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "XAI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "MOONSHOT_API_KEY",
+        "KIMI_API_KEY",
+        # DeepSeek left the product in v2.1, but a user's shell may still
+        # export the key; redacting a stale env secret costs nothing.
+        "DEEPSEEK_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "AZURE_OPENAI_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    )
+
+    @classmethod
+    def _redact(cls, message: str) -> str:
+        redacted = cls._AUTH_PATTERN.sub(r"\1 [REDACTED]", message)
+        redacted = cls._QUERY_PATTERN.sub(r"\1[REDACTED]", redacted)
+        redacted = cls._TOKEN_PATTERN.sub("[REDACTED]", redacted)
+        secrets = {
+            value
+            for name in cls._CREDENTIAL_ENV_VARS
+            if (value := os.getenv(name))
+        }
+        for secret in sorted(secrets, key=len, reverse=True):
+            redacted = redacted.replace(secret, "[REDACTED]")
+        return redacted
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = self._redact(record.getMessage())
+        record.args = ()
+        # Tracebacks can repeat raw provider request/response bodies. Preserve
+        # the exception class while dropping unsafe detail from ordinary logs.
+        if record.exc_info is not None:
+            exception_name = record.exc_info[0].__name__
+            record.msg = f"{record.msg} [{exception_name} details omitted]"
+            record.exc_info = None
+            record.exc_text = None
+        record.stack_info = None
+        return True
+
+
 def start_logger(config: configparser.ConfigParser):
-    global _log_file_path, _console_handler, _file_handler, _console_level, _file_level, _include_thread_info
+    global _log_file_path, _console_handler, _file_handler, _root_level
+    global _console_level, _file_level, _include_thread_info
 
     # Collect changes under lock, but avoid calling logging APIs while holding it.
     with _logging_lock:
@@ -234,7 +307,11 @@ def start_logger(config: configparser.ConfigParser):
 
         new_console = None
         if _console_level is not None:
-            new_console = logging.StreamHandler(stream=sys.stdout)
+            # TinyIC divergence (M6): console logs go to STDERR, never STDOUT.
+            # In ``tinyic debate --json`` STDOUT is a machine channel carrying
+            # ONLY event JSONL, so any log line on STDOUT would corrupt the
+            # agent contract. STDERR is the human-progress/diagnostics channel.
+            new_console = logging.StreamHandler(stream=sys.stderr)
             _apply_formatter(new_console)
 
         new_file = _create_file_handler() if _file_level is not None else None
@@ -306,7 +383,9 @@ def set_console_loglevel(log_level):
         else:
             _console_level = level
             if _console_handler is None:
-                handler = logging.StreamHandler(stream=sys.stdout)
+                # TinyIC divergence (M6): console logs go to STDERR (see
+                # ``start_logger``); STDOUT stays a clean event-JSONL channel.
+                handler = logging.StreamHandler(stream=sys.stderr)
                 _apply_formatter(handler)
                 _console_handler = handler
             new_handler = _console_handler

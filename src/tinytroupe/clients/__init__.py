@@ -4,7 +4,7 @@ from tinytroupe import config_manager, utils
 
 from .azure_client import AzureClient
 from .ollama_client import OllamaClient
-from .openai_client import OpenAIClient
+from .openai_client import LLMCacheBase, OpenAIClient
 
 logger = logging.getLogger("tinytroupe")
 
@@ -45,6 +45,28 @@ class NonTerminalError(Exception):
 _api_type_to_client = {}
 _api_type_override = None
 
+# TinyIC divergence (M2 FR-1.1/FR-1.5): a single, optional resolver hook lets a
+# higher layer route ``client()`` to a per-consumer, binding-backed client
+# without editing every vendored call site (the persona act loop in
+# ``agent/action_generator.py`` and vote extraction in
+# ``extraction/results_extractor.py`` both call ``client()``). The hook is
+# consulted first; returning ``None`` (its inert default) preserves the legacy
+# process-global client exactly, so unrouted runs are byte-for-byte unchanged.
+_client_resolver = None
+
+
+def set_client_resolver(resolver):
+    """Install (or clear with ``None``) the optional per-call client resolver.
+
+    ``resolver`` is a zero-argument callable returning either a client-like
+    object implementing ``send_message`` or ``None`` to fall back to the
+    configured process-global client. TinyIC installs one that consults a
+    context-scoped active :class:`ModelBinding` client so each persona and the
+    aggregator route through their own model; nothing else uses it.
+    """
+    global _client_resolver
+    _client_resolver = resolver
+
 
 def register_client(api_type, client):
     """
@@ -76,6 +98,14 @@ def client():
     """
     Returns the client for the configured API type.
     """
+    # TinyIC divergence (M2): consult the optional per-call resolver first. When
+    # it yields a client (a routed persona/aggregator turn), use it; otherwise
+    # fall through to the unchanged configured process-global client.
+    if _client_resolver is not None:
+        resolved = _client_resolver()
+        if resolved is not None:
+            return resolved
+
     api_type = (
         config_manager.get("api_type")
         if _api_type_override is None

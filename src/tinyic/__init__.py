@@ -1,2 +1,7 @@
 """tinyIC: AI-powered investment committee simulator."""
-__version__ = "0.1.0"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("tinyic")
+except PackageNotFoundError:  # pragma: no cover - source tree without install metadata
+    __version__ = "0.0.0+unknown"

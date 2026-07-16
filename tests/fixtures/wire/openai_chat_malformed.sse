@@ -1,0 +1,11 @@
+data: {"choices":[{"index":0,"delta":{"content":"good1"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content": <-- truncated broken frame
+
+data: not-json-at-all
+
+data: {"choices":[{"index":0,"delta":{"content":"good2"},"finish_reason":"stop"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}
+
+data: [DONE]

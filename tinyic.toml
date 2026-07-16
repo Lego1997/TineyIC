@@ -1,0 +1,75 @@
+# TinyIC committee presets (FR-1.4).
+#
+# A preset names one committee configuration: a ModelBinding for every persona,
+# one for the aggregator (memo + vote extraction synthesis), and one for the
+# moderator. Select a preset per debate with `tinyic debate <ticker> --preset
+# <name>` (or `run_debate(..., preset="<name>")`); per-debate `--model` /
+# `--thinking` overrides force a choice across every role on top of the preset.
+#
+# Schema
+# ------
+#   * `default_preset`  — which preset is used when the caller names none.
+#   * `[presets.<name>]` — one committee. Its top-level keys are the
+#     committee-wide *default* binding, inherited by any role that omits a field:
+#       - `model`        required "provider/model" ref (e.g. "openai/gpt-5.6-sol")
+#       - `thinking`     off | minimal | low | medium | high | xhigh | max
+#       - `auth_profile` optional; resolved by the M3 auth profile store
+#       - `[presets.<name>.params]` optional provider-agnostic knobs (temperature…)
+#   * `[presets.<name>.aggregator]` / `[...moderator]` — role overrides.
+#   * `[presets.<name>.personas.<snake_case_name>]` — per-persona overrides;
+#     unlisted personas fall back to the committee default binding.
+#
+# Heterogeneity is a cost/character knob: prefer task-specialized, same-tier
+# mixes (e.g. a strong-reasoning model for the value hawk) over random variety.
+
+default_preset = "default"
+
+# Legal/policy kill switch for the official Claude Code subscription runtime.
+# False skips that lane before token inspection/process startup; a later
+# Anthropic API-key profile in auth_order remains available as overflow.
+[auth.anthropic]
+policy_guard = true
+
+# Same kill switch for the Grok (xAI) subscription lane — a read-through of
+# your own grok-CLI sign-in (~/.grok/auth.json) or TinyIC's own device-code
+# tokens. xAI has not published an explicit third-party policy for this lane;
+# false skips it before any token read, and an XAI_API_KEY profile in
+# auth_order remains available as overflow.
+[auth.grok]
+policy_guard = true
+
+# One strong model for the whole committee — the recommended starting point.
+[presets.default]
+model = "openai/gpt-5.6-sol"
+thinking = "high"
+auth_profile = "openai:default"
+
+[presets.default.params]
+temperature = 0.7
+
+# A mixed-provider committee showing per-persona heterogeneity: a shared default,
+# an Anthropic aggregator for synthesis, a cheap minimal-reasoning moderator, and
+# two personas pinned to their own models. Personas not listed here (Munger,
+# Lynch, Marks, Li Lu) inherit the committee default binding above.
+[presets.heterogeneous]
+model = "openai/gpt-5.6-sol"
+thinking = "high"
+
+[presets.heterogeneous.params]
+temperature = 0.7
+
+[presets.heterogeneous.aggregator]
+model = "anthropic/claude-opus-4-8"
+thinking = "high"
+
+[presets.heterogeneous.moderator]
+model = "openai/gpt-5.6-luna"
+thinking = "minimal"
+
+[presets.heterogeneous.personas.warren_buffett]
+model = "openai/gpt-5.6-sol"
+thinking = "xhigh"
+
+[presets.heterogeneous.personas.benjamin_graham]
+model = "kimi/kimi-k2.6"
+thinking = "high"

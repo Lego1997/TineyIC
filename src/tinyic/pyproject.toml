@@ -1,14 +1,31 @@
 [project]
 name = "tinyic"
-version = "0.1.0"
+version = "2.2.0"
 requires-python = ">=3.12"
+classifiers = [
+    "Private :: Do Not Upload",
+]
 dependencies = [
     "tinytroupe",
+    "httpx[socks]",
+    "claude-agent-sdk>=0.2.116",
+    "keyring>=25.6",
     "python-dotenv",
     "yfinance>=1.2.0",
     "edgartools>=5.25.1",
-    "streamlit>=1.40.0",
+    # The theme layer (tinyic/tui/theme.py) imports textual.theme.Theme and
+    # uses App.register_theme / App.theme / App.current_theme — APIs that first
+    # shipped in Textual 0.86.0; 1.0 is the first stable release carrying them.
+    "textual>=1.0",
 ]
+
+[project.optional-dependencies]
+# China-market data source (A-share / HK via akshare). Heavy (~16 transitive
+# deps incl. a mini JS engine), so it is opt-in: uv sync --extra cn
+cn = ["akshare>=1.18"]
+
+[project.scripts]
+tinyic = "tinyic.cli:main"
 
 [tool.uv.sources]
 tinytroupe = { workspace = true }
@@ -18,7 +35,19 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["tinyic", "tinyic.personas", "tinyic.personas.configs", "tinyic.data", "tinyic.debate", "tinyic.ui"]
+include-package-data = false
+packages = ["tinyic", "tinyic.auth", "tinyic.personas", "tinyic.personas.factory", "tinyic.data", "tinyic.debate", "tinyic.models", "tinyic.models.adapters", "tinyic.models.research", "tinyic.tui", "tinyic.web"]
 
 [tool.setuptools.package-dir]
 tinyic = "."
+
+[tool.setuptools.package-data]
+"tinyic.personas" = [
+    "configs/benjamin_graham.agent.json",
+    "configs/charlie_munger.agent.json",
+    "configs/howard_marks.agent.json",
+    "configs/li_lu.agent.json",
+    "configs/peter_lynch.agent.json",
+    "configs/warren_buffett.agent.json",
+]
+"tinyic.web" = ["assets/*.html", "assets/*.js", "assets/*.css"]

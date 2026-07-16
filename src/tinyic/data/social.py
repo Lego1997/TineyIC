@@ -1,32 +1,58 @@
 """xAI API X/Twitter sentiment fetcher."""
 
 import logging
-import os
 from typing import Optional
 
+from ..models.binding import ModelBinding
+from ..models.credentials import CredentialProvider, EnvCredentialProvider
+from ._credentials import has_api_key_lane, resolve_api_key_secret
 from .models import SocialSentiment
 
 logger = logging.getLogger(__name__)
 
+# x_search is an xAI Platform (API-key) surface; the grok-cli subscription
+# OAuth lane must not be assumed to serve it, so credentials resolve through
+# the API-key lane only.
+SOCIAL_MODEL = "grok-4.3"
+_SOCIAL_BINDING = ModelBinding(f"grok/{SOCIAL_MODEL}")
+_SOCIAL_CREDENTIAL_REFS = ("XAI_API_KEY",)
+
+
+def social_lane_available(credentials: Optional[CredentialProvider]) -> bool:
+    """Whether an xAI API-key lane is configured for social sentiment."""
+    resolved = credentials if credentials is not None else EnvCredentialProvider()
+    return has_api_key_lane(_SOCIAL_BINDING, _SOCIAL_CREDENTIAL_REFS, resolved)
+
 
 def fetch_social_sentiment(
-    ticker: str, company_name: str
+    ticker: str,
+    company_name: str,
+    credentials: Optional[CredentialProvider] = None,
 ) -> Optional[SocialSentiment]:
     """Fetch X/Twitter sentiment via xAI Responses API with x_search tool.
 
     Uses the OpenAI SDK with base_url override (xAI is OpenAI-compatible).
-    Requires XAI_API_KEY environment variable.
+    The xAI key resolves through ``credentials`` (an ``AuthManager`` or plain
+    :class:`CredentialProvider`); only an API-key lane is honored so a selected
+    grok subscription lane is never used for this Platform-billed surface.
 
     Args:
         ticker: Stock ticker symbol.
         company_name: Company name for search context.
+        credentials: Credential provider; defaults to the process environment.
 
     Returns:
         SocialSentiment with summary and bull/bear points, or None on failure.
     """
-    api_key = os.getenv("XAI_API_KEY")
+    resolved = credentials if credentials is not None else EnvCredentialProvider()
+    api_key = resolve_api_key_secret(
+        _SOCIAL_BINDING, _SOCIAL_CREDENTIAL_REFS, resolved
+    )
     if not api_key:
-        logger.warning("XAI_API_KEY not set, skipping X/Twitter sentiment for %s", ticker)
+        logger.warning(
+            "No xAI API-key lane configured, skipping X/Twitter sentiment for %s",
+            ticker,
+        )
         return None
 
     try:
@@ -38,7 +64,7 @@ def fetch_social_sentiment(
         )
 
         response = client.responses.create(
-            model="grok-4-1-fast-non-reasoning",
+            model=SOCIAL_MODEL,
             input=[
                 {
                     "role": "user",

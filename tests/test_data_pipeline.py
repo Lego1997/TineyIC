@@ -6,12 +6,13 @@ Plan 02: filings, social, pipeline + live API integration (14+ tests)
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
 
+import tinyic.data.pipeline as pipeline_module
 from tinyic.data.models import (
     DataPackage,
     FinancialData,
@@ -26,6 +27,7 @@ from tinyic.data.news import fetch_news
 from tinyic.data.filings import fetch_filings
 from tinyic.data.social import fetch_social_sentiment
 from tinyic.data.pipeline import build_data_package
+from tinyic.debate.control import DebateStopRequested, RunControl
 
 
 # ---------------------------------------------------------------------------
@@ -732,6 +734,9 @@ class TestFetchSocialSentiment:
         assert result is not None
         assert result.query == "$AAPL Apple Inc."
         assert "Bullish" in result.summary or "bullish" in result.summary
+        request = mock_client.responses.create.call_args.kwargs
+        assert request["tools"] == [{"type": "x_search"}]
+        assert request["model"] == "grok-4.3"
 
     @patch.dict(os.environ, {}, clear=True)
     def test_fetch_social_no_key(self):
@@ -797,6 +802,7 @@ class TestBuildDataPackage:
         assert pkg.social is not None
         assert pkg.research_brief is not None
         assert len(pkg.warnings) == 0
+        assert pkg.fetched_at.utcoffset() == timedelta(0)
 
     @patch("tinyic.data.pipeline.resolve_ticker")
     def test_build_data_package_invalid_ticker(self, mock_resolve):
@@ -805,6 +811,90 @@ class TestBuildDataPackage:
 
         with pytest.raises(ValueError, match="Invalid ticker"):
             build_data_package("XYZNOTREAL")
+
+    def test_stop_after_source_prevents_all_later_network_calls(
+        self, monkeypatch
+    ):
+        control = RunControl()
+        calls: list[str] = []
+
+        def record(name, value=None, *, stop=False):
+            def operation(*_args):
+                calls.append(name)
+                if stop:
+                    control.stop()
+                return value
+
+            return operation
+
+        monkeypatch.setattr(
+            pipeline_module,
+            "resolve_ticker",
+            record("resolve", (True, "AAPL", "Apple Inc.")),
+        )
+        monkeypatch.setattr(
+            pipeline_module,
+            "_fetch_description",
+            record("description", "Apple"),
+        )
+        monkeypatch.setattr(
+            pipeline_module,
+            "fetch_financials",
+            record("financials", None, stop=True),
+        )
+        for name in (
+            "fetch_filings",
+            "fetch_news",
+            "fetch_social_sentiment",
+            "detect_cn_market",
+            "fetch_cn_market_data",
+            "build_research_brief",
+        ):
+            monkeypatch.setattr(
+                pipeline_module,
+                name,
+                record(name),
+            )
+
+        with pytest.raises(DebateStopRequested):
+            build_data_package("AAPL", checkpoint=control.check_stop)
+        assert calls == ["resolve", "description", "financials"]
+
+    def test_stop_after_social_prevents_paid_research(self, monkeypatch):
+        control = RunControl()
+        research_called = False
+
+        monkeypatch.setattr(
+            pipeline_module,
+            "resolve_ticker",
+            lambda _ticker: (True, "AAPL", "Apple Inc."),
+        )
+        monkeypatch.setattr(pipeline_module, "_fetch_description", lambda _t: None)
+        monkeypatch.setattr(pipeline_module, "fetch_financials", lambda _t: None)
+        monkeypatch.setattr(
+            pipeline_module, "fetch_filings", lambda _t, _form: None
+        )
+        monkeypatch.setattr(pipeline_module, "fetch_news", lambda _t: None)
+
+        def stop_after_social(_ticker, _company, _credentials=None):
+            control.stop()
+            return None
+
+        def research(*_args):
+            nonlocal research_called
+            research_called = True
+
+        monkeypatch.setattr(
+            pipeline_module,
+            "fetch_social_sentiment",
+            stop_after_social,
+        )
+        monkeypatch.setattr(pipeline_module, "detect_cn_market", lambda _t: None)
+        monkeypatch.setattr(pipeline_module, "build_research_brief", research)
+
+        with pytest.raises(DebateStopRequested):
+            build_data_package("AAPL", checkpoint=control.check_stop)
+        assert research_called is False
 
     @patch("tinyic.data.pipeline.build_research_brief", return_value=None)
     @patch("tinyic.data.pipeline.fetch_social_sentiment")
@@ -954,3 +1044,255 @@ class TestLiveAPIIntegration:
         print(f"Social: {'Yes' if pkg.social else 'No'}")
         print(f"Warnings: {pkg.warnings}")
         print(f"Context string length: {len(ctx)} chars")
+
+
+# ---------------------------------------------------------------------------
+# Test credential seam for the API-key-gated data sources (TIC-005)
+# ---------------------------------------------------------------------------
+
+from tinyic.auth.manager import AuthManager
+from tinyic.auth.profiles import AuthLane, AuthProfile, ProfileKind, ProfileStore
+
+
+class _MemoryKeyring:
+    """Keyring-free secret store so the auth manager never touches the OS."""
+
+    def __init__(self):
+        self.value = None
+
+    def get_password(self, _service, _username):
+        return self.value
+
+    def set_password(self, _service, _username, value):
+        self.value = value
+
+
+def _grok_api_key_manager(tmp_path, secret, *, environ=None):
+    store = ProfileStore(
+        keyring_backend=_MemoryKeyring(), path=tmp_path / "creds.json"
+    )
+    store.put(AuthProfile("grok:apikey", ProfileKind.API_KEY, AuthLane.API_KEY, secret))
+    store.set_auth_order("grok", ["grok:apikey"])
+    return AuthManager(store, environ=environ or {})
+
+
+def _grok_subscription_manager(tmp_path, *, environ=None):
+    store = ProfileStore(
+        keyring_backend=_MemoryKeyring(), path=tmp_path / "creds.json"
+    )
+    store.put(
+        AuthProfile("grok:cli", ProfileKind.GROK_READTHROUGH, AuthLane.SUBSCRIPTION)
+    )
+    store.set_auth_order("grok", ["grok:cli"])
+    return AuthManager(store, environ=environ or {})
+
+
+class TestSocialCredentialSeam:
+    """fetch_social_sentiment resolves the xAI key through the auth seam."""
+
+    @patch("openai.OpenAI")
+    @patch.dict(os.environ, {"XAI_API_KEY": "stale-env-key"})
+    def test_skips_subscription_only_lane_and_ignores_env(
+        self, mock_openai, tmp_path
+    ):
+        # Selected lane is a grok subscription; a stale key sits in the process
+        # environment. The seam must not read os.environ, so no client is built.
+        manager = _grok_subscription_manager(tmp_path)
+        result = fetch_social_sentiment("AAPL", "Apple Inc.", manager)
+        assert result is None
+        mock_openai.assert_not_called()
+
+    @patch("openai.OpenAI")
+    def test_named_api_key_profile_beats_env_value(self, mock_openai, tmp_path):
+        manager = _grok_api_key_manager(
+            tmp_path, "profile-secret", environ={"XAI_API_KEY": "env-secret"}
+        )
+        mock_client = MagicMock()
+        mock_client.responses.create.return_value = MagicMock(
+            output_text="Bullish on AAPL"
+        )
+        mock_openai.return_value = mock_client
+
+        result = fetch_social_sentiment("AAPL", "Apple Inc.", manager)
+        assert result is not None
+        assert mock_openai.call_args.kwargs["api_key"] == "profile-secret"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://api.x.ai/v1"
+
+    def test_build_data_package_warning_names_lane(self, tmp_path):
+        manager = _grok_subscription_manager(tmp_path)
+        with (
+            patch(
+                "tinyic.data.pipeline.resolve_ticker",
+                return_value=(True, "AAPL", "Apple Inc."),
+            ),
+            patch("tinyic.data.pipeline._fetch_description", return_value=None),
+            patch("tinyic.data.pipeline.fetch_financials", return_value=None),
+            patch("tinyic.data.pipeline.fetch_filings", return_value=None),
+            patch("tinyic.data.pipeline.fetch_news", return_value=None),
+            patch("tinyic.data.pipeline.detect_cn_market", return_value=None),
+        ):
+            pkg = build_data_package(
+                "AAPL", deep_research=False, credentials=manager
+            )
+        social = [w for w in pkg.warnings if "sentiment" in w.lower()]
+        assert social
+        assert "grok API-key lane not configured" in social[0]
+
+
+# ---------------------------------------------------------------------------
+# Test resolver fails closed on non-security quotes (TIC-002)
+# ---------------------------------------------------------------------------
+
+class TestResolverFailsClosed:
+    """A name search must not silently bind to a non-security quote."""
+
+    @patch("yfinance.Ticker")
+    @patch("yfinance.Search")
+    def test_name_search_rejects_crypto_only_result(
+        self, mock_search, mock_ticker
+    ):
+        # A genuinely private company whose only quote is a tokenized-stock
+        # crypto listing (the ANTHROPIC-USD shape) must resolve invalid.
+        mock_search.return_value = MagicMock(quotes=[
+            {
+                "symbol": "ANTHROPIC-USD",
+                "longname": "Anthropic tokenized stock (PreStocks) USD",
+                "quoteType": "CRYPTOCURRENCY",
+            },
+        ])
+        mock_ticker.return_value = MagicMock(info={})
+        is_valid, symbol, name = resolve_ticker("Anthropic")
+        assert is_valid is False
+        assert symbol == ""
+
+    @patch("yfinance.Search")
+    def test_name_search_accepts_etf(self, mock_search):
+        mock_search.return_value = MagicMock(quotes=[
+            {
+                "symbol": "SPY",
+                "longname": "SPDR S&P 500 ETF Trust",
+                "quoteType": "ETF",
+            },
+        ])
+        is_valid, symbol, name = resolve_ticker("S&P 500 index fund")
+        assert is_valid is True
+        assert symbol == "SPY"
+
+
+# ---------------------------------------------------------------------------
+# Test recent-listing note (TIC-002 companion)
+# ---------------------------------------------------------------------------
+
+class TestListingContext:
+    """fetch_financials flags a very recent first-trade date."""
+
+    @patch("yfinance.Ticker")
+    def test_recent_first_trade_adds_note(self, mock_ticker_cls):
+        recent_ms = int(
+            (datetime.now(timezone.utc) - timedelta(days=30)).timestamp() * 1000
+        )
+        mock_ticker_cls.return_value = MagicMock(
+            info={"trailingPE": 90.0, "firstTradeDateMilliseconds": recent_ms},
+            income_stmt=pd.DataFrame(),
+            balance_sheet=pd.DataFrame(),
+        )
+        result = fetch_financials("SPCX")
+        assert result is not None
+        assert result.listing_note is not None
+        assert "Recently listed" in result.listing_note
+
+    @patch("yfinance.Ticker")
+    def test_old_first_trade_has_no_note(self, mock_ticker_cls):
+        old_ms = int(
+            (datetime.now(timezone.utc) - timedelta(days=5 * 365)).timestamp() * 1000
+        )
+        mock_ticker_cls.return_value = MagicMock(
+            info={"trailingPE": 28.0, "firstTradeDateMilliseconds": old_ms},
+            income_stmt=pd.DataFrame(),
+            balance_sheet=pd.DataFrame(),
+        )
+        result = fetch_financials("AAPL")
+        assert result is not None
+        assert result.listing_note is None
+
+
+# ---------------------------------------------------------------------------
+# Test cross-source coherence + entity-resolution provenance (TIC-002)
+# ---------------------------------------------------------------------------
+
+import tinyic.debate as debate_module
+
+
+def _pipeline_source_patches(resolved, financials, filings):
+    return (
+        patch("tinyic.data.pipeline.resolve_ticker", return_value=resolved),
+        patch("tinyic.data.pipeline._fetch_description", return_value=None),
+        patch("tinyic.data.pipeline.fetch_financials", return_value=financials),
+        patch("tinyic.data.pipeline.fetch_filings", return_value=filings),
+        patch("tinyic.data.pipeline.fetch_news", return_value=None),
+        patch("tinyic.data.pipeline.fetch_social_sentiment", return_value=None),
+        patch("tinyic.data.pipeline.detect_cn_market", return_value=None),
+    )
+
+
+class TestPipelineCrossSourceSignals:
+    def test_market_data_without_filings_adds_degraded_caution(self):
+        financials = FinancialData(pe_ratio=93.0, market_cap=1_792_000_000_000)
+        with self._patched((True, "SPCX", "Space Exploration Technologies"), financials, None):
+            pkg = build_data_package("SPCX", deep_research=False)
+        caution = [w for w in pkg.warnings if "caution" in w.lower()]
+        assert caution
+        assert "no SEC 10-K/10-Q" in caution[0]
+        # Contains "financial", so data_ready marks the source degraded.
+        payload = debate_module._data_ready_payload(pkg)
+        statuses = {s["name"]: s["status"] for s in payload["sources"]}
+        assert statuses["financials"] == "degraded"
+
+    def test_caution_uses_listing_note_when_present(self):
+        financials = FinancialData(
+            pe_ratio=93.0,
+            listing_note="Recently listed: first traded 2026-06-12 (33 days ago); a 10-K/10-Q may not exist yet",
+        )
+        with self._patched((True, "SPCX", "SpaceX"), financials, None):
+            pkg = build_data_package("SPCX", deep_research=False)
+        caution = [w for w in pkg.warnings if "caution" in w.lower()]
+        assert caution
+        assert "Recently listed: first traded 2026-06-12" in caution[0]
+
+    def test_filings_present_no_caution(self):
+        financials = FinancialData(pe_ratio=28.0)
+        filing = FilingSummary(form_type="10-K", text_summary="Business...")
+        with self._patched((True, "AAPL", "Apple Inc."), financials, filing):
+            pkg = build_data_package("AAPL", deep_research=False)
+        assert not any("caution" in w.lower() for w in pkg.warnings)
+
+    def test_name_resolution_adds_provenance_warning(self):
+        financials = FinancialData(pe_ratio=93.0)
+        with self._patched((True, "SPCX", "Space Exploration Technologies"), financials, None):
+            pkg = build_data_package("SpaceX", deep_research=False)
+        prov = [w for w in pkg.warnings if "Entity resolution unverified" in w]
+        assert prov
+        assert "SpaceX" in prov[0]
+        assert "SPCX" in prov[0]
+
+    def test_exact_ticker_has_no_provenance_warning(self):
+        financials = FinancialData(pe_ratio=28.0)
+        filing = FilingSummary(form_type="10-K", text_summary="Business...")
+        with self._patched((True, "AAPL", "Apple Inc."), financials, filing):
+            pkg = build_data_package("AAPL", deep_research=False)
+        assert not any(
+            "Entity resolution" in w for w in pkg.warnings
+        )
+
+    @staticmethod
+    def _patched(resolved, financials, filings):
+        import contextlib
+
+        @contextlib.contextmanager
+        def ctx():
+            with contextlib.ExitStack() as stack:
+                for cm in _pipeline_source_patches(resolved, financials, filings):
+                    stack.enter_context(cm)
+                yield
+
+        return ctx()
