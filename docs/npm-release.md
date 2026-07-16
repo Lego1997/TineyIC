@@ -73,9 +73,12 @@ For the first release only, prepare—but do not push—a final documentation
 commit that makes the approved scoped npm identity the primary install path.
 Create its exact matching tag locally so the release gate above validates the
 revision, but do not push the commit or tag yet. Publish the tested tarball
-under `next`, verify it, then push that exact commit and its pre-created tag
-before promoting `latest`. If publication fails, do not push registry install
-instructions for an unpublished package.
+under `next`, then immediately verify its integrity, installation, and actual
+registry tags. npm may also assign `latest` while creating a brand-new package,
+even when `--tag next` is supplied. Push the exact commit and its pre-created
+tag only after verification; if `latest` remains unset, promote it afterward.
+If publication fails, do not push registry install instructions for an
+unpublished package.
 
 Create and exercise the exact tarball before sending it to the registry:
 
@@ -107,15 +110,16 @@ trees, egg-info, or inherited untracked files.
 ## First publication
 
 The initial scoped release cannot be staged. Publish the already-tested
-tarball under the non-default `next` tag, complete the 2FA challenge, compare
-its registry integrity, and install the explicit version before exposing it as
-`latest`:
+tarball under the non-default `next` tag, complete the 2FA challenge, inspect
+the resulting tags, compare its registry integrity, and install the explicit
+version:
 
 ```bash
 npm publish "$tarball" --tag next \
   --access public --registry=https://registry.npmjs.org/
 npm view "@lego1997/tinyic@2.2.0" name version dist-tags dist.integrity --json \
   --registry=https://registry.npmjs.org/
+npm dist-tag ls "@lego1997/tinyic" --registry=https://registry.npmjs.org/
 
 first_install="$(mktemp -d)"
 npm install --global --prefix "$first_install" "@lego1997/tinyic@2.2.0" \
@@ -127,16 +131,30 @@ PATH="$first_install/bin:$PATH" tinyic --version
 Compare the registry's `dist.integrity` with the `integrity` value saved in
 `/tmp/tinyic-npm-pack.json`. The explicit full gate is required because the
 tested tarball—not a newly packed working directory—is published. If those
-checks pass, push the prepared commit and exact tag, then promote the verified
-version:
+checks pass, push the prepared commit and exact tag. Promote the verified
+version only when npm did not assign `latest` during package creation:
 
 ```bash
 git push --atomic origin main v2.2.0
-npm dist-tag add "@lego1997/tinyic@2.2.0" latest \
-  --registry=https://registry.npmjs.org/
+if ! latest="$(npm view "@lego1997/tinyic" dist-tags.latest \
+  --registry=https://registry.npmjs.org/)"; then
+  echo "registry lookup failed" >&2
+  exit 1
+fi
+if test -z "$latest"; then
+  npm dist-tag add "@lego1997/tinyic@2.2.0" latest \
+    --registry=https://registry.npmjs.org/
+else
+  test "$latest" = "2.2.0"
+fi
 npm view "@lego1997/tinyic@2.2.0" dist-tags dist.integrity --json \
   --registry=https://registry.npmjs.org/
 ```
+
+For the actual 2026-07-16 first release, npm assigned both `next` and `latest`
+to `2.2.0` even though the publish command specified `--tag next`. The local
+and registry integrity values matched, and a fresh-cache registry install
+passed before the exact release commit and tag were pushed.
 
 Never use `--force`, and never reuse a published version. If a release is bad,
 prefer a patch release and `npm deprecate` guidance over unpublishing it.
