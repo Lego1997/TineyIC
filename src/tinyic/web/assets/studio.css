@@ -199,3 +199,21 @@ body[data-view="committee"] #view-committee { display: block; }
   max-width: 72ch;
 }
 .editor-actions { display: flex; gap: 0.6rem; margin-top: 1rem; }
+
+/* Committee */
+.committee-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; max-width: 56rem; }
+.committee-columns h2 { font-family: var(--serif); font-size: 1.1rem; margin: 0 0 0.6rem; }
+.committee-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+.committee-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.7rem;
+}
+.committee-row .monogram { width: 1.8rem; height: 1.8rem; font-size: 0.7rem; }
+.committee-row__name { flex: 1; }
+.committee-row__slug { color: var(--ink-faint); font-size: 0.8rem; font-family: var(--mono); }
+@media (max-width: 56rem) { .committee-columns { grid-template-columns: 1fr; } }

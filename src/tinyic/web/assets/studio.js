@@ -637,8 +637,101 @@
     }
   }
 
-  // Views added by later milestones; stubbed so the router boots today.
-  function renderCommittee() {}
+  // -- committee ------------------------------------------------------------
+
+  const committeeState = { selected: [], personas: [] };
+
+  async function renderCommittee() {
+    const errorBox = $("#committee-error");
+    errorBox.hidden = true;
+    try {
+      const [committee, personas] = await Promise.all([
+        api("GET", "/api/committee"),
+        api("GET", "/api/personas"),
+      ]);
+      committeeState.selected = committee.committee.slice();
+      committeeState.personas = personas.personas;
+      $("#committee-source").textContent =
+        (committee.source === "overlay" ? "Custom overlay" : "Built-in default") +
+        " · " + committee.committee.length + " members";
+      buildCommitteeLists();
+      $("#committee-save").onclick = onCommitteeSave;
+      $("#committee-reset").onclick = onCommitteeReset;
+    } catch (error) {
+      errorBox.textContent = "Could not load the committee: " + error.message;
+      errorBox.hidden = false;
+    }
+  }
+
+  function committeeRow(persona, actions) {
+    const row = el("li", "committee-row");
+    row.append(monogramNode(persona.name));
+    row.append(el("span", "committee-row__name", persona.name));
+    row.append(el("span", "committee-row__slug", persona.slug));
+    for (const action of actions) row.append(action);
+    return row;
+  }
+
+  function buildCommitteeLists() {
+    const selectedHost = $("#committee-selected");
+    const availableHost = $("#committee-available");
+    selectedHost.replaceChildren();
+    availableHost.replaceChildren();
+    const bySlug = new Map(committeeState.personas.map((p) => [p.slug, p]));
+    committeeState.selected.forEach((slug, index) => {
+      const persona = bySlug.get(slug) || { slug, name: slug };
+      selectedHost.append(committeeRow(persona, [
+        miniButton("\u2191", () => moveCommittee(index, -1)),
+        miniButton("\u2193", () => moveCommittee(index, 1)),
+        miniButton("\u2715", () => {
+          committeeState.selected.splice(index, 1);
+          buildCommitteeLists();
+        }),
+      ]));
+    });
+    for (const persona of committeeState.personas) {
+      if (committeeState.selected.includes(persona.slug)) continue;
+      const add = el("button", "mini-button", "+");
+      add.type = "button";
+      add.addEventListener("click", () => {
+        committeeState.selected.push(persona.slug);
+        buildCommitteeLists();
+      });
+      availableHost.append(committeeRow(persona, [add]));
+    }
+  }
+
+  function moveCommittee(index, delta) {
+    const target = index + delta;
+    if (target < 0 || target >= committeeState.selected.length) return;
+    const [item] = committeeState.selected.splice(index, 1);
+    committeeState.selected.splice(target, 0, item);
+    buildCommitteeLists();
+  }
+
+  async function onCommitteeSave() {
+    const errorBox = $("#committee-error");
+    errorBox.hidden = true;
+    try {
+      const result = await api("PUT", "/api/committee", { committee: committeeState.selected });
+      $("#committee-source").textContent =
+        (result.source === "overlay" ? "Custom overlay" : "Built-in default") +
+        " · " + result.committee.length + " members";
+      toast("Default committee saved");
+    } catch (error) {
+      const unknown = error.data && error.data.unknown ? " (" + error.data.unknown.join(", ") + ")" : "";
+      errorBox.textContent = error.message + unknown;
+      errorBox.hidden = false;
+    }
+  }
+
+  async function onCommitteeReset() {
+    const yes = await confirmDialog("Reset the default committee to the built-in six?");
+    if (!yes) return;
+    await api("PUT", "/api/committee", { committee: null });
+    toast("Reset to the built-in six");
+    renderCommittee();
+  }
 
   window.addEventListener("hashchange", route);
   route();

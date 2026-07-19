@@ -110,3 +110,15 @@ def test_editor_markup_and_modes():
         assert f'id="{element_id}"' in HTML, element_id
     assert "TinyICMarkdown.setInto(" in JS  # dossier preview
     assert "decision_checklist" in JS and "famous_quotes" in JS  # field spec
+
+
+COMMITTEE_IDS = [
+    "committee-source", "committee-selected", "committee-available",
+    "committee-error", "committee-save", "committee-reset",
+]
+
+
+def test_committee_markup_and_api_paths():
+    for element_id in COMMITTEE_IDS:
+        assert f'id="{element_id}"' in HTML, element_id
+    assert '"/api/committee"' in JS
