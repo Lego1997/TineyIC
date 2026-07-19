@@ -850,3 +850,14 @@ def test_profile_store_backend_reports_keyring_and_file(tmp_path):
 
     file_store = ProfileStore(keyring_backend=Unusable(), path=tmp_path / "b.json")
     assert file_store.backend == "file"
+
+
+def test_onboard_title_shows_step_progress(tmp_path):
+    from tinyic.tui.onboard import OnboardApp, OnboardScreen
+
+    controller = _controller(tmp_path)
+    controller.screen = OnboardScreen.CHOOSE
+    app = OnboardApp(controller, threaded_verify=False)
+    title = app._render_title().plain
+    assert "TinyIC" in title and "onboarding" in title
+    assert "step 2 of 5 · choose provider" in title
