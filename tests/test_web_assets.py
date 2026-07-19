@@ -268,9 +268,15 @@ def test_no_selector_duplication_between_base_and_page_css(
         }
 
     # The only sanctioned overlaps are cascade overrides by design: style.css
-    # re-declares :root (--composer-height), body (composer padding), and
-    # .toast (bottom offset above the fixed composer) on top of base.css.
-    assert (selectors(base_css) & selectors(css)) <= {":root", "body", ".toast"}
+    # re-declares :root (--composer-height), body (composer padding), .toast
+    # (bottom offset above the fixed composer), and .skip-link (hidden in the
+    # debate page's print rules) on top of base.css.
+    assert (selectors(base_css) & selectors(css)) <= {
+        ":root",
+        "body",
+        ".toast",
+        ".skip-link",
+    }
 
 
 def test_shared_layers_keep_asset_discipline(base_css: str, md_js: str) -> None:
