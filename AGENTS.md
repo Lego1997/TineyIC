@@ -136,6 +136,26 @@ tinyic runs list --json | jq '.runs[] | {debate_id, ticker, status, consensus}'
 
 ---
 
+## Persona studio — `tinyic studio`
+
+```bash
+tinyic studio            # persistent secured localhost persona hub, opens in browser
+tinyic studio --no-open  # print the capability URL without launching a browser
+```
+
+The studio manages investor personas from the browser: a **Library** (built-in +
+user, origin-tagged), a **Research** wizard (`estimate → confirm → live SSE
+progress`, the same pipeline and gates as `persona research`), an **Editor**
+(structured fields + dossier markdown + raw JSON, schema-validated, atomic
+saves; built-ins read-only — duplicate to edit), and a **Committee** picker that
+writes the overlay `committee` key. It reuses the debate viewer's capability
+security stack (token → cookie, Host/Origin allowlists, JSON-only mutations).
+Its API (`/api/personas`, `/api/committee`, `/api/research`) is studio-local and
+adds no debate event types; research progress is a separate per-job SSE channel
+(`/api/research/<job_id>/events`), not event schema v1.
+
+---
+
 ## Research and inspect custom personas
 
 Persona research is a separate, human-summary command; `list` and `show` have

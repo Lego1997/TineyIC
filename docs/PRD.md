@@ -462,3 +462,26 @@ different member.
 - Secrets remain excluded from event logs, exports, generated persona
   artifacts, HTTP diagnostics, and tests. The browser capability appears only
   in its intended launch URL/cookie authentication flow.
+
+## 17. Amendment — v2.3 Persona Studio + UI polish (2026-07-18)
+
+**What changed.** Personas gained a persistent web face: `tinyic studio` serves
+a secured localhost hub with a persona library, a research wizard (the §16
+pipeline with its lane selection and cost-confirm gate, driven from the browser
+with per-job SSE progress), a schema-validated editor (structured, dossier, and
+raw-JSON modes), duplicate/delete management, and a default-committee picker
+writing the user-overlay `committee` key. The debate web UI, the HTML export,
+and the onboarding TUI received a unifying investment-memo polish: a shared
+`base.css` token layer and `md.js` renderer used by both pages, a light-first
+export stylesheet, a printable debate view, and wizard step-progress/key-hint
+presentation.
+
+**FRs amended.** The §16 persona surface: creation and management now have a
+web counterpart in addition to the CLI; the CLI is unchanged. Editor saves
+validate factory-generated artifacts against the strict Appendix-A schema and
+hand-maintained files against a relaxed sibling contract, so duplicated
+built-ins remain editable. Studio research progress is a studio-local event
+channel and does not extend event schema v1 (the §16 invariant is preserved).
+
+**Out of scope (still).** Multi-run dashboard, launching debates from the
+studio, persona rename, from-scratch manual creation, persona-fidelity evals.
