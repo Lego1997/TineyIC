@@ -140,3 +140,61 @@ def test_bearer_auth_accepted(studios):
     server = studios()
     status, _h, body = _request(server, "GET", "/", headers=_auth(server))
     assert status == 200 and b"TinyIC Studio" in body
+
+
+@pytest.fixture
+def user_persona(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYIC_PERSONAS_DIR", str(tmp_path))
+    agent = {
+        "type": "TinyPerson",
+        "persona": {"name": "Test Investor", "occupation": {"description": "Test"}},
+        "tinyic": {
+            "schema_version": 1,
+            "epithet": "Test epithet",
+            "philosophy_hook": "Test hook.",
+            "temperament": "balanced",
+            "sources": [{"title": "T", "url": "https://example.com", "type": "primary", "accessed": "2026-07-18"}],
+        },
+    }
+    (tmp_path / "test_investor.agent.json").write_text(json.dumps(agent), encoding="utf-8")
+    (tmp_path / "test_investor.dossier.md").write_text("# Test Investor\n", encoding="utf-8")
+    return tmp_path
+
+
+def test_personas_list_includes_origins(studios, user_persona):
+    server = studios()
+    status, payload = _json(_request(server, "GET", "/api/personas", headers=_auth(server)))
+    assert status == 200 and payload["schema_version"] == 1
+    by_slug = {item["slug"]: item for item in payload["personas"]}
+    assert by_slug["warren_buffett"]["origin"] == "built_in"
+    assert by_slug["test_investor"]["origin"] == "user"
+    assert by_slug["test_investor"]["epithet"] == "Test epithet"
+    assert by_slug["test_investor"]["source_count"] == 1
+
+
+def test_persona_get_returns_agent_and_dossier(studios, user_persona):
+    server = studios()
+    status, payload = _json(
+        _request(server, "GET", "/api/personas/test_investor", headers=_auth(server))
+    )
+    assert status == 200
+    assert payload["origin"] == "user"
+    assert payload["agent"]["persona"]["name"] == "Test Investor"
+    assert payload["dossier"] == "# Test Investor\n"
+
+
+def test_persona_get_builtin_and_unknown(studios, user_persona):
+    server = studios()
+    status, payload = _json(
+        _request(server, "GET", "/api/personas/li_lu", headers=_auth(server))
+    )
+    assert status == 200 and payload["origin"] == "built_in"
+    assert payload["agent"]["persona"]["name"]
+    status, payload = _json(
+        _request(server, "GET", "/api/personas/nobody", headers=_auth(server))
+    )
+    assert status == 404 and payload["error"] == "unknown_persona"
+    status, payload = _json(
+        _request(server, "GET", "/api/personas/Bad-Slug", headers=_auth(server))
+    )
+    assert status == 404 and payload["error"] == "unknown_persona"

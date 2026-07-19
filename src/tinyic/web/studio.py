@@ -87,6 +87,10 @@ class _StudioHandler(BaseHTTPRequestHandler):
             self._serve_asset("studio.html")
         elif path.startswith("/assets/"):
             self._serve_asset_path(path.removeprefix("/assets/"))
+        elif path == "/api/personas":
+            self._get_personas()
+        elif path.startswith("/api/personas/"):
+            self._get_persona(path.removeprefix("/api/personas/"))
         else:
             self._problem(HTTPStatus.NOT_FOUND, "not_found")
 
@@ -182,6 +186,49 @@ class _StudioHandler(BaseHTTPRequestHandler):
         return False
 
     # -- assets & body ---------------------------------------------------- #
+
+    def _get_personas(self) -> None:
+        from tinyic.personas import registry as registry_module
+        from tinyic.personas.summary import registry_summaries
+
+        try:
+            summaries = registry_summaries(registry_module)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            self._problem(HTTPStatus.INTERNAL_SERVER_ERROR, "persona_read_error")
+            self.studio.diagnostic(f"studio: persona list failed: {exc}")
+            return
+        self._send_json(
+            HTTPStatus.OK, {"schema_version": 1, "personas": summaries}
+        )
+
+    def _get_persona(self, slug: str) -> None:
+        if not SLUG_RE.fullmatch(slug):
+            self._problem(HTTPStatus.NOT_FOUND, "unknown_persona")
+            return
+        from tinyic.personas import registry as registry_module
+
+        snapshot = registry_module.registry_snapshot(warn=False)
+        path = snapshot.get(slug)
+        if path is None:
+            self._problem(HTTPStatus.NOT_FOUND, "unknown_persona")
+            return
+        try:
+            agent = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            self._problem(HTTPStatus.INTERNAL_SERVER_ERROR, "persona_read_error")
+            return
+        dossier_path = path.with_name(f"{slug}.dossier.md")
+        dossier: str | None = None
+        try:
+            if dossier_path.is_file():
+                dossier = dossier_path.read_text(encoding="utf-8")
+        except OSError:
+            dossier = None
+        origin = "built_in" if slug in registry_module.BUILTIN_PERSONAS else "user"
+        self._send_json(
+            HTTPStatus.OK,
+            {"slug": slug, "origin": origin, "agent": agent, "dossier": dossier},
+        )
 
     def _serve_asset_path(self, name: str) -> None:
         normalized = PurePosixPath(name)
