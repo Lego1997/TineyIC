@@ -98,11 +98,22 @@ class _StudioHandler(BaseHTTPRequestHandler):
         body = self._mutation_start()
         if body is None:
             return
+        parsed = urlsplit(self.path)
+        path = unquote(parsed.path)
+        if path.startswith("/api/personas/") and path.endswith("/duplicate"):
+            slug = path.removeprefix("/api/personas/").removesuffix("/duplicate")
+            self._post_duplicate(slug, body)
+            return
         self._problem(HTTPStatus.NOT_FOUND, "not_found")
 
     def do_PUT(self) -> None:  # noqa: N802 - stdlib handler API
         body = self._mutation_start()
         if body is None:
+            return
+        parsed = urlsplit(self.path)
+        path = unquote(parsed.path)
+        if path.startswith("/api/personas/"):
+            self._put_persona(path.removeprefix("/api/personas/"), body)
             return
         self._problem(HTTPStatus.NOT_FOUND, "not_found")
 
@@ -110,6 +121,11 @@ class _StudioHandler(BaseHTTPRequestHandler):
         if not self._request_security_ok():
             return
         if not self._authenticated():
+            return
+        parsed = urlsplit(self.path)
+        path = unquote(parsed.path)
+        if path.startswith("/api/personas/"):
+            self._delete_persona(path.removeprefix("/api/personas/"))
             return
         self._problem(HTTPStatus.NOT_FOUND, "not_found")
 
@@ -186,6 +202,123 @@ class _StudioHandler(BaseHTTPRequestHandler):
         return False
 
     # -- assets & body ---------------------------------------------------- #
+
+    def _user_persona_path(self, slug: str):
+        """Resolve *slug* to a writable user artifact path or report the error."""
+        if not SLUG_RE.fullmatch(slug):
+            self._problem(HTTPStatus.NOT_FOUND, "unknown_persona")
+            return None
+        from tinyic.personas import registry as registry_module
+
+        if slug in registry_module.BUILTIN_PERSONAS:
+            self._problem(HTTPStatus.FORBIDDEN, "builtin_persona_protected")
+            return None
+        path = registry_module.registry_snapshot(warn=False).get(slug)
+        if path is None:
+            self._problem(HTTPStatus.NOT_FOUND, "unknown_persona")
+            return None
+        return path
+
+    def _put_persona(self, slug: str, body: dict) -> None:
+        path = self._user_persona_path(slug)
+        if path is None:
+            return
+        agent = body.get("agent")
+        dossier = body.get("dossier")
+        if dossier is not None and not isinstance(dossier, str):
+            self._problem(HTTPStatus.BAD_REQUEST, "invalid_research_request")
+            return
+        from collections.abc import Mapping as _Mapping
+
+        from tinyic.personas.factory.pipeline import write_artifact_pair
+        from tinyic.personas.factory.schema import (
+            SchemaValidationError,
+            validate_agent_spec,
+            validate_user_agent_spec,
+        )
+
+        generated = (
+            isinstance(agent, _Mapping)
+            and isinstance(agent.get("tinyic"), _Mapping)
+            and "generation" in agent["tinyic"]
+        )
+        try:
+            if generated:
+                validate_agent_spec(agent)
+            else:
+                validate_user_agent_spec(agent)
+        except SchemaValidationError as exc:
+            issues = [str(issue) for issue in getattr(exc, "issues", ())] or [str(exc)]
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "validation_failed", "issues": issues},
+            )
+            return
+        agent_bytes = (
+            json.dumps(agent, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        dossier_path = path.with_name(f"{slug}.dossier.md")
+        if dossier is not None:
+            dossier_bytes = dossier.encode("utf-8")
+        elif dossier_path.is_file():
+            dossier_bytes = dossier_path.read_bytes()
+        else:
+            dossier_bytes = b""
+        try:
+            write_artifact_pair(path, agent_bytes, dossier_path, dossier_bytes, force=True)
+        except OSError as exc:
+            self._problem(HTTPStatus.INTERNAL_SERVER_ERROR, "persona_write_error")
+            self.studio.diagnostic(f"studio: persona save failed: {exc}")
+            return
+        self._send_json(HTTPStatus.OK, {"slug": slug, "saved": True})
+
+    def _post_duplicate(self, slug: str, body: dict) -> None:
+        source = self._user_persona_path(slug)
+        if source is None:
+            return
+        from tinyic.personas.factory.pipeline import (
+            PROTECTED_BUILTIN_SLUGS,
+            PersonaCollisionError,
+            slugify,
+            write_artifact_pair,
+        )
+        from tinyic.personas.registry import personas_dir
+
+        try:
+            new_slug = slugify(str(body.get("new_slug") or ""))
+        except Exception:
+            self._problem(HTTPStatus.BAD_REQUEST, "invalid_persona_slug")
+            return
+        if new_slug in PROTECTED_BUILTIN_SLUGS:
+            self._problem(HTTPStatus.CONFLICT, "builtin_persona_collision")
+            return
+        agent_path = personas_dir() / f"{new_slug}.agent.json"
+        dossier_path = personas_dir() / f"{new_slug}.dossier.md"
+        source_dossier = source.with_name(f"{slug}.dossier.md")
+        try:
+            write_artifact_pair(
+                agent_path,
+                source.read_bytes(),
+                dossier_path,
+                source_dossier.read_bytes() if source_dossier.is_file() else b"",
+                force=False,
+            )
+        except PersonaCollisionError:
+            self._problem(HTTPStatus.CONFLICT, "persona_exists")
+            return
+        except OSError as exc:
+            self._problem(HTTPStatus.INTERNAL_SERVER_ERROR, "persona_write_error")
+            self.studio.diagnostic(f"studio: persona duplicate failed: {exc}")
+            return
+        self._send_json(HTTPStatus.CREATED, {"slug": new_slug})
+
+    def _delete_persona(self, slug: str) -> None:
+        path = self._user_persona_path(slug)
+        if path is None:
+            return
+        path.unlink(missing_ok=True)
+        path.with_name(f"{slug}.dossier.md").unlink(missing_ok=True)
+        self._send_json(HTTPStatus.OK, {"deleted": slug})
 
     def _get_personas(self) -> None:
         from tinyic.personas import registry as registry_module

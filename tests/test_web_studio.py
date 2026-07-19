@@ -198,3 +198,134 @@ def test_persona_get_builtin_and_unknown(studios, user_persona):
         _request(server, "GET", "/api/personas/Bad-Slug", headers=_auth(server))
     )
     assert status == 404 and payload["error"] == "unknown_persona"
+
+
+def _valid_agent(name="Test Investor"):
+    return {
+        "type": "TinyPerson",
+        "persona": {
+            "name": name,
+            "style": "Measured.",
+            "occupation": {"description": "Epithet"},
+            "beliefs": ["Margin of safety."],
+            "skills": ["Analysis."],
+            "other_facts": [],
+            "personality": {"traits": ["patient"]},
+            "behaviors": {"general": ["Asks for the downside first."]},
+            "preferences": {"interests": [], "likes": [], "dislikes": []},
+        },
+        "tinyic": {
+            "schema_version": 1,
+            "epithet": "Epithet",
+            "philosophy_hook": "Hook.",
+            "temperament": "balanced",
+            "decision_checklist": ["a", "b", "c"],
+            "signal_rules": [],
+            "red_flags": [],
+            "famous_quotes": [],
+            "sources": [{"title": "T", "url": "https://example.com", "type": "primary", "accessed": "2026-07-18"}],
+            "generation": {
+                "generated_by": "tinyic persona research",
+                "model_ref": "openai/gpt-5.6-sol",
+                "date": "2026-07-18",
+                "search_calls": 4,
+                "quality": "normal",
+                "disclaimer": "Educational simulation.",
+            },
+        },
+    }
+
+
+def test_put_persona_validates_and_saves_atomically(studios, user_persona):
+    server = studios()
+    agent_path = user_persona / "test_investor.agent.json"
+    before = agent_path.read_bytes()
+    status, payload = _json(
+        _post_json(server, "/api/personas/test_investor", {"agent": {"bad": True}}, method="PUT")
+    )
+    assert status == 400 and payload["error"] == "validation_failed"
+    assert payload["issues"]  # redacted schema diagnostics
+    assert agent_path.read_bytes() == before  # nothing written on rejection
+
+    agent = _valid_agent("Renamed Investor")
+    status, payload = _json(
+        _post_json(
+            server, "/api/personas/test_investor",
+            {"agent": agent, "dossier": "# Updated\n"}, method="PUT",
+        )
+    )
+    assert status == 200 and payload["saved"] is True
+    saved = json.loads(agent_path.read_text(encoding="utf-8"))
+    assert saved["persona"]["name"] == "Renamed Investor"
+    assert (user_persona / "test_investor.dossier.md").read_text(encoding="utf-8") == "# Updated\n"
+
+
+def test_put_builtin_refused(studios, user_persona):
+    server = studios()
+    status, payload = _json(
+        _post_json(server, "/api/personas/li_lu", {"agent": _valid_agent()}, method="PUT")
+    )
+    assert status == 403 and payload["error"] == "builtin_persona_protected"
+
+
+def test_duplicate_persona(studios, user_persona):
+    server = studios()
+    status, payload = _json(
+        _post_json(server, "/api/personas/test_investor/duplicate", {"new_slug": "copy_one"})
+    )
+    assert status == 201 and payload["slug"] == "copy_one"
+    assert (user_persona / "copy_one.agent.json").is_file()
+    assert (user_persona / "copy_one.dossier.md").is_file()
+    status, payload = _json(
+        _post_json(server, "/api/personas/test_investor/duplicate", {"new_slug": "copy_one"})
+    )
+    assert status == 409 and payload["error"] == "persona_exists"
+    status, payload = _json(
+        _post_json(server, "/api/personas/test_investor/duplicate", {"new_slug": "li_lu"})
+    )
+    assert status == 409 and payload["error"] == "builtin_persona_collision"
+    status, payload = _json(
+        _post_json(server, "/api/personas/test_investor/duplicate", {"new_slug": "!!"})
+    )
+    assert status == 400 and payload["error"] == "invalid_persona_slug"
+
+
+def test_put_relaxed_validation_for_ungenerated_persona(studios, user_persona):
+    """Hand-maintained files (no generation block) use the relaxed contract."""
+    server = studios()
+    body = {
+        "agent": {
+            "type": "TinyPerson",
+            "persona": {"name": "Hand Tuned"},
+            "tinyic": {"schema_version": 1, "epithet": "Hand-edited", "temperament": "contrarian"},
+        }
+    }
+    status, payload = _json(
+        _post_json(server, "/api/personas/test_investor", body, method="PUT")
+    )
+    assert status == 200 and payload["saved"] is True
+
+    body["agent"]["tinyic"]["temperament"] = "wild"
+    status, payload = _json(
+        _post_json(server, "/api/personas/test_investor", body, method="PUT")
+    )
+    assert status == 400 and payload["error"] == "validation_failed"
+    assert any("temperament" in issue for issue in payload["issues"])
+
+
+def test_delete_persona(studios, user_persona):
+    server = studios()
+    status, payload = _json(
+        _request(server, "DELETE", "/api/personas/li_lu", headers=_auth(server))
+    )
+    assert status == 403 and payload["error"] == "builtin_persona_protected"
+    status, payload = _json(
+        _request(server, "DELETE", "/api/personas/test_investor", headers=_auth(server))
+    )
+    assert status == 200 and payload["deleted"] == "test_investor"
+    assert not (user_persona / "test_investor.agent.json").exists()
+    assert not (user_persona / "test_investor.dossier.md").exists()
+    status, payload = _json(
+        _request(server, "DELETE", "/api/personas/test_investor", headers=_auth(server))
+    )
+    assert status == 404 and payload["error"] == "unknown_persona"
