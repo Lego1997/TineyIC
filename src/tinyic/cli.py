@@ -43,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_export_parser(subparsers)
     _add_models_parser(subparsers)
     _add_persona_parser(subparsers)
+    _add_studio_parser(subparsers)
 
     replay = subparsers.add_parser(
         "replay",
@@ -413,6 +414,31 @@ def _add_persona_parser(subparsers) -> None:
     show.set_defaults(func=_cmd_persona_show)
 
 
+def _add_studio_parser(subparsers) -> None:
+    """Register ``tinyic studio``: the persistent persona hub web UI."""
+    studio = subparsers.add_parser(
+        "studio",
+        help="Open the persona studio (library, research, editor, committee).",
+        description=(
+            "Start the secured localhost persona studio and open it in the "
+            "browser. The studio manages investor personas: research new "
+            "ones, inspect and edit artifacts, and pick the default committee."
+        ),
+    )
+    studio.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="Loopback port (default: ephemeral).",
+    )
+    studio.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Print the capability URL without launching a browser.",
+    )
+    studio.set_defaults(func=_cmd_studio)
+
+
 def _cmd_models(args: argparse.Namespace) -> int:
     """List the merged model catalog (human table or ``--json``)."""
     # Imported lazily so ``--help`` and the other light commands never pull the
@@ -467,6 +493,13 @@ def _cmd_persona_show(args: argparse.Namespace) -> int:
     from .persona_cli import show_persona_command
 
     return show_persona_command(args.slug, json_mode=args.json_mode)
+
+
+def _cmd_studio(args: argparse.Namespace) -> int:
+    """Dispatch to the persistent studio server (lazy heavy import)."""
+    from .headless import run_studio_command
+
+    return run_studio_command(port=args.port, no_open=args.no_open)
 
 
 def _cmd_debate(args: argparse.Namespace) -> int:
