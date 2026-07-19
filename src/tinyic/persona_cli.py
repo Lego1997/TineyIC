@@ -18,20 +18,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 
-PERSONA_DOCUMENT_SCHEMA_VERSION = 1
-_SYNTHESIS_CALLS = 7  # five dossier sections + persona synthesis + verification
-_FIXED_INPUT_TOKEN_ESTIMATE = 60_000
-_FIXED_OUTPUT_TOKEN_ESTIMATE = 12_000
-_PER_SEARCH_INPUT_TOKEN_ESTIMATE = 2_000
-_PER_SEARCH_OUTPUT_TOKEN_ESTIMATE = 1_000
-_DEFAULT_SEARCH_BUDGET = 12
-_KIMI_DEFAULT_SEARCH_BUDGET = 16
-_RECOMMENDED_RESEARCH_MODELS = (
-    ("openai", "openai/gpt-5.6-sol"),
-    ("grok", "grok/grok-4.5"),
-    ("google", "google/gemini-2.5-flash"),
-    ("kimi", "kimi/kimi-k2.6"),
-)
+PERSONA_DOCUMENT_SCHEMA_VERSION = 1  # stable list/show document schema
 
 
 def _quiet_import_registry():
@@ -57,8 +44,12 @@ def _quiet_import_factory():
 
 
 def _reason_code(exc: BaseException, fallback: str = "persona_command_error") -> str:
-    code = getattr(exc, "reason_code", None)
-    return str(code) if isinstance(code, str) and code else fallback
+    # Lazy alias: tinyic.personas pulls TinyTroupe, so the shared helpers in
+    # personas/factory/estimate.py are imported inside wrappers to keep this
+    # module import-light.
+    from .personas.factory.estimate import reason_code
+
+    return reason_code(exc, fallback)
 
 
 def _diagnostic(err: TextIO, code: str, message: str) -> None:
@@ -70,67 +61,16 @@ def _diagnostic(err: TextIO, code: str, message: str) -> None:
     print(f"tinyic: {code}: {clean}", file=err)
 
 
-def _source_count(value: Any) -> int:
-    if isinstance(value, list):
-        return len(value)
-    if isinstance(value, dict):
-        return sum(_source_count(item) for item in value.values())
-    return 0
-
-
-def _dossier_candidate(agent_path: Path, slug: str) -> Path:
-    return agent_path.with_name(f"{slug}.dossier.md")
-
-
 def _persona_summary(slug: str, origin: str, path: Path) -> dict[str, Any]:
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict) or not isinstance(raw.get("persona"), dict):
-        raise ValueError("agent file does not contain a persona object")
-    persona = raw["persona"]
-    tinyic = raw.get("tinyic") if isinstance(raw.get("tinyic"), dict) else {}
-    generation = (
-        tinyic.get("generation")
-        if isinstance(tinyic.get("generation"), dict)
-        else {}
-    )
-    name = str(persona.get("name") or "").strip()
-    if not name:
-        raise ValueError("agent file does not contain a persona name")
-    dossier = _dossier_candidate(path, slug)
-    sources = tinyic.get("sources")
-    return {
-        "slug": slug,
-        "name": name,
-        "epithet": str(tinyic.get("epithet") or "").strip() or None,
-        "temperament": (
-            str(tinyic.get("temperament") or raw.get("temperament") or "").strip()
-            or None
-        ),
-        "philosophy_hook": (
-            str(tinyic.get("philosophy_hook") or "").strip() or None
-        ),
-        "origin": origin,
-        "source_count": _source_count(sources),
-        "quality": str(generation.get("quality") or "").strip() or None,
-        "model_ref": str(generation.get("model_ref") or "").strip() or None,
-        "generated_date": str(generation.get("date") or "").strip() or None,
-        "agent_path": str(path),
-        "dossier_path": str(dossier) if dossier.is_file() else None,
-    }
+    from .personas.summary import persona_summary
+
+    return persona_summary(slug, origin, path)
 
 
 def _registry_summaries(registry_module: Any) -> list[dict[str, Any]]:
-    entries = registry_module.list_personas(with_origin=True)
-    summaries: list[dict[str, Any]] = []
-    for entry in entries:
-        summaries.append(
-            _persona_summary(
-                str(entry["slug"]),
-                str(entry["origin"]),
-                Path(str(entry["path"])),
-            )
-        )
-    return summaries
+    from .personas.summary import registry_summaries
+
+    return registry_summaries(registry_module)
 
 
 def list_personas_command(
@@ -236,85 +176,22 @@ def show_persona_command(
 
 
 def _configured_bindings(preset: Any, binding_class: Any) -> tuple[Any, ...]:
-    """Return configured lanes plus one recommended fallback per provider.
+    from .personas.factory.estimate import configured_bindings
 
-    Preset bindings retain precedence within their provider.  Fallbacks ensure
-    an onboarded Grok, Google, or Kimi API key remains usable even when the
-    ordinary committee preset happens to be OpenAI-only.
-    """
-    bindings: list[Any] = []
-    if getattr(preset.default, "model", None):
-        bindings.append(
-            preset.default.to_binding(where=f"preset {preset.name!r} default")
-        )
-    for persona_name in sorted(preset.personas):
-        bindings.append(preset.persona_binding(persona_name))
-    bindings.append(preset.aggregator_binding())
-    bindings.append(preset.moderator_binding())
-
-    distinct: list[Any] = []
-    seen: set[tuple[str, str | None]] = set()
-    for binding in bindings:
-        key = (str(binding.model_ref), binding.auth_profile)
-        if key not in seen:
-            seen.add(key)
-            distinct.append(binding)
-    configured_providers = {str(binding.provider).casefold() for binding in distinct}
-    for provider, model_ref in _RECOMMENDED_RESEARCH_MODELS:
-        if provider in configured_providers:
-            # Configured Google debate bindings normally use Gemini 3, which
-            # cannot enforce persona research's billable-search ceiling. Keep
-            # their preset precedence, then append the budget-safe 2.5 lane so
-            # selection can skip an ineligible Gemini 3 binding.
-            if provider != "google" or any(
-                str(binding.model_ref) == model_ref for binding in distinct
-            ):
-                continue
-        distinct.append(binding_class(model_ref))
-    return tuple(distinct)
+    return configured_bindings(preset, binding_class)
 
 
-def _estimated_cost(
-    model_ref: str,
-    provider: str,
-    planned_searches: int,
-    *,
-    search_fees: dict[str, float] | Any,
-    price_table: dict[str, dict[str, float]],
-) -> dict[str, Any]:
-    """Estimate list-price spend from the frozen search fee and token budget."""
-    input_tokens = (
-        _FIXED_INPUT_TOKEN_ESTIMATE
-        + planned_searches * _PER_SEARCH_INPUT_TOKEN_ESTIMATE
-    )
-    output_tokens = (
-        _FIXED_OUTPUT_TOKEN_ESTIMATE
-        + planned_searches * _PER_SEARCH_OUTPUT_TOKEN_ESTIMATE
-    )
-    search_fee = float(search_fees.get(provider, 0.0)) * planned_searches
-    rates = price_table.get(model_ref)
-    token_cost = None
-    total_cost = None
-    if rates is not None:
-        token_cost = (
-            input_tokens / 1_000_000 * float(rates["input"])
-            + output_tokens / 1_000_000 * float(rates["output"])
-        )
-        total_cost = search_fee + token_cost
-    return {
-        "planned_searches": planned_searches,
-        "planned_calls": planned_searches + _SYNTHESIS_CALLS,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "search_fee_usd": round(search_fee, 6),
-        "token_cost_usd": None if token_cost is None else round(token_cost, 6),
-        "total_cost_usd": None if total_cost is None else round(total_cost, 6),
-    }
+def _estimated_cost(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    from .personas.factory.estimate import estimated_cost
+
+    return estimated_cost(*args, **kwargs)
 
 
 def _print_cost_estimate(
     err: TextIO, model_ref: str, provider: str, estimate: dict[str, Any]
 ) -> None:
+    from .personas.factory.estimate import SYNTHESIS_CALLS
+
     total = estimate["total_cost_usd"]
     if total is None:
         amount = (
@@ -326,7 +203,7 @@ def _print_cost_estimate(
     print(f"Estimated cost: {amount} using {model_ref}", file=err)
     print(
         "  "
-        f"{estimate['planned_searches']} searches + {_SYNTHESIS_CALLS} "
+        f"{estimate['planned_searches']} searches + {SYNTHESIS_CALLS} "
         f"synthesis/verification calls; about {estimate['input_tokens']:,} input "
         f"and {estimate['output_tokens']:,} output tokens",
         file=err,
@@ -349,12 +226,9 @@ def _confirm(stdin: TextIO, err: TextIO) -> bool:
 
 
 def _close_backend(backend: Any) -> None:
-    close = getattr(backend, "close", None)
-    if callable(close):
-        try:
-            close()
-        except Exception:
-            pass
+    from .personas.factory.estimate import close_backend
+
+    close_backend(backend)
 
 
 def research_persona(
@@ -455,16 +329,13 @@ def research_persona(
 
     try:
         try:
-            provider = str(getattr(backend, "provider", "")).casefold()
-            effective_max_searches = (
-                _KIMI_DEFAULT_SEARCH_BUDGET
-                if max_searches is None and provider == "kimi"
-                else (
-                    _DEFAULT_SEARCH_BUDGET
-                    if max_searches is None
-                    else max_searches
-                )
+            from .personas.factory.estimate import (
+                planned_budget,
+                priced_search_calls,
             )
+
+            provider = str(getattr(backend, "provider", "")).casefold()
+            effective_max_searches = planned_budget(provider, max_searches)
             # Validate the requested plan before presenting the cost gate.
             query_plan = factory_module.plan_queries(
                 name, max_searches=effective_max_searches
@@ -473,16 +344,14 @@ def research_persona(
             # logical query, so price their full declared ceiling. Gemini 2.5
             # bills one grounded prompt per planned request and cannot exceed
             # the number of research angles.
-            priced_search_calls = (
-                min(effective_max_searches, len(query_plan.queries))
-                if provider == "google"
-                else effective_max_searches
+            priced = priced_search_calls(
+                provider, len(query_plan.queries), effective_max_searches
             )
             model_ref = str(getattr(backend, "model_ref", model or "unknown"))
             estimate = _estimated_cost(
                 model_ref,
                 provider,
-                priced_search_calls,
+                priced,
                 search_fees=SEARCH_TOOL_FEES_USD,
                 price_table=MODEL_PRICES_USD_PER_MILLION,
             )
