@@ -56,7 +56,36 @@
     <div id="research-result" hidden></div>
     <p id="research-error" class="error-note" hidden></p>
   </section>
-  <section id="view-editor" class="studio-view" aria-label="Persona editor" hidden></section>
+  <section id="view-editor" class="studio-view" aria-label="Persona editor" hidden>
+    <div class="editor-head">
+      <span id="editor-monogram" class="monogram"></span>
+      <div>
+        <h1 id="editor-name"></h1>
+        <p id="editor-meta" class="view-sub"></p>
+      </div>
+    </div>
+    <p id="editor-readonly" class="chip chip--warn" hidden>Built-in persona — read-only. Duplicate to edit.</p>
+    <div class="editor-tabs" role="tablist">
+      <button id="tab-structured" class="editor-tab" type="button">Structured</button>
+      <button id="tab-dossier" class="editor-tab" type="button">Dossier</button>
+      <button id="tab-raw" class="editor-tab" type="button">Raw JSON</button>
+    </div>
+    <div id="editor-structured"></div>
+    <div id="editor-dossier" hidden>
+      <textarea id="editor-dossier-text" rows="16" spellcheck="false"></textarea>
+      <div id="editor-dossier-preview" class="markdown markdown-preview"></div>
+    </div>
+    <div id="editor-raw" hidden>
+      <textarea id="editor-raw-text" rows="22" spellcheck="false"></textarea>
+    </div>
+    <p id="editor-issues" class="error-note" hidden></p>
+    <div class="editor-actions">
+      <button id="editor-save" class="button button--primary" type="button">Save</button>
+      <button id="editor-duplicate" class="button" type="button">Duplicate</button>
+      <button id="editor-delete" class="button button--danger" type="button">Delete</button>
+      <a class="button" href="#/library">Back</a>
+    </div>
+  </section>
   <section id="view-committee" class="studio-view" aria-label="Default committee" hidden></section>
 </main>
 <dialog id="confirm-dialog" class="confirm-dialog">

@@ -142,3 +142,60 @@ body[data-view="committee"] #view-committee { display: block; }
 .stage-list { margin: 0; padding-left: 1.4rem; color: var(--ink-soft); }
 .stage-list .stage { padding: 0.15rem 0; font-variant: small-caps; letter-spacing: 0.06em; }
 .error-note { color: var(--danger); font-weight: 600; max-width: 44rem; }
+
+/* Editor */
+.editor-head { display: flex; align-items: center; gap: 0.9rem; margin-bottom: 0.6rem; }
+.editor-head h1 { font-family: var(--serif); font-size: 1.6rem; margin: 0; }
+#editor-monogram { width: 3rem; height: 3rem; font-size: 1.05rem; }
+.editor-tabs { display: flex; gap: 0.4rem; margin: 0.8rem 0 1.2rem; }
+.editor-tab {
+  border: 1px solid var(--rule);
+  background: transparent;
+  color: var(--ink-soft);
+  border-radius: 999px;
+  padding: 0.25rem 0.9rem;
+  cursor: pointer;
+}
+.editor-tab[aria-selected="true"] { color: var(--accent); border-color: var(--accent); font-weight: 600; }
+.editor-section {
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: 0.6rem;
+  padding: 1rem 1.2rem;
+  margin-bottom: 1rem;
+  display: grid;
+  gap: 0.8rem;
+}
+.editor-section h2 { font-family: var(--serif); font-size: 1.15rem; margin: 0; }
+.list-editor { display: grid; gap: 0.4rem; }
+.list-editor__row, .rows-editor__row { display: flex; gap: 0.4rem; align-items: center; }
+.list-editor__row input, .rows-editor__row input { flex: 1; }
+.mini-button {
+  border: 1px solid var(--rule);
+  background: transparent;
+  border-radius: 0.35rem;
+  width: 1.8rem;
+  height: 1.8rem;
+  cursor: pointer;
+  color: var(--ink-soft);
+  flex: none;
+}
+#editor-dossier-text, #editor-raw-text {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  background: var(--paper-raised);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: 0.5rem;
+  padding: 0.8rem;
+}
+.markdown-preview {
+  margin-top: 0.8rem;
+  padding: 1rem 1.2rem;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: 0.5rem;
+  max-width: 72ch;
+}
+.editor-actions { display: flex; gap: 0.6rem; margin-top: 1rem; }

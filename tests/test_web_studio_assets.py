@@ -94,3 +94,19 @@ def test_research_wizard_markup_and_api_paths():
     assert '"/api/research"' in JS
     assert "new EventSource(" in JS and "/events" in JS
     assert '"job_completed"' in JS and '"job_error"' in JS
+
+
+EDITOR_IDS = [
+    "editor-monogram", "editor-name", "editor-meta", "editor-readonly",
+    "tab-structured", "tab-dossier", "tab-raw",
+    "editor-structured", "editor-dossier", "editor-dossier-text",
+    "editor-dossier-preview", "editor-raw", "editor-raw-text",
+    "editor-issues", "editor-save", "editor-duplicate", "editor-delete",
+]
+
+
+def test_editor_markup_and_modes():
+    for element_id in EDITOR_IDS:
+        assert f'id="{element_id}"' in HTML, element_id
+    assert "TinyICMarkdown.setInto(" in JS  # dossier preview
+    assert "decision_checklist" in JS and "famous_quotes" in JS  # field spec

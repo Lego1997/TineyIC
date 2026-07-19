@@ -348,8 +348,296 @@
     $("#research-form").onsubmit = onEstimate;
   }
 
+  // -- editor ---------------------------------------------------------------
+
+  const SECTIONS = [
+    { title: "Identity", fields: [
+      { path: ["persona", "name"], label: "Display name", kind: "text" },
+      { path: ["tinyic", "epithet"], label: "Epithet", kind: "text", max: 80 },
+      { path: ["tinyic", "temperament"], label: "Temperament", kind: "select", options: ["conciliatory", "balanced", "contrarian"] },
+      { path: ["persona", "occupation", "description"], label: "Occupation description", kind: "text" },
+    ]},
+    { title: "Philosophy", fields: [
+      { path: ["tinyic", "philosophy_hook"], label: "Philosophy hook", kind: "textarea", max: 240 },
+      { path: ["tinyic", "decision_checklist"], label: "Decision checklist", kind: "list" },
+      { path: ["tinyic", "signal_rules"], label: "Signal rules", kind: "list" },
+      { path: ["tinyic", "red_flags"], label: "Red flags", kind: "list" },
+    ]},
+    { title: "Voice", fields: [
+      { path: ["persona", "style"], label: "Style", kind: "textarea" },
+      { path: ["persona", "personality", "traits"], label: "Traits", kind: "list" },
+      { path: ["tinyic", "famous_quotes"], label: "Famous quotes", kind: "quotes" },
+    ]},
+    { title: "Agent detail", fields: [
+      { path: ["persona", "beliefs"], label: "Beliefs", kind: "list" },
+      { path: ["persona", "skills"], label: "Skills", kind: "list" },
+      { path: ["persona", "behaviors", "general"], label: "Behaviors", kind: "list" },
+      { path: ["persona", "other_facts"], label: "Other facts", kind: "list" },
+    ]},
+    { title: "Sources", fields: [
+      { path: ["tinyic", "sources"], label: "Sources", kind: "sources" },
+    ]},
+  ];
+
+  const QUOTE_COLUMNS = [
+    { key: "text", placeholder: "Verbatim quote" },
+    { key: "source", placeholder: "Source #", number: true },
+  ];
+  const SOURCE_COLUMNS = [
+    { key: "title", placeholder: "Title" },
+    { key: "url", placeholder: "URL" },
+    { key: "type", placeholder: "primary | secondary" },
+    { key: "accessed", placeholder: "YYYY-MM-DD" },
+  ];
+
+  const editorState = { slug: null, origin: null, agent: null, dossierDirty: false, mode: "structured" };
+
+  function getPath(obj, path) {
+    return path.reduce((node, key) => (node == null ? node : node[key]), obj);
+  }
+
+  function setPath(obj, path, value) {
+    let node = obj;
+    for (let index = 0; index < path.length - 1; index += 1) {
+      if (typeof node[path[index]] !== "object" || node[path[index]] === null) node[path[index]] = {};
+      node = node[path[index]];
+    }
+    node[path[path.length - 1]] = value;
+  }
+
+  function miniButton(label, onClick) {
+    const button = el("button", "mini-button", label);
+    button.type = "button";
+    button.addEventListener("click", onClick);
+    return button;
+  }
+
+  function listEditor(initial, onChange) {
+    const items = Array.isArray(initial) ? initial.slice() : [];
+    const wrap = el("div", "list-editor");
+    const emit = () => onChange(items.slice());
+    const rebuild = () => {
+      wrap.replaceChildren();
+      items.forEach((value, index) => {
+        const row = el("div", "list-editor__row");
+        const input = el("input");
+        input.type = "text";
+        input.value = value;
+        input.addEventListener("input", () => { items[index] = input.value; emit(); });
+        row.append(
+          input,
+          miniButton("\u2191", () => { if (index > 0) { items.splice(index - 1, 0, items.splice(index, 1)[0]); emit(); rebuild(); } }),
+          miniButton("\u2193", () => { if (index < items.length - 1) { items.splice(index + 1, 0, items.splice(index, 1)[0]); emit(); rebuild(); } }),
+          miniButton("\u2715", () => { items.splice(index, 1); emit(); rebuild(); }),
+        );
+        wrap.append(row);
+      });
+      const add = el("button", "button", "Add item");
+      add.type = "button";
+      add.addEventListener("click", () => { items.push(""); emit(); rebuild(); });
+      wrap.append(add);
+    };
+    rebuild();
+    return wrap;
+  }
+
+  function rowsEditor(initial, columns, onChange) {
+    const items = Array.isArray(initial) ? initial.map((row) => Object.assign({}, row)) : [];
+    const wrap = el("div", "list-editor");
+    const emit = () => onChange(items.map((row) => Object.assign({}, row)));
+    const rebuild = () => {
+      wrap.replaceChildren();
+      items.forEach((row, index) => {
+        const line = el("div", "rows-editor__row");
+        for (const column of columns) {
+          const input = el("input");
+          input.type = column.number ? "number" : "text";
+          input.placeholder = column.placeholder;
+          input.value = row[column.key] === undefined ? "" : String(row[column.key]);
+          input.addEventListener("input", () => {
+            row[column.key] = column.number ? Number(input.value) : input.value;
+            emit();
+          });
+          line.append(input);
+        }
+        line.append(miniButton("\u2715", () => { items.splice(index, 1); emit(); rebuild(); }));
+        wrap.append(line);
+      });
+      const add = el("button", "button", "Add row");
+      add.type = "button";
+      add.addEventListener("click", () => { items.push({}); emit(); rebuild(); });
+      wrap.append(add);
+    };
+    rebuild();
+    return wrap;
+  }
+
+  function fieldControl(field) {
+    const value = getPath(editorState.agent, field.path);
+    const commit = (next) => setPath(editorState.agent, field.path, next);
+    if (field.kind === "select") {
+      const select = el("select");
+      for (const optionValue of field.options) {
+        const option = el("option", null, optionValue);
+        option.value = optionValue;
+        if (optionValue === value) option.selected = true;
+        select.append(option);
+      }
+      select.addEventListener("change", () => commit(select.value));
+      return select;
+    }
+    if (field.kind === "textarea") {
+      const area = el("textarea");
+      area.rows = 3;
+      area.value = value || "";
+      if (field.max) area.maxLength = field.max;
+      area.addEventListener("input", () => commit(area.value));
+      return area;
+    }
+    if (field.kind === "list") return listEditor(value, commit);
+    if (field.kind === "quotes") return rowsEditor(value, QUOTE_COLUMNS, commit);
+    if (field.kind === "sources") return rowsEditor(value, SOURCE_COLUMNS, commit);
+    const input = el("input");
+    input.type = "text";
+    input.value = value || "";
+    if (field.max) input.maxLength = field.max;
+    input.addEventListener("input", () => commit(input.value));
+    return input;
+  }
+
+  function buildStructured() {
+    const host = $("#editor-structured");
+    host.replaceChildren();
+    for (const section of SECTIONS) {
+      const box = el("section", "editor-section");
+      box.append(el("h2", null, section.title));
+      for (const field of section.fields) {
+        const label = el("label", "field");
+        label.append(el("span", null, field.label), fieldControl(field));
+        box.append(label);
+      }
+      host.append(box);
+    }
+    const generation = getPath(editorState.agent, ["tinyic", "generation"]);
+    if (generation) {
+      const box = el("section", "editor-section");
+      box.append(el("h2", null, "Generation (read-only)"));
+      const list = el("dl", "detail-list");
+      for (const key of ["generated_by", "model_ref", "date", "search_calls", "quality", "disclaimer"]) {
+        if (generation[key] !== undefined) {
+          list.append(detailRow(key.replace(/_/g, " "), String(generation[key])));
+        }
+      }
+      box.append(list);
+      host.append(box);
+    }
+    if (editorState.origin === "built_in") {
+      for (const control of host.querySelectorAll("input, textarea, select, button")) {
+        control.disabled = true;
+      }
+    }
+  }
+
+  function setEditorMode(mode) {
+    editorState.mode = mode;
+    for (const name of ["structured", "dossier", "raw"]) {
+      $("#editor-" + name).hidden = name !== mode;
+      $("#tab-" + name).setAttribute("aria-selected", String(name === mode));
+    }
+    if (mode === "raw") {
+      $("#editor-raw-text").value = JSON.stringify(editorState.agent, null, 2);
+    }
+    if (mode === "structured") {
+      buildStructured();
+    }
+  }
+
+  async function renderEditor(slug) {
+    if (!slug) {
+      window.location.hash = "#/library";
+      return;
+    }
+    let payload;
+    try {
+      payload = await api("GET", "/api/personas/" + slug);
+    } catch (error) {
+      toast("Could not open " + slug + ": " + error.message);
+      window.location.hash = "#/library";
+      return;
+    }
+    editorState.slug = slug;
+    editorState.origin = payload.origin;
+    editorState.agent = payload.agent;
+    editorState.dossierDirty = false;
+    const displayName = getPath(payload.agent, ["persona", "name"]) || slug;
+    $("#editor-name").textContent = displayName;
+    $("#editor-meta").textContent = slug + " · " + (payload.origin === "built_in" ? "built-in" : "custom");
+    const badge = $("#editor-monogram");
+    const identity = personaIdentity(displayName);
+    badge.className = "monogram " + identity.className;
+    badge.textContent = identity.monogram;
+    const readonly = payload.origin === "built_in";
+    $("#editor-readonly").hidden = !readonly;
+    $("#editor-save").hidden = readonly;
+    $("#editor-delete").hidden = readonly;
+    $("#editor-issues").hidden = true;
+    $("#editor-dossier-text").value = payload.dossier || "";
+    $("#editor-dossier-text").readOnly = readonly;
+    $("#editor-raw-text").readOnly = readonly;
+    TinyICMarkdown.setInto($("#editor-dossier-preview"), payload.dossier || "*No dossier.*");
+    setEditorMode("structured");
+    $("#editor-save").onclick = onSave;
+    $("#editor-duplicate").onclick = () => onDuplicate(slug);
+    $("#editor-delete").onclick = onEditorDelete;
+    $("#tab-structured").onclick = () => setEditorMode("structured");
+    $("#tab-dossier").onclick = () => setEditorMode("dossier");
+    $("#tab-raw").onclick = () => setEditorMode("raw");
+    $("#editor-dossier-text").oninput = () => {
+      editorState.dossierDirty = true;
+      TinyICMarkdown.setInto($("#editor-dossier-preview"), $("#editor-dossier-text").value);
+    };
+  }
+
+  async function onSave() {
+    const issues = $("#editor-issues");
+    issues.hidden = true;
+    let agent = editorState.agent;
+    if (editorState.mode === "raw") {
+      try {
+        agent = JSON.parse($("#editor-raw-text").value);
+      } catch (_err) {
+        issues.textContent = "Raw JSON does not parse.";
+        issues.hidden = false;
+        return;
+      }
+    }
+    const body = { agent };
+    if (editorState.dossierDirty) body.dossier = $("#editor-dossier-text").value;
+    try {
+      await api("PUT", "/api/personas/" + editorState.slug, body);
+      editorState.agent = agent;
+      editorState.dossierDirty = false;
+      toast("Saved " + editorState.slug);
+    } catch (error) {
+      const detail = error.data && error.data.issues ? error.data.issues.join("; ") : error.message;
+      issues.textContent = detail;
+      issues.hidden = false;
+    }
+  }
+
+  async function onEditorDelete() {
+    const yes = await confirmDialog("Delete " + editorState.slug + "? Both artifact files are removed.");
+    if (!yes) return;
+    try {
+      await api("DELETE", "/api/personas/" + editorState.slug);
+      toast("Deleted " + editorState.slug);
+      window.location.hash = "#/library";
+    } catch (error) {
+      toast("Delete failed: " + error.message);
+    }
+  }
+
   // Views added by later milestones; stubbed so the router boots today.
-  function renderEditor() {}
   function renderCommittee() {}
 
   window.addEventListener("hashchange", route);
