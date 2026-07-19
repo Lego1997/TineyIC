@@ -427,6 +427,11 @@ def _parse_committee(value: Any, *, where: str) -> list[str] | None:
     return names
 
 
+def parse_committee(value: Any, *, where: str = "user config overlay") -> list[str] | None:
+    """Validate a ``committee = [...]`` value (2-6 unique non-empty slugs)."""
+    return _parse_committee(value, where=where)
+
+
 def _load_toml(resolved: Path, *, what: str) -> dict[str, Any]:
     try:
         with resolved.open("rb") as stream:
@@ -552,6 +557,22 @@ def _dump_toml(table: Mapping[str, Any], prefix: tuple[str, ...] = ()) -> list[s
     return lines
 
 
+_OVERLAY_HEADER = (
+    "# TinyIC user overlay — written by `tinyic onboard`; deep-merged over\n"
+    "# the shipped tinyic.toml (overlay wins). Safe to edit or delete.\n"
+)
+
+
+def _write_overlay(path: Path, raw: Mapping[str, Any]) -> Path:
+    """Serialize *raw* to the user overlay via a staged tmp + atomic replace."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = "\n".join(_dump_toml(raw)) + "\n"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(_OVERLAY_HEADER + body, encoding="utf-8")
+    os.replace(tmp, path)
+    return path
+
+
 def set_user_default_binding(
     model_ref: str, *, thinking: str | None = None
 ) -> Path:
@@ -586,16 +607,25 @@ def set_user_default_binding(
     if thinking is not None:
         default_table["thinking"] = thinking
     raw["presets"][DEFAULT_PRESET_NAME] = default_table
-    path.parent.mkdir(parents=True, exist_ok=True)
-    header = (
-        "# TinyIC user overlay — written by `tinyic onboard`; deep-merged over\n"
-        "# the shipped tinyic.toml (overlay wins). Safe to edit or delete.\n"
-    )
-    body = "\n".join(_dump_toml(raw)) + "\n"
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(header + body, encoding="utf-8")
-    os.replace(tmp, path)
-    return path
+    return _write_overlay(path, raw)
+
+
+def set_user_committee(names: list[str] | None) -> Path:
+    """Persist or clear the top-level ``committee`` key in the user overlay.
+
+    Shape-validated here (2-6 unique slugs); registry resolvability is the
+    caller's job (``resolve_personas`` re-checks at debate time anyway).
+    """
+    validated = parse_committee(list(names)) if names is not None else None
+    path = user_config_path()
+    raw: dict[str, Any] = {}
+    if path.is_file():
+        raw = _load_toml(path, what="user config overlay")
+    if validated is None:
+        raw.pop("committee", None)
+    else:
+        raw["committee"] = list(validated)
+    return _write_overlay(path, raw)
 
 
 __all__ = [
@@ -612,6 +642,8 @@ __all__ = [
     "builtin_default_preset",
     "load_config",
     "load_preset",
+    "parse_committee",
+    "set_user_committee",
     "set_user_default_binding",
     "user_config_path",
     "validate_preset_thinking",
