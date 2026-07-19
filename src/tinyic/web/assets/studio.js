@@ -207,8 +207,148 @@
     }
   }
 
+  // -- research wizard ----------------------------------------------------
+
+  function detailRow(term, value) {
+    const wrapper = document.createDocumentFragment();
+    wrapper.append(el("dt", null, term), el("dd", null, value));
+    return wrapper;
+  }
+
+  function money(value) {
+    return "$" + Number(value).toFixed(4);
+  }
+
+  function researchErrorMessage(error) {
+    if (error.message === "no_search_capable_lane") {
+      return "No verified API-key search lane. Run 'tinyic onboard' to add an OpenAI, Grok, Google, or Kimi credential.";
+    }
+    if (error.message === "persona_exists") {
+      return "That slug already exists — tick \u201cReplace the existing persona\u201d or choose another slug.";
+    }
+    return error.message;
+  }
+
+  function researchSpec() {
+    const spec = { investor_name: $("#research-name").value.trim() };
+    const slug = $("#research-slug").value.trim();
+    if (slug) spec.slug = slug;
+    const model = $("#research-model").value.trim();
+    if (model) spec.model = model;
+    const max = $("#research-max-searches").value;
+    if (max) spec.max_searches = Number(max);
+    if ($("#research-force").checked) spec.force = true;
+    return spec;
+  }
+
+  function showResearchError(message) {
+    const node = $("#research-error");
+    node.textContent = message;
+    node.hidden = !message;
+  }
+
+  async function onEstimate(event) {
+    event.preventDefault();
+    showResearchError("");
+    $("#research-estimate-card").hidden = true;
+    $("#research-progress").hidden = true;
+    $("#research-result").hidden = true;
+    let estimate;
+    try {
+      estimate = await api("POST", "/api/research/estimate", researchSpec());
+    } catch (error) {
+      showResearchError(researchErrorMessage(error));
+      return;
+    }
+    $("#research-estimate-details").replaceChildren(
+      detailRow("Slug", estimate.slug),
+      detailRow("Lane", estimate.model_ref + " (" + estimate.provider + ")"),
+      detailRow("Planned searches", String(estimate.estimate.planned_searches)),
+      detailRow("Planned model calls", String(estimate.estimate.planned_calls)),
+      detailRow("Search fees", money(estimate.estimate.search_fee_usd)),
+      detailRow("Token cost", estimate.estimate.token_cost_usd === null ? "unavailable" : money(estimate.estimate.token_cost_usd)),
+      detailRow("Estimated total", estimate.estimate.total_cost_usd === null ? "fee floor only" : money(estimate.estimate.total_cost_usd)),
+    );
+    $("#research-estimate-note").textContent =
+      "Charged to your configured " + estimate.provider + " credential. Actual usage is reported when the run finishes.";
+    $("#research-estimate-card").hidden = false;
+    $("#research-confirm").onclick = () => onConfirmResearch();
+  }
+
+  async function onConfirmResearch() {
+    $("#research-confirm").disabled = true;
+    try {
+      const spec = researchSpec();
+      spec.confirmed = true;
+      const started = await api("POST", "/api/research", spec);
+      $("#research-estimate-card").hidden = true;
+      followResearch(started.job_id);
+    } catch (error) {
+      showResearchError(researchErrorMessage(error));
+    } finally {
+      $("#research-confirm").disabled = false;
+    }
+  }
+
+  let jobSource = null;
+
+  function followResearch(jobId) {
+    if (jobSource) { jobSource.close(); jobSource = null; }
+    const stages = $("#research-stages");
+    stages.replaceChildren();
+    $("#research-progress").hidden = false;
+    $("#research-result").hidden = true;
+    const source = new EventSource("/api/research/" + jobId + "/events");
+    jobSource = source;
+    source.onmessage = (event) => {
+      const envelope = JSON.parse(event.data);
+      if (envelope.type === "stage") {
+        const label = envelope.payload.angle
+          ? "search · " + String(envelope.payload.angle).replace(/_/g, " ")
+          : String(envelope.payload.stage).replace(/_/g, " ");
+        stages.append(el("li", "stage", label));
+      } else if (envelope.type === "job_completed") {
+        source.close();
+        jobSource = null;
+        showResearchResult(envelope.payload);
+      } else if (envelope.type === "job_error") {
+        source.close();
+        jobSource = null;
+        $("#research-progress").hidden = true;
+        showResearchError(envelope.payload.reason + ": " + envelope.payload.message);
+      }
+    };
+    source.onerror = () => {
+      if (!jobSource) return;
+      jobSource.close();
+      jobSource = null;
+      showResearchError("Lost the progress stream; check the library for the result.");
+    };
+  }
+
+  function showResearchResult(payload) {
+    const box = $("#research-result");
+    const card = el("div", "estimate-card");
+    card.append(el("h2", null, "Persona created"));
+    const list = el("dl", "detail-list");
+    list.append(
+      detailRow("Slug", payload.slug),
+      detailRow("Evidence", payload.source_count + " sources across " + payload.domain_count + " domains (" + payload.quality + ")"),
+      detailRow("Usage", payload.usage.calls + " calls · " + payload.usage.search_calls + " searches" + (payload.usage.cost_usd === null ? "" : " · " + money(payload.usage.cost_usd))),
+    );
+    card.append(list);
+    const open = el("a", "button button--primary", "Open in editor");
+    open.href = "#/edit/" + payload.slug;
+    card.append(open);
+    box.replaceChildren(card);
+    box.hidden = false;
+  }
+
+  function renderResearch() {
+    $("#research-form").onsubmit = onEstimate;
+  }
+
   // Views added by later milestones; stubbed so the router boots today.
-  function renderResearch() {}
   function renderEditor() {}
   function renderCommittee() {}
 

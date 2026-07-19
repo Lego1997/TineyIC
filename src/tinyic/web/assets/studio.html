@@ -30,7 +30,32 @@
     <ul id="library-grid" class="persona-grid"></ul>
     <p id="library-empty" class="empty-note" hidden>No personas found.</p>
   </section>
-  <section id="view-research" class="studio-view" aria-label="Research a new persona" hidden></section>
+  <section id="view-research" class="studio-view" aria-label="Research a new persona" hidden>
+    <div class="view-head">
+      <h1>Research a new persona</h1>
+      <p class="view-sub">Cited deep research over your own search-capable provider lane. Nothing is spent until you confirm the estimate.</p>
+    </div>
+    <form id="research-form" class="panel-form">
+      <label class="field"><span>Investor name</span><input id="research-name" type="text" autocomplete="off" required></label>
+      <label class="field"><span>Slug (optional)</span><input id="research-slug" type="text" autocomplete="off" spellcheck="false" placeholder="derived from the name"></label>
+      <label class="field"><span>Model override (optional)</span><input id="research-model" type="text" autocomplete="off" spellcheck="false" placeholder="provider/model — blank picks the first usable lane"></label>
+      <label class="field"><span>Max searches (1–16, optional)</span><input id="research-max-searches" type="number" min="1" max="16"></label>
+      <label class="field field--inline"><input id="research-force" type="checkbox"><span>Replace the existing persona with this slug</span></label>
+      <button id="research-estimate" class="button" type="submit">Estimate cost</button>
+    </form>
+    <div id="research-estimate-card" class="estimate-card" hidden>
+      <h2>Estimate</h2>
+      <dl id="research-estimate-details" class="detail-list"></dl>
+      <p id="research-estimate-note" class="view-sub"></p>
+      <button id="research-confirm" class="button button--primary" type="button">Confirm — start research</button>
+    </div>
+    <div id="research-progress" hidden>
+      <h2>Progress</h2>
+      <ol id="research-stages" class="stage-list"></ol>
+    </div>
+    <div id="research-result" hidden></div>
+    <p id="research-error" class="error-note" hidden></p>
+  </section>
   <section id="view-editor" class="studio-view" aria-label="Persona editor" hidden></section>
   <section id="view-committee" class="studio-view" aria-label="Default committee" hidden></section>
 </main>

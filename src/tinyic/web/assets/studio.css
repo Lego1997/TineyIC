@@ -120,3 +120,25 @@ body[data-view="committee"] #view-committee { display: block; }
   padding: 0.5rem 0.65rem;
   font-size: 0.85rem;
 }
+
+/* Research wizard */
+.panel-form { display: grid; gap: 0.9rem; max-width: 34rem; margin-bottom: 1.5rem; }
+.field--inline { display: flex; align-items: center; gap: 0.5rem; }
+.field--inline span { text-transform: none; letter-spacing: 0; font-size: 0.8rem; }
+.estimate-card {
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--accent);
+  border-radius: 0.6rem;
+  padding: 1rem 1.2rem;
+  max-width: 34rem;
+  box-shadow: var(--shadow);
+}
+.estimate-card h2 { font-family: var(--serif); font-size: 1.2rem; margin: 0 0 0.6rem; }
+.detail-list { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 1rem; margin: 0 0 0.8rem; }
+.detail-list dt { color: var(--ink-faint); font-size: 0.85rem; }
+.detail-list dd { margin: 0; font-family: var(--mono); font-size: 0.88rem; }
+#research-progress h2 { font-family: var(--serif); font-size: 1.2rem; margin: 0 0 0.5rem; }
+.stage-list { margin: 0; padding-left: 1.4rem; color: var(--ink-soft); }
+.stage-list .stage { padding: 0.15rem 0; font-variant: small-caps; letter-spacing: 0.06em; }
+.error-note { color: var(--danger); font-weight: 600; max-width: 44rem; }

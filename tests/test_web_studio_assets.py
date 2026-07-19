@@ -77,3 +77,20 @@ def test_persona_palette_synced_with_python_source():
 def test_library_uses_real_api_paths():
     assert '"/api/personas"' in JS
     assert '/duplicate' in JS
+
+
+RESEARCH_IDS = [
+    "research-form", "research-name", "research-slug", "research-model",
+    "research-max-searches", "research-force", "research-estimate",
+    "research-estimate-card", "research-estimate-details", "research-confirm",
+    "research-progress", "research-stages", "research-result", "research-error",
+]
+
+
+def test_research_wizard_markup_and_api_paths():
+    for element_id in RESEARCH_IDS:
+        assert f'id="{element_id}"' in HTML, element_id
+    assert '"/api/research/estimate"' in JS
+    assert '"/api/research"' in JS
+    assert "new EventSource(" in JS and "/events" in JS
+    assert '"job_completed"' in JS and '"job_error"' in JS
