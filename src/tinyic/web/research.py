@@ -11,13 +11,16 @@ from __future__ import annotations
 
 import contextlib
 import io
+import secrets
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from tinyic.personas.factory import estimate as shared_estimate
 
-__all__ = ["ResearchPreflightError", "ResearchSeams", "preflight"]
+__all__ = ["ResearchJobs", "ResearchPreflightError", "ResearchSeams", "preflight"]
 
 
 @dataclass(frozen=True)
@@ -196,3 +199,142 @@ def preflight(
         return payload, backend
     shared_estimate.close_backend(backend)
     return payload, None
+
+
+_JOB_BUFFER_LIMIT = 1000
+
+
+class _Job:
+    """One research run's event buffer; written by its worker, read by SSE."""
+
+    def __init__(self, job_id: str) -> None:
+        self.job_id = job_id
+        self.events: list[dict[str, Any]] = []
+        self.done = False
+        self.condition = threading.Condition()
+
+
+class ResearchJobs:
+    """Single-active-job runner feeding studio-local SSE buffers."""
+
+    def __init__(self, seams: ResearchSeams | None = None, *, stderr=None) -> None:
+        self._seams = seams or ResearchSeams()
+        self._stderr = stderr
+        self._lock = threading.Lock()
+        self._jobs: dict[str, _Job] = {}
+        self._active_id: str | None = None
+
+    def get(self, job_id: str) -> _Job | None:
+        with self._lock:
+            return self._jobs.get(job_id)
+
+    def start(self, spec: Mapping[str, Any]) -> str:
+        """Preflight, then run the factory on a worker thread. Returns job_id."""
+        with self._lock:
+            active = self._jobs.get(self._active_id) if self._active_id else None
+            if active is not None and not active.done:
+                raise ResearchPreflightError(
+                    409, "research_job_active", "a research job is already running"
+                )
+        payload, backend = preflight(spec, self._seams, keep_backend=True)
+        job = _Job(secrets.token_hex(4))
+        with self._lock:
+            self._jobs[job.job_id] = job
+            self._active_id = job.job_id
+        self._emit(job, "job_started", payload)
+        worker = threading.Thread(
+            target=self._run,
+            args=(job, spec, payload, backend),
+            name=f"tinyic-research-{job.job_id}",
+            daemon=True,
+        )
+        worker.start()
+        return job.job_id
+
+    # -- worker ---------------------------------------------------------- #
+
+    def _run(self, job: _Job, spec: Mapping[str, Any], payload: dict, backend: Any) -> None:
+        try:
+            factory_class = self._seams.factory_class
+            if factory_class is None:
+                with (
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(io.StringIO()),
+                ):
+                    from tinyic.personas.factory import PersonaFactory
+
+                factory_class = PersonaFactory
+            from tinyic.personas.factory.pipeline import (
+                ResearchRequest,
+                resolve_personas_dir,
+            )
+
+            factory = factory_class(
+                backend, progress=lambda stage: self._emit_stage(job, stage)
+            )
+            result = factory.run(
+                ResearchRequest(
+                    investor_name=payload["investor_name"],
+                    output_dir=resolve_personas_dir(),
+                    slug=payload["slug"],
+                    max_searches=payload["effective_max_searches"],
+                    force=bool(spec.get("force")),
+                )
+            )
+        except Exception as exc:
+            self._emit(
+                job,
+                "job_error",
+                {
+                    "reason": shared_estimate.reason_code(exc, "research_failed"),
+                    "message": str(exc),
+                },
+            )
+        else:
+            usage = result.usage
+            self._emit(
+                job,
+                "job_completed",
+                {
+                    "slug": result.slug,
+                    "agent_path": str(result.agent_path),
+                    "dossier_path": str(result.dossier_path),
+                    "source_count": result.source_count,
+                    "domain_count": result.domain_count,
+                    "quality": result.quality,
+                    "usage": {
+                        "calls": getattr(usage, "calls", 0),
+                        "search_calls": getattr(usage, "search_calls", 0),
+                        "cost_usd": getattr(usage, "cost_usd", None),
+                    },
+                },
+            )
+        finally:
+            shared_estimate.close_backend(backend)
+            with job.condition:
+                job.done = True
+                job.condition.notify_all()
+
+    # -- event emission ---------------------------------------------------- #
+
+    def _emit(self, job: _Job, event_type: str, payload: dict) -> None:
+        envelope = {
+            "v": 1,
+            "job_id": job.job_id,
+            "seq": 0,  # assigned under the condition below
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+            "type": event_type,
+            "payload": payload,
+        }
+        with job.condition:
+            envelope["seq"] = len(job.events) + 1
+            if len(job.events) < _JOB_BUFFER_LIMIT:
+                job.events.append(envelope)
+            job.condition.notify_all()
+
+    def _emit_stage(self, job: _Job, stage: str) -> None:
+        text = str(stage)
+        if text.startswith("search:"):
+            self._emit(job, "stage", {"stage": "search", "angle": text.split(":", 1)[1]})
+        else:
+            self._emit(job, "stage", {"stage": text})

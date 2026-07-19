@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, TextIO, cast
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
+from .research import ResearchJobs, ResearchSeams
 from .security import (
     CACHE_CONTROL,
     CSP_POLICY,
@@ -93,6 +94,10 @@ class _StudioHandler(BaseHTTPRequestHandler):
             self._get_persona(path.removeprefix("/api/personas/"))
         elif path == "/api/committee":
             self._get_committee()
+        elif path.startswith("/api/research/") and path.endswith("/events"):
+            self._serve_job_events(
+                path.removeprefix("/api/research/").removesuffix("/events")
+            )
         else:
             self._problem(HTTPStatus.NOT_FOUND, "not_found")
 
@@ -104,6 +109,9 @@ class _StudioHandler(BaseHTTPRequestHandler):
         path = unquote(parsed.path)
         if path == "/api/research/estimate":
             self._post_research_estimate(body)
+            return
+        if path == "/api/research":
+            self._post_research(body)
             return
         if path.startswith("/api/personas/") and path.endswith("/duplicate"):
             slug = path.removeprefix("/api/personas/").removesuffix("/duplicate")
@@ -411,6 +419,59 @@ class _StudioHandler(BaseHTTPRequestHandler):
             return
         self._send_json(HTTPStatus.OK, payload)
 
+    def _post_research(self, body: dict) -> None:
+        from tinyic.web import research as studio_research
+
+        if body.get("confirmed") is not True:
+            self._problem(HTTPStatus.BAD_REQUEST, "confirmation_required")
+            return
+        try:
+            job_id = self.studio.jobs.start(body)
+        except studio_research.ResearchPreflightError as exc:
+            self._send_json(
+                exc.status, {"error": exc.reason, "message": exc.message, **exc.extra}
+            )
+            return
+        self._send_json(HTTPStatus.ACCEPTED, {"job_id": job_id})
+
+    def _serve_job_events(self, job_id: str) -> None:
+        job = self.studio.jobs.get(job_id)
+        if job is None:
+            self._problem(HTTPStatus.NOT_FOUND, "not_found")
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.end_headers()
+        try:
+            self.wfile.write(b"retry: 1500\n\n")
+            self.wfile.flush()
+            cursor = 0
+            while True:
+                with job.condition:
+                    if cursor >= len(job.events) and not job.done:
+                        job.condition.wait(timeout=self.studio.heartbeat_interval)
+                    pending = job.events[cursor:]
+                    finished = job.done
+                if pending:
+                    for envelope in pending:
+                        frame = (
+                            f"id: {envelope['seq']}\n"
+                            f"data: {json.dumps(envelope, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                        )
+                        self.wfile.write(frame.encode("utf-8"))
+                    cursor += len(pending)
+                    self.wfile.flush()
+                elif finished:
+                    break
+                else:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                if finished and cursor >= len(job.events):
+                    break
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        self.close_connection = True
+
     def _get_persona(self, slug: str) -> None:
         if not SLUG_RE.fullmatch(slug):
             self._problem(HTTPStatus.NOT_FOUND, "unknown_persona")
@@ -535,8 +596,8 @@ class StudioServer:
         self._open_browser = bool(open_browser)
         self._asset_loader = asset_loader
         self._stderr = stderr if stderr is not None else sys.stderr
-        self.jobs = jobs  # research.ResearchJobs; defaults once research lands
-        self.research_seams = research_seams  # research.ResearchSeams | None
+        self.research_seams = research_seams if research_seams is not None else ResearchSeams()
+        self.jobs = jobs if jobs is not None else ResearchJobs(seams=self.research_seams)
         self.heartbeat_interval = max(0.001, float(heartbeat_interval))
         self._httpd: _StudioHTTPServer | None = None
         self._thread: threading.Thread | None = None

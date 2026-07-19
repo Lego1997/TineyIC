@@ -478,3 +478,151 @@ def test_estimate_rejects_bad_requests(studios, user_persona):
     ):
         status, payload = _json(_post_json(server, "/api/research/estimate", body))
         assert status == 400 and payload["error"] == "invalid_research_request"
+
+
+class _FakeUsage:
+    calls = 3
+    search_calls = 2
+    cost_usd = 0.01
+
+
+def _fake_result(slug, output_dir):
+    from pathlib import Path as _P
+
+    return type(
+        "R", (),
+        {
+            "slug": slug, "investor_name": "New Investor",
+            "agent_path": _P(output_dir) / f"{slug}.agent.json",
+            "dossier_path": _P(output_dir) / f"{slug}.dossier.md",
+            "source_count": 5, "domain_count": 4, "quality": "normal",
+            "usage": _FakeUsage(),
+        },
+    )()
+
+
+class _FakeFactory:
+    gate = None  # set to a threading.Event to block mid-run
+    raises = None  # set to an exception to fail the run
+
+    def __init__(self, backend, progress=None):
+        self._progress = progress or (lambda _stage: None)
+
+    def run(self, request):
+        self._progress("planning")
+        self._progress("search:philosophy")
+        if _FakeFactory.gate is not None:
+            _FakeFactory.gate.wait(timeout=5)
+        if _FakeFactory.raises is not None:
+            raise _FakeFactory.raises
+        self._progress("writing")
+        return _fake_result(request.slug, request.output_dir)
+
+
+def _job_seams():
+    backend = type("B", (), {"provider": "openai", "model_ref": "openai/gpt-5.6-sol"})()
+    seams = _seams(backend)
+    return ResearchSeams(
+        credentials_factory=seams.credentials_factory,
+        backend_selector=seams.backend_selector,
+        preset_loader=seams.preset_loader,
+        factory_class=_FakeFactory,
+    )
+
+
+def _sse_frames(body: bytes) -> list[dict]:
+    frames = []
+    for block in body.decode("utf-8").split("\n\n"):
+        data = [line[5:] for line in block.splitlines() if line.startswith("data:")]
+        if data:
+            frames.append(json.loads("".join(data)))
+    return frames
+
+
+def test_research_job_lifecycle_over_sse(studios, user_persona):
+    _FakeFactory.gate = None
+    _FakeFactory.raises = None
+    server = studios(research_seams=_job_seams())
+    status, payload = _json(
+        _post_json(server, "/api/research", {"investor_name": "New Investor", "confirmed": True})
+    )
+    assert status == 202 and payload["job_id"]
+    status, _h, body = _request(
+        server, "GET", f"/api/research/{payload['job_id']}/events", headers=_auth(server)
+    )
+    assert status == 200
+    frames = _sse_frames(body)
+    assert [frame["type"] for frame in frames] == [
+        "job_started", "stage", "stage", "stage", "job_completed",
+    ]
+    assert frames[1]["payload"] == {"stage": "planning"}
+    assert frames[2]["payload"] == {"stage": "search", "angle": "philosophy"}
+    done = frames[-1]["payload"]
+    assert done["slug"] == "new_investor"
+    assert done["quality"] == "normal"
+    assert done["usage"]["search_calls"] == 2
+    # The job_started event carries the confirmed estimate.
+    assert frames[0]["payload"]["estimate"]["planned_searches"] == 12
+
+
+def test_research_requires_confirmation_and_single_active(studios, user_persona):
+    import threading
+
+    _FakeFactory.gate = threading.Event()
+    _FakeFactory.raises = None
+    try:
+        server = studios(research_seams=_job_seams())
+        status, payload = _json(
+            _post_json(server, "/api/research", {"investor_name": "New Investor"})
+        )
+        assert status == 400 and payload["error"] == "confirmation_required"
+        status, payload = _json(
+            _post_json(
+                server, "/api/research",
+                {"investor_name": "New Investor", "confirmed": True},
+            )
+        )
+        assert status == 202
+        status, payload = _json(
+            _post_json(
+                server, "/api/research",
+                {"investor_name": "Another Investor", "confirmed": True},
+            )
+        )
+        assert status == 409 and payload["error"] == "research_job_active"
+    finally:
+        _FakeFactory.gate.set()
+        _FakeFactory.gate = None
+
+
+def test_research_job_error_reason_codes(studios, user_persona):
+    class _ThinSources(Exception):
+        reason_code = "insufficient_sources"
+
+    _FakeFactory.gate = None
+    _FakeFactory.raises = _ThinSources("only one domain")
+    try:
+        server = studios(research_seams=_job_seams())
+        status, payload = _json(
+            _post_json(
+                server, "/api/research",
+                {"investor_name": "New Investor", "confirmed": True},
+            )
+        )
+        assert status == 202
+        status, _h, body = _request(
+            server, "GET", f"/api/research/{payload['job_id']}/events", headers=_auth(server)
+        )
+        frames = _sse_frames(body)
+        assert frames[-1]["type"] == "job_error"
+        assert frames[-1]["payload"]["reason"] == "insufficient_sources"
+    finally:
+        _FakeFactory.raises = None
+
+
+def test_unknown_job_events_404(studios, user_persona):
+    server = studios(research_seams=_job_seams())
+    status, payload = _json(
+        _request(server, "GET", "/api/research/deadbeef/events", headers=_auth(server))
+    )
+    assert status == 404 and payload["error"] == "not_found"
