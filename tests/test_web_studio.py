@@ -375,3 +375,106 @@ def test_committee_validation(studios, user_persona, overlay):
     )
     assert status == 400 and payload["error"] == "unknown_persona"
     assert payload["unknown"] == ["ghost"]
+
+
+from tinyic.web.research import ResearchSeams
+
+
+class _FakeBinding:
+    def __init__(self, model_ref, auth_profile=None):
+        self.model_ref = model_ref
+        self.provider = model_ref.split("/")[0]
+        self.auth_profile = auth_profile
+
+
+class _FakePreset:
+    name = "fake"
+
+    class default:
+        model = "openai/gpt-5.6-sol"
+
+        @staticmethod
+        def to_binding(where=""):
+            return _FakeBinding("openai/gpt-5.6-sol")
+
+    personas: dict = {}
+
+    @staticmethod
+    def persona_binding(_name):
+        return _FakeBinding("openai/gpt-5.6-sol")
+
+    @staticmethod
+    def aggregator_binding():
+        return _FakeBinding("openai/gpt-5.6-sol")
+
+    @staticmethod
+    def moderator_binding():
+        return _FakeBinding("openai/gpt-5.6-sol")
+
+
+def _seams(backend=None, selector_error=None):
+    def selector(bindings, credentials, **kwargs):
+        if selector_error is not None:
+            raise selector_error
+        return backend
+    return ResearchSeams(
+        credentials_factory=lambda: object(),
+        backend_selector=selector,
+        preset_loader=lambda: _FakePreset(),
+    )
+
+
+def test_estimate_returns_cli_numbers(studios, user_persona):
+    backend = type("B", (), {"provider": "openai", "model_ref": "openai/gpt-5.6-sol"})()
+    server = studios(research_seams=_seams(backend))
+    status, payload = _json(
+        _post_json(server, "/api/research/estimate", {"investor_name": "New Investor"})
+    )
+    assert status == 200
+    assert payload["slug"] == "new_investor"
+    assert payload["provider"] == "openai"
+    assert payload["effective_max_searches"] == 12
+    assert payload["estimate"]["planned_searches"] == 12
+    assert payload["estimate"]["planned_calls"] == 19
+
+
+def test_estimate_collision_and_lane_failures(studios, user_persona):
+    backend = type("B", (), {"provider": "openai", "model_ref": "openai/gpt-5.6-sol"})()
+    server = studios(research_seams=_seams(backend))
+    status, payload = _json(
+        _post_json(server, "/api/research/estimate", {"investor_name": "Warren Buffett"})
+    )
+    assert status == 409 and payload["error"] == "builtin_persona_collision"
+    status, payload = _json(
+        _post_json(server, "/api/research/estimate", {"investor_name": "Test Investor"})
+    )
+    assert status == 409 and payload["error"] == "persona_exists"
+    status, payload = _json(
+        _post_json(
+            server, "/api/research/estimate",
+            {"investor_name": "Test Investor", "force": True},
+        )
+    )
+    assert status == 200
+
+    class _NoLane(Exception):
+        reason_code = "no_search_capable_lane"
+
+    server = studios(research_seams=_seams(selector_error=_NoLane("none")))
+    status, payload = _json(
+        _post_json(server, "/api/research/estimate", {"investor_name": "New Investor"})
+    )
+    assert status == 403 and payload["error"] == "no_search_capable_lane"
+
+
+def test_estimate_rejects_bad_requests(studios, user_persona):
+    server = studios(research_seams=_seams(None))
+    for body in (
+        {},
+        {"investor_name": "  "},
+        {"investor_name": "X", "max_searches": 0},
+        {"investor_name": "X", "max_searches": 17},
+        {"investor_name": "X", "max_searches": "four"},
+    ):
+        status, payload = _json(_post_json(server, "/api/research/estimate", body))
+        assert status == 400 and payload["error"] == "invalid_research_request"

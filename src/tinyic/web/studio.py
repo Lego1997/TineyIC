@@ -102,6 +102,9 @@ class _StudioHandler(BaseHTTPRequestHandler):
             return
         parsed = urlsplit(self.path)
         path = unquote(parsed.path)
+        if path == "/api/research/estimate":
+            self._post_research_estimate(body)
+            return
         if path.startswith("/api/personas/") and path.endswith("/duplicate"):
             slug = path.removeprefix("/api/personas/").removesuffix("/duplicate")
             self._post_duplicate(slug, body)
@@ -395,6 +398,19 @@ class _StudioHandler(BaseHTTPRequestHandler):
             HTTPStatus.OK, {"schema_version": 1, "personas": summaries}
         )
 
+    def _post_research_estimate(self, body: dict) -> None:
+        from tinyic.web import research as studio_research
+
+        seams = self.studio.research_seams or studio_research.ResearchSeams()
+        try:
+            payload, _backend = studio_research.preflight(body, seams, keep_backend=False)
+        except studio_research.ResearchPreflightError as exc:
+            self._send_json(
+                exc.status, {"error": exc.reason, "message": exc.message, **exc.extra}
+            )
+            return
+        self._send_json(HTTPStatus.OK, payload)
+
     def _get_persona(self, slug: str) -> None:
         if not SLUG_RE.fullmatch(slug):
             self._problem(HTTPStatus.NOT_FOUND, "unknown_persona")
@@ -505,6 +521,7 @@ class StudioServer:
         asset_loader=None,
         stderr: TextIO | None = None,
         jobs=None,
+        research_seams=None,
         heartbeat_interval: float = 15.0,
     ) -> None:
         if host != "127.0.0.1":
@@ -519,6 +536,7 @@ class StudioServer:
         self._asset_loader = asset_loader
         self._stderr = stderr if stderr is not None else sys.stderr
         self.jobs = jobs  # research.ResearchJobs; defaults once research lands
+        self.research_seams = research_seams  # research.ResearchSeams | None
         self.heartbeat_interval = max(0.001, float(heartbeat_interval))
         self._httpd: _StudioHTTPServer | None = None
         self._thread: threading.Thread | None = None
