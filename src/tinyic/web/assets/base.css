@@ -1,0 +1,399 @@
+/*
+ * TinyIC shared design tokens + primitives — investment-memo theme.
+ * Load before the page stylesheet (style.css / studio.css).
+ * Persona hues and monograms are hand-synced from src/tinyic/persona_style.py.
+ * Keep both light and dark values aligned with that source of truth.
+ */
+
+:root {
+  color-scheme: light dark;
+  --paper: #f7f3ea;
+  --paper-raised: #fffdf8;
+  --paper-muted: #eee8dc;
+  --ink: #14120f;
+  --ink-soft: #4f4a42;
+  --ink-faint: #716a60;
+  --rule: #d8d0c1;
+  --rule-strong: #aaa08f;
+  --accent: #234f68;
+  --accent-soft: #dce9ef;
+  --success: #27643d;
+  --success-soft: #e1eee3;
+  --warning: #8b5a10;
+  --warning-soft: #f5ead1;
+  --danger: #a22c27;
+  --danger-soft: #f4dfdc;
+  --shadow: 0 18px 44px rgb(48 39 25 / 10%);
+  --serif: Charter, Georgia, "Times New Roman", serif;
+  --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --page-gutter: clamp(1rem, 3.2vw, 3.5rem);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--paper);
+  scroll-behavior: smooth;
+}
+
+body {
+  min-width: 20rem;
+  min-height: 100vh;
+  margin: 0;
+  background:
+    linear-gradient(90deg, transparent 0, transparent calc(50% - .5px), rgb(90 78 58 / 3%) 50%, transparent calc(50% + .5px)),
+    var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  line-height: 1.55;
+  text-rendering: optimizeLegibility;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+button,
+select,
+textarea {
+  color: inherit;
+  font: inherit;
+}
+
+button,
+a,
+select,
+textarea,
+summary {
+  outline-offset: 3px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+a {
+  color: var(--accent);
+  text-decoration-thickness: .08em;
+  text-underline-offset: .18em;
+}
+
+.skip-link {
+  position: fixed;
+  z-index: 100;
+  top: .5rem;
+  left: .5rem;
+  padding: .65rem .9rem;
+  transform: translateY(-180%);
+  border: 1px solid var(--ink);
+  background: var(--paper-raised);
+  color: var(--ink);
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.eyebrow {
+  margin: 0 0 .25rem;
+  color: var(--ink-faint);
+  font-size: .68rem;
+  font-weight: 760;
+  letter-spacing: .14em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.35rem;
+  padding: .48rem .78rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: .25rem;
+  background: var(--paper-raised);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: .73rem;
+  font-weight: 720;
+  line-height: 1;
+  text-decoration: none;
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+
+.button:hover:not(:disabled) {
+  border-color: var(--ink-soft);
+  transform: translateY(-1px);
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: .48;
+}
+
+.button--quiet {
+  background: transparent;
+}
+
+.button--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.button--danger {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--rule));
+  color: var(--danger);
+}
+
+.button--danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.state-chip,
+.count-chip,
+.status-chip,
+.vote-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 1.35rem;
+  padding: .16rem .42rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: 999px;
+  background: var(--paper-raised);
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  font-size: .62rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 740;
+  letter-spacing: .04em;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.state-chip--replay {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.field {
+  display: grid;
+  gap: .18rem;
+}
+
+.field > span {
+  color: var(--ink-faint);
+  font-size: .6rem;
+  font-weight: 720;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.field select,
+.field textarea {
+  width: 100%;
+  border: 1px solid var(--rule-strong);
+  border-radius: .25rem;
+  background: var(--paper-raised);
+}
+
+.field select {
+  height: 2.85rem;
+  padding: 0 .65rem;
+  font-size: .75rem;
+}
+
+.field textarea {
+  min-height: 2.85rem;
+  max-height: 7.5rem;
+  padding: .6rem .7rem;
+  line-height: 1.35;
+  resize: vertical;
+}
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: 1em 0 .35em;
+  font-family: var(--serif);
+  line-height: 1.25;
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown pre {
+  margin: .55em 0;
+}
+
+.markdown ul,
+.markdown ol {
+  padding-left: 1.35rem;
+}
+
+.markdown blockquote {
+  padding-left: .85rem;
+  border-left: 2px solid var(--rule-strong);
+  color: var(--ink-soft);
+}
+
+.markdown code {
+  padding: .08em .28em;
+  border-radius: .2rem;
+  background: var(--paper-muted);
+  font-family: var(--mono);
+  font-size: .84em;
+}
+
+.markdown pre {
+  max-width: 100%;
+  padding: .8rem;
+  overflow-x: auto;
+  border: 1px solid var(--rule);
+  background: var(--ink);
+  color: var(--paper);
+  line-height: 1.45;
+}
+
+.markdown pre code {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.confirm-dialog {
+  width: min(28rem, calc(100vw - 2rem));
+  padding: 1.4rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: .35rem;
+  background: var(--paper-raised);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+}
+
+.confirm-dialog::backdrop {
+  background: rgb(20 18 15 / 46%);
+  backdrop-filter: blur(2px);
+}
+
+.confirm-dialog h2 {
+  margin: .2rem 0 .5rem;
+  font-family: var(--serif);
+}
+
+.dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: .45rem;
+  margin-top: 1.2rem;
+}
+
+.toast {
+  position: fixed;
+  z-index: 60;
+  right: var(--page-gutter);
+  bottom: 1rem;
+  max-width: min(25rem, calc(100vw - 2rem));
+  padding: .75rem .9rem;
+  border: 1px solid var(--rule-strong);
+  border-left: 3px solid var(--accent);
+  background: var(--paper-raised);
+  box-shadow: var(--shadow);
+  color: var(--ink-soft);
+  font-size: .75rem;
+}
+
+/* Canonical persona colors: light palette from persona_style.py. */
+.persona-warren-buffett,
+.persona-fallback-0 { --persona-color: #01579b; --persona-badge-ink: #f7f3ea; }
+.persona-charlie-munger,
+.persona-fallback-1 { --persona-color: #7b1fa2; --persona-badge-ink: #f7f3ea; }
+.persona-benjamin-graham,
+.persona-fallback-2 { --persona-color: #00695c; --persona-badge-ink: #f7f3ea; }
+.persona-peter-lynch,
+.persona-fallback-3 { --persona-color: #bf360c; --persona-badge-ink: #f7f3ea; }
+.persona-howard-marks,
+.persona-fallback-4 { --persona-color: #c62828; --persona-badge-ink: #f7f3ea; }
+.persona-li-lu,
+.persona-fallback-5 { --persona-color: #33691e; --persona-badge-ink: #f7f3ea; }
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #14120f;
+    --paper-raised: #1d1a16;
+    --paper-muted: #28231d;
+    --ink: #f7f3ea;
+    --ink-soft: #d0c8bb;
+    --ink-faint: #a79e91;
+    --rule: #3e382f;
+    --rule-strong: #675e51;
+    --accent: #80cae8;
+    --accent-soft: #183441;
+    --success: #80c995;
+    --success-soft: #183522;
+    --warning: #e5ba70;
+    --warning-soft: #3a2c17;
+    --danger: #ee8d86;
+    --danger-soft: #40201e;
+    --shadow: 0 18px 44px rgb(0 0 0 / 30%);
+  }
+
+  .button--primary {
+    color: #14120f;
+  }
+
+  /* Canonical persona colors: dark palette from persona_style.py. */
+  .persona-warren-buffett,
+  .persona-fallback-0 { --persona-color: #4fc3f7; --persona-badge-ink: #14120f; }
+  .persona-charlie-munger,
+  .persona-fallback-1 { --persona-color: #ba68c8; --persona-badge-ink: #14120f; }
+  .persona-benjamin-graham,
+  .persona-fallback-2 { --persona-color: #4db6ac; --persona-badge-ink: #14120f; }
+  .persona-peter-lynch,
+  .persona-fallback-3 { --persona-color: #ffb74d; --persona-badge-ink: #14120f; }
+  .persona-howard-marks,
+  .persona-fallback-4 { --persona-color: #e57373; --persona-badge-ink: #14120f; }
+  .persona-li-lu,
+  .persona-fallback-5 { --persona-color: #aed581; --persona-badge-ink: #14120f; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+  }
+}
