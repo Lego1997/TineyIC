@@ -1066,3 +1066,47 @@ body[data-run-state="error"] .jump-live {
     grid-row: 3;
   }
 }
+
+/* v2.3 additive polish — print and reading refinements. Nothing above is edited. */
+
+article,
+section {
+  scroll-margin-top: 7rem;
+}
+
+@media print {
+  :root {
+    --paper: #ffffff;
+    --paper-raised: #ffffff;
+    --paper-muted: #f5f5f5;
+    --ink: #14120f;
+    --shadow: none;
+  }
+
+  body {
+    background: #ffffff;
+    color: #14120f;
+    padding-bottom: 0;
+  }
+
+  .masthead {
+    position: static;
+    box-shadow: none;
+    border-bottom: 2px solid var(--ink);
+  }
+
+  .composer,
+  .jump-live,
+  .skip-link {
+    display: none;
+  }
+
+  .town-hall-shell {
+    display: block;
+  }
+
+  article,
+  section {
+    break-inside: avoid-page;
+  }
+}

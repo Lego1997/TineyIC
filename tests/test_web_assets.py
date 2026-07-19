@@ -342,3 +342,8 @@ def test_client_stays_within_es2020(javascript: str) -> None:
     assert ".replaceAll(" not in javascript
     assert "Object.hasOwn(" not in javascript
     assert "structuredClone(" not in javascript
+
+
+def test_print_stylesheet_is_additive_and_present(css: str):
+    assert "@media print" in css
+    assert "display: none" in css  # composer/FAB hidden when printing
