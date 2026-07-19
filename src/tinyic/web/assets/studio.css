@@ -1,0 +1,122 @@
+/* Persona Studio page styles. Requires base.css (shared tokens/primitives). */
+
+.studio-masthead {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem var(--page-gutter);
+  background: var(--paper-raised);
+  border-bottom: 1px solid var(--rule);
+}
+
+.studio-wordmark {
+  font-family: var(--serif);
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.studio-product {
+  margin-left: 0.6rem;
+  font-size: 0.8rem;
+  font-variant: small-caps;
+  letter-spacing: 0.14em;
+  color: var(--ink-faint);
+}
+
+.studio-nav { display: flex; gap: 1.1rem; }
+.studio-nav a {
+  color: var(--ink-soft);
+  text-decoration: none;
+  font-size: 0.92rem;
+  padding-bottom: 0.15rem;
+  border-bottom: 2px solid transparent;
+}
+.studio-nav a:hover { color: var(--ink); }
+.studio-nav a[aria-current="page"] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+#studio-main {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 1.75rem var(--page-gutter) 4rem;
+}
+
+body[data-view="library"] #view-library,
+body[data-view="research"] #view-research,
+body[data-view="editor"] #view-editor,
+body[data-view="committee"] #view-committee { display: block; }
+.studio-view { display: none; }
+
+.view-head h1 { font-family: var(--serif); font-size: 1.7rem; margin: 0 0 0.2rem; }
+.view-sub { color: var(--ink-faint); margin: 0 0 1.4rem; }
+
+.persona-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(21rem, 1fr));
+  gap: 1rem;
+}
+
+.persona-card {
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: 0.6rem;
+  padding: 1rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  box-shadow: var(--shadow);
+}
+
+.persona-card__head { display: flex; align-items: center; gap: 0.75rem; }
+.persona-card__name { font-family: var(--serif); font-size: 1.15rem; font-weight: 700; }
+.persona-card__epithet { color: var(--ink-soft); font-size: 0.9rem; margin: 0; }
+.persona-card__chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.persona-card__actions { display: flex; gap: 0.5rem; margin-top: 0.2rem; }
+
+.monogram {
+  flex: none;
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.9rem;
+  background: var(--persona-color, var(--accent));
+  color: var(--persona-badge-ink, var(--paper-raised));
+}
+
+.chip {
+  font-size: 0.72rem;
+  font-variant: small-caps;
+  letter-spacing: 0.08em;
+  padding: 0.12rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  color: var(--ink-soft);
+}
+.chip--origin-built-in { color: var(--accent); border-color: var(--accent); }
+.chip--warn { color: var(--warning); border-color: var(--warning); }
+
+.empty-note { color: var(--ink-faint); font-style: italic; }
+
+.field input {
+  width: 100%;
+  border: 1px solid var(--rule-strong);
+  border-radius: 0.25rem;
+  background: var(--paper-raised);
+  padding: 0.5rem 0.65rem;
+  font-size: 0.85rem;
+}

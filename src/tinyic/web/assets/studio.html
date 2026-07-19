@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>TinyIC Studio</title>
+<link rel="stylesheet" href="/assets/base.css">
+<link rel="stylesheet" href="/assets/studio.css">
+</head>
+<body data-view="library">
+<a class="skip-link" href="#studio-main">Skip to content</a>
+<header class="studio-masthead">
+  <div class="studio-brand">
+    <span class="studio-wordmark">TinyIC</span>
+    <span class="studio-product">Persona Studio</span>
+  </div>
+  <nav class="studio-nav" aria-label="Studio views">
+    <a href="#/library" data-nav="library">Library</a>
+    <a href="#/research" data-nav="research">New persona</a>
+    <a href="#/committee" data-nav="committee">Committee</a>
+  </nav>
+</header>
+<main id="studio-main">
+  <section id="view-library" class="studio-view" aria-label="Persona library">
+    <div class="view-head">
+      <h1>Persona library</h1>
+      <p class="view-sub">Built-in and researched investor personas. Built-ins are read-only; duplicate one to tune it.</p>
+    </div>
+    <ul id="library-grid" class="persona-grid"></ul>
+    <p id="library-empty" class="empty-note" hidden>No personas found.</p>
+  </section>
+  <section id="view-research" class="studio-view" aria-label="Research a new persona" hidden></section>
+  <section id="view-editor" class="studio-view" aria-label="Persona editor" hidden></section>
+  <section id="view-committee" class="studio-view" aria-label="Default committee" hidden></section>
+</main>
+<dialog id="confirm-dialog" class="confirm-dialog">
+  <p id="confirm-message"></p>
+  <div class="dialog-actions">
+    <button id="confirm-cancel" class="button" type="button">Cancel</button>
+    <button id="confirm-accept" class="button button--danger" type="button">Confirm</button>
+  </div>
+</dialog>
+<dialog id="duplicate-dialog" class="confirm-dialog">
+  <p id="duplicate-message"></p>
+  <label class="field"><span>New slug</span><input id="duplicate-slug" type="text" autocomplete="off" spellcheck="false"></label>
+  <div class="dialog-actions">
+    <button id="duplicate-cancel" class="button" type="button">Cancel</button>
+    <button id="duplicate-accept" class="button" type="button">Duplicate</button>
+  </div>
+</dialog>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<script src="/assets/md.js"></script>
+<script src="/assets/studio.js"></script>
+</body>
+</html>
