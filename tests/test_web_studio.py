@@ -329,3 +329,49 @@ def test_delete_persona(studios, user_persona):
         _request(server, "DELETE", "/api/personas/test_investor", headers=_auth(server))
     )
     assert status == 404 and payload["error"] == "unknown_persona"
+
+
+@pytest.fixture
+def overlay(tmp_path, monkeypatch):
+    overlay_path = tmp_path / "overlay" / "tinyic.toml"
+    monkeypatch.setenv("TINYIC_USER_CONFIG", str(overlay_path))
+    return overlay_path
+
+
+def test_committee_get_default_then_overlay(studios, user_persona, overlay):
+    server = studios()
+    status, payload = _json(_request(server, "GET", "/api/committee", headers=_auth(server)))
+    assert status == 200 and payload["source"] == "default"
+    assert "warren_buffett" in payload["committee"]
+
+    status, payload = _json(
+        _post_json(
+            server, "/api/committee",
+            {"committee": ["warren_buffett", "test_investor"]}, method="PUT",
+        )
+    )
+    assert status == 200 and payload["source"] == "overlay"
+    assert payload["committee"] == ["warren_buffett", "test_investor"]
+    assert "committee" in overlay.read_text(encoding="utf-8")
+
+    status, payload = _json(
+        _post_json(server, "/api/committee", {"committee": None}, method="PUT")
+    )
+    assert status == 200 and payload["source"] == "default"
+    assert "committee" not in overlay.read_text(encoding="utf-8")
+
+
+def test_committee_validation(studios, user_persona, overlay):
+    server = studios()
+    status, payload = _json(
+        _post_json(server, "/api/committee", {"committee": ["warren_buffett"]}, method="PUT")
+    )
+    assert status == 400 and payload["error"] == "invalid_committee"
+    status, payload = _json(
+        _post_json(
+            server, "/api/committee",
+            {"committee": ["warren_buffett", "ghost"]}, method="PUT",
+        )
+    )
+    assert status == 400 and payload["error"] == "unknown_persona"
+    assert payload["unknown"] == ["ghost"]

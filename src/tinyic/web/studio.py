@@ -91,6 +91,8 @@ class _StudioHandler(BaseHTTPRequestHandler):
             self._get_personas()
         elif path.startswith("/api/personas/"):
             self._get_persona(path.removeprefix("/api/personas/"))
+        elif path == "/api/committee":
+            self._get_committee()
         else:
             self._problem(HTTPStatus.NOT_FOUND, "not_found")
 
@@ -114,6 +116,9 @@ class _StudioHandler(BaseHTTPRequestHandler):
         path = unquote(parsed.path)
         if path.startswith("/api/personas/"):
             self._put_persona(path.removeprefix("/api/personas/"), body)
+            return
+        if path == "/api/committee":
+            self._put_committee(body)
             return
         self._problem(HTTPStatus.NOT_FOUND, "not_found")
 
@@ -319,6 +324,62 @@ class _StudioHandler(BaseHTTPRequestHandler):
         path.unlink(missing_ok=True)
         path.with_name(f"{slug}.dossier.md").unlink(missing_ok=True)
         self._send_json(HTTPStatus.OK, {"deleted": slug})
+
+    def _get_committee(self) -> None:
+        from tinyic.models.presets import load_config
+
+        try:
+            configured = load_config().get("committee")
+        except Exception as exc:
+            self._problem(HTTPStatus.INTERNAL_SERVER_ERROR, "invalid_committee_overlay")
+            self.studio.diagnostic(f"studio: committee overlay unreadable: {exc}")
+            return
+        if configured:
+            self._send_json(HTTPStatus.OK, {"committee": list(configured), "source": "overlay"})
+            return
+        from tinyic.headless import DEFAULT_PERSONAS
+
+        self._send_json(
+            HTTPStatus.OK, {"committee": list(DEFAULT_PERSONAS), "source": "default"}
+        )
+
+    def _put_committee(self, body: dict) -> None:
+        from tinyic.models.presets import (
+            PresetError,
+            parse_committee,
+            set_user_committee,
+        )
+        from tinyic.personas import registry as registry_module
+
+        value = body.get("committee")
+        if value is not None:
+            try:
+                names = parse_committee(value)
+            except PresetError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "invalid_committee", "message": str(exc)},
+                )
+                return
+            known = registry_module.registry_snapshot(warn=False)
+            unknown = [name for name in names if name not in known]
+            if unknown:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "unknown_persona", "unknown": unknown},
+                )
+                return
+        else:
+            names = None
+        try:
+            set_user_committee(names)
+        except PresetError as exc:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "invalid_committee", "message": str(exc)},
+            )
+            return
+        self._get_committee()
 
     def _get_personas(self) -> None:
         from tinyic.personas import registry as registry_module
