@@ -1460,6 +1460,8 @@ class OnboardApp(App):
         border-top: heavy $panel-lighten-2;
     }
     #onboard-status { height: auto; color: $text-muted; }
+    #onboard-keys { height: auto; color: $text-muted; padding: 0 1; }
+    .summary-card { border: round $accent; padding: 1 2; margin: 1 0; }
     """
 
     # Only a hard-exit hatch lives in BINDINGS; every wizard key is routed
@@ -1482,6 +1484,7 @@ class OnboardApp(App):
         self._view = Static(id="onboard-view")
         self._key_input = Input(password=True, placeholder="paste key — hidden", id="key-input")
         self._status = Static(id="onboard-status")
+        self._keys = Static(id="onboard-keys")
 
     def compose(self) -> ComposeResult:
         yield self._header
@@ -1490,6 +1493,7 @@ class OnboardApp(App):
             yield self._key_input
         with Vertical(id="onboard-footer"):
             yield self._status
+            yield self._keys
 
     def on_mount(self) -> None:
         self.controller.start()
@@ -1532,20 +1536,27 @@ class OnboardApp(App):
         elif not is_key and self.focused is self._key_input:
             self.set_focus(None)
         self._status.update(self._render_status())
+        self._keys.update(self._render_keys())
+        self._view.set_class(
+            self.controller.screen is OnboardScreen.SUMMARY, "summary-card"
+        )
+
+    _STEP_INFO = {
+        OnboardScreen.DETECT: (1, "detect"),
+        OnboardScreen.CHOOSE: (2, "choose provider"),
+        OnboardScreen.CONNECT_KEY: (3, "connect"),
+        OnboardScreen.CONNECT_SUB: (3, "connect"),
+        OnboardScreen.MODEL: (4, "default model"),
+        OnboardScreen.SUMMARY: (5, "review"),
+    }
 
     def _render_title(self) -> Text:
-        dim = theme.muted(dark=theme.is_dark(self))
+        dark = theme.is_dark(self)
+        number, label = self._STEP_INFO[self.controller.screen]
         text = Text()
-        text.append("TinyIC onboarding", style="bold")
-        step = {
-            OnboardScreen.DETECT: "detect",
-            OnboardScreen.CHOOSE: "choose",
-            OnboardScreen.CONNECT_KEY: "connect · api key",
-            OnboardScreen.CONNECT_SUB: "connect · subscription",
-            OnboardScreen.MODEL: "model",
-            OnboardScreen.SUMMARY: "summary",
-        }[self.controller.screen]
-        text.append(f"   {step}", style=dim)
+        text.append("TinyIC", style=theme.accent(dark=dark))
+        text.append(" onboarding", style=theme.muted(dark=dark))
+        text.append(f"   step {number} of 5 · {label}", style=theme.muted(dark=dark))
         plan = self.controller.current_plan()
         if plan is not None and self.controller.screen in {
             OnboardScreen.CHOOSE,
@@ -1554,8 +1565,19 @@ class OnboardApp(App):
             OnboardScreen.MODEL,
         }:
             position = f"   {self.controller.cursor + 1}/{len(self.controller.plans)}"
-            text.append(position, style=dim)
+            text.append(position, style=theme.muted(dark=dark))
         return text
+
+    def _render_keys(self) -> Text:
+        hints = {
+            OnboardScreen.DETECT: "↑/↓ or j/k · enter select · d theme · q quit",
+            OnboardScreen.CHOOSE: "↑/↓ · 1-9 jump · enter select · esc back",
+            OnboardScreen.CONNECT_KEY: "enter submit key · esc back",
+            OnboardScreen.CONNECT_SUB: "o open login page · esc back",
+            OnboardScreen.MODEL: "↑/↓ · enter select · esc back",
+            OnboardScreen.SUMMARY: "enter finish · esc back",
+        }[self.controller.screen]
+        return Text(hints, style=theme.muted(dark=theme.is_dark(self)))
 
     def render_body(self) -> Text:
         screen = self.controller.screen

@@ -180,160 +180,6 @@
     return node;
   }
 
-  function escapeHtml(value) {
-    return String(value ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/\"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-  }
-
-  function safeHttpUrl(escapedCandidate) {
-    const candidate = escapedCandidate.replace(/&amp;/g, "&");
-    try {
-      const parsed = new URL(candidate);
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-        return null;
-      }
-      return escapeHtml(parsed.href);
-    } catch (_error) {
-      return null;
-    }
-  }
-
-  function formatEmphasis(escapedText) {
-    return escapedText
-      .replace(/\*\*([^*\n]+?)\*\*/g, "<strong>$1</strong>")
-      .replace(/__([^_\n]+?)__/g, "<strong>$1</strong>")
-      .replace(/(^|[\s(])\*([^*\n]+?)\*(?=$|[\s).,!?:;])/g, "$1<em>$2</em>")
-      .replace(/(^|[\s(])_([^_\n]+?)_(?=$|[\s).,!?:;])/g, "$1<em>$2</em>");
-  }
-
-  function renderInline(escapedText) {
-    const tokens = [];
-    const reserve = (html) => {
-      const token = `TINYICTOKEN${tokens.length}END`;
-      tokens.push(html);
-      return token;
-    };
-
-    let rendered = escapedText.replace(/`([^`\n]+?)`/g, (_match, code) => {
-      return reserve(`<code>${code}</code>`);
-    });
-
-    rendered = rendered.replace(/\[([^\]\n]+?)\]\(([^)\s]+?)\)/g, (_match, label, href) => {
-      const safeHref = safeHttpUrl(href);
-      if (safeHref === null) {
-        return formatEmphasis(label);
-      }
-      const safeLabel = formatEmphasis(label);
-      return reserve(
-        `<a href="${safeHref}" rel="noopener noreferrer" target="_blank">${safeLabel}</a>`,
-      );
-    });
-
-    rendered = formatEmphasis(rendered);
-    return rendered.replace(/TINYICTOKEN(\d+)END/g, (_match, index) => {
-      return tokens[Number(index)] ?? "";
-    });
-  }
-
-  function renderMarkdown(markdown) {
-    // Model output is escaped before a single Markdown token is interpreted.
-    const lines = escapeHtml(String(markdown ?? "").replace(/\r\n?/g, "\n")).split("\n");
-    const blocks = [];
-    let index = 0;
-
-    const startsBlock = (line) => (
-      /^\s*```/.test(line)
-      || /^#{1,6}\s+/.test(line)
-      || /^&gt;\s?/.test(line)
-      || /^\s*[-+*]\s+/.test(line)
-      || /^\s*\d+[.)]\s+/.test(line)
-    );
-
-    while (index < lines.length) {
-      const line = lines[index];
-      if (line.trim() === "") {
-        index += 1;
-        continue;
-      }
-
-      const fence = line.match(/^\s*```([^`]*)$/);
-      if (fence) {
-        const codeLines = [];
-        index += 1;
-        while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) {
-          codeLines.push(lines[index]);
-          index += 1;
-        }
-        if (index < lines.length) {
-          index += 1;
-        }
-        blocks.push(`<pre><code>${codeLines.join("\n")}</code></pre>`);
-        continue;
-      }
-
-      const heading = line.match(/^(#{1,6})\s+(.+)$/);
-      if (heading) {
-        const level = heading[1].length;
-        blocks.push(`<h${level}>${renderInline(heading[2])}</h${level}>`);
-        index += 1;
-        continue;
-      }
-
-      if (/^&gt;\s?/.test(line)) {
-        const quoteLines = [];
-        while (index < lines.length && /^&gt;\s?/.test(lines[index])) {
-          quoteLines.push(renderInline(lines[index].replace(/^&gt;\s?/, "")));
-          index += 1;
-        }
-        blocks.push(`<blockquote>${quoteLines.join("<br>")}</blockquote>`);
-        continue;
-      }
-
-      const unordered = line.match(/^\s*[-+*]\s+(.+)$/);
-      const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
-      if (unordered || ordered) {
-        const listTag = ordered ? "ol" : "ul";
-        const matcher = ordered ? /^\s*\d+[.)]\s+(.+)$/ : /^\s*[-+*]\s+(.+)$/;
-        const items = [];
-        while (index < lines.length) {
-          const item = lines[index].match(matcher);
-          if (!item) {
-            break;
-          }
-          items.push(`<li>${renderInline(item[1])}</li>`);
-          index += 1;
-        }
-        blocks.push(`<${listTag}>${items.join("")}</${listTag}>`);
-        continue;
-      }
-
-      const paragraph = [];
-      while (
-        index < lines.length
-        && lines[index].trim() !== ""
-        && (paragraph.length === 0 || !startsBlock(lines[index]))
-      ) {
-        paragraph.push(renderInline(lines[index]));
-        index += 1;
-      }
-      if (paragraph.length > 0) {
-        blocks.push(`<p>${paragraph.join("<br>")}</p>`);
-      }
-    }
-
-    return blocks.join("");
-  }
-
-  function setMarkdown(node, markdown) {
-    // Only the escape-first renderer output is parsed; raw model text never is.
-    const fragment = document.createRange().createContextualFragment(renderMarkdown(markdown));
-    node.replaceChildren(fragment);
-  }
-
   function fallbackHash(name) {
     let hash = 2166136261;
     for (const character of name) {
@@ -546,7 +392,7 @@
   function onDataReady(payload) {
     dom.dataPackage.hidden = false;
     const summaryParts = [asString(payload.description), asString(payload.financials_summary)].filter(Boolean);
-    setMarkdown(dom.financialsSummary, summaryParts.join("\n\n"));
+    TinyICMarkdown.setInto(dom.financialsSummary, summaryParts.join("\n\n"));
     dom.dataSources.replaceChildren();
     const sources = asArray(payload.sources).filter(isRecord);
     const okCount = sources.filter((source) => source.status === "ok").length;
@@ -656,7 +502,7 @@
     turn.thinkingText += asString(payload.text);
     turn.thinkingDetails.hidden = turn.thinkingText.length === 0;
     turn.thinkingDetails.open = state.thinkingVisible;
-    setMarkdown(turn.thinking, turn.thinkingText);
+    TinyICMarkdown.setInto(turn.thinking, turn.thinkingText);
     setRosterActivity(turn.persona, "Reasoning", "thinking");
   }
 
@@ -668,7 +514,7 @@
     turn.thinkingText = asString(payload.full_text);
     turn.thinkingDetails.hidden = turn.thinkingText.length === 0;
     turn.thinkingDetails.open = state.thinkingVisible;
-    setMarkdown(turn.thinking, turn.thinkingText);
+    TinyICMarkdown.setInto(turn.thinking, turn.thinkingText);
   }
 
   function onTalkDelta(payload) {
@@ -677,7 +523,7 @@
       return;
     }
     turn.speechText += asString(payload.text);
-    setMarkdown(turn.speech, turn.speechText);
+    TinyICMarkdown.setInto(turn.speech, turn.speechText);
     setRosterActivity(turn.persona, "Speaking", "speaking");
   }
 
@@ -687,7 +533,7 @@
       return;
     }
     turn.speechText = asString(payload.full_text);
-    setMarkdown(turn.speech, turn.speechText);
+    TinyICMarkdown.setInto(turn.speech, turn.speechText);
     turn.status.textContent = "Statement recorded";
   }
 
@@ -819,7 +665,7 @@
       const card = createElement("article", "memo-card");
       card.append(createElement("h3", "", MEMO_LABELS[sectionName]));
       const content = createElement("div", "markdown");
-      setMarkdown(content, asString(payload.content));
+      TinyICMarkdown.setInto(content, asString(payload.content));
       card.append(content);
       const contributors = asArray(payload.contributing_personas).filter((name) => typeof name === "string");
       if (contributors.length > 0) {
@@ -857,12 +703,12 @@
           .filter((value) => typeof value === "string" && value)
           .join(" → ");
         const copy = createElement("div", "markdown");
-        setMarkdown(copy, [movement, asString(entry.payload.note)].filter(Boolean).join("\n\n"));
+        TinyICMarkdown.setInto(copy, [movement, asString(entry.payload.note)].filter(Boolean).join("\n\n"));
         card.append(copy);
       } else {
         card.append(createElement("h3", "", asString(entry.payload.dimension, "Disagreement")));
         const copy = createElement("div", "markdown");
-        setMarkdown(copy, asString(entry.payload.description));
+        TinyICMarkdown.setInto(copy, asString(entry.payload.description));
         card.append(copy);
         const sides = asArray(entry.payload.sides).filter(isRecord);
         if (sides.length > 0) {
@@ -992,7 +838,7 @@
     dom.verdictCounts.textContent = `BUY ${buys} · HOLD ${holds} · SELL ${sells}`;
     const finalMemo = state.memo.get("final_verdict") ?? state.memo.get("executive_summary");
     if (finalMemo) {
-      setMarkdown(dom.verdictCopy, asString(finalMemo.content));
+      TinyICMarkdown.setInto(dom.verdictCopy, asString(finalMemo.content));
     } else {
       dom.verdictCopy.replaceChildren();
     }

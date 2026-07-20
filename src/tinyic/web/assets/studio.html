@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>TinyIC Studio</title>
+<link rel="stylesheet" href="/assets/base.css">
+<link rel="stylesheet" href="/assets/studio.css">
+</head>
+<body data-view="library">
+<a class="skip-link" href="#studio-main">Skip to content</a>
+<header class="studio-masthead">
+  <div class="studio-brand">
+    <span class="studio-wordmark">TinyIC</span>
+    <span class="studio-product">Persona Studio</span>
+  </div>
+  <nav class="studio-nav" aria-label="Studio views">
+    <a href="#/library" data-nav="library">Library</a>
+    <a href="#/research" data-nav="research">New persona</a>
+    <a href="#/committee" data-nav="committee">Committee</a>
+  </nav>
+</header>
+<main id="studio-main" tabindex="-1">
+  <section id="view-library" class="studio-view" aria-label="Persona library">
+    <div class="view-head">
+      <h1>Persona library</h1>
+      <p class="view-sub">Built-in and researched investor personas. Built-ins are read-only; duplicate one to tune it.</p>
+    </div>
+    <ul id="library-grid" class="persona-grid"></ul>
+    <p id="library-empty" class="empty-note" hidden>No personas found.</p>
+  </section>
+  <section id="view-research" class="studio-view" aria-label="Research a new persona">
+    <div class="view-head">
+      <h1>Research a new persona</h1>
+      <p class="view-sub">Cited deep research over your own search-capable provider lane. Nothing is spent until you confirm the estimate.</p>
+    </div>
+    <form id="research-form" class="panel-form">
+      <label class="field"><span>Investor name</span><input id="research-name" type="text" autocomplete="off" required></label>
+      <label class="field"><span>Slug (optional)</span><input id="research-slug" type="text" autocomplete="off" spellcheck="false" placeholder="derived from the name"></label>
+      <label class="field"><span>Model override (optional)</span><input id="research-model" type="text" autocomplete="off" spellcheck="false" placeholder="provider/model — blank picks the first usable lane"></label>
+      <label class="field"><span>Max searches (1–16, optional)</span><input id="research-max-searches" type="number" min="1" max="16"></label>
+      <label class="field field--inline"><input id="research-force" type="checkbox"><span>Replace the existing persona with this slug</span></label>
+      <button id="research-estimate" class="button" type="submit">Estimate cost</button>
+    </form>
+    <div id="research-estimate-card" class="estimate-card" hidden>
+      <h2>Estimate</h2>
+      <dl id="research-estimate-details" class="detail-list"></dl>
+      <p id="research-estimate-note" class="view-sub"></p>
+      <button id="research-confirm" class="button button--primary" type="button">Confirm — start research</button>
+    </div>
+    <div id="research-progress" hidden>
+      <h2>Progress</h2>
+      <ol id="research-stages" class="stage-list"></ol>
+    </div>
+    <div id="research-result" hidden></div>
+    <p id="research-error" class="error-note" hidden></p>
+  </section>
+  <section id="view-editor" class="studio-view" aria-label="Persona editor">
+    <div class="editor-head">
+      <span id="editor-monogram" class="monogram"></span>
+      <div>
+        <h1 id="editor-name"></h1>
+        <p id="editor-meta" class="view-sub"></p>
+      </div>
+    </div>
+    <p id="editor-readonly" class="chip chip--warn" hidden>Built-in persona — read-only. Duplicate to edit.</p>
+    <div class="editor-tabs" role="tablist" aria-label="Editor modes">
+      <button id="tab-structured" class="editor-tab" type="button" role="tab" aria-controls="editor-structured">Structured</button>
+      <button id="tab-dossier" class="editor-tab" type="button" role="tab" aria-controls="editor-dossier">Dossier</button>
+      <button id="tab-raw" class="editor-tab" type="button" role="tab" aria-controls="editor-raw">Raw JSON</button>
+    </div>
+    <div id="editor-structured" role="tabpanel" aria-labelledby="tab-structured"></div>
+    <div id="editor-dossier" role="tabpanel" aria-labelledby="tab-dossier" hidden>
+      <textarea id="editor-dossier-text" rows="16" spellcheck="false"></textarea>
+      <div id="editor-dossier-preview" class="markdown markdown-preview"></div>
+    </div>
+    <div id="editor-raw" role="tabpanel" aria-labelledby="tab-raw" hidden>
+      <textarea id="editor-raw-text" rows="22" spellcheck="false"></textarea>
+    </div>
+    <p id="editor-issues" class="error-note" hidden></p>
+    <div class="editor-actions">
+      <button id="editor-save" class="button button--primary" type="button">Save</button>
+      <button id="editor-duplicate" class="button" type="button">Duplicate</button>
+      <button id="editor-delete" class="button button--danger" type="button">Delete</button>
+      <a class="button" href="#/library">Back</a>
+    </div>
+  </section>
+  <section id="view-committee" class="studio-view" aria-label="Default committee">
+    <div class="view-head">
+      <h1>Default committee</h1>
+      <p class="view-sub">Two to six members, in speaking order. <code>--personas</code> still overrides per debate.</p>
+    </div>
+    <p id="committee-source" class="chip"></p>
+    <p id="committee-count" class="view-sub" aria-live="polite"></p>
+    <div class="committee-columns">
+      <div>
+        <h2>On the committee</h2>
+        <ol id="committee-selected" class="committee-list"></ol>
+      </div>
+      <div>
+        <h2>Available</h2>
+        <ul id="committee-available" class="committee-list"></ul>
+      </div>
+    </div>
+    <p id="committee-error" class="error-note" hidden></p>
+    <div class="editor-actions">
+      <button id="committee-save" class="button button--primary" type="button">Save</button>
+      <button id="committee-reset" class="button" type="button">Reset to default</button>
+    </div>
+  </section>
+</main>
+<dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-message">
+  <p id="confirm-message"></p>
+  <div class="dialog-actions">
+    <button id="confirm-cancel" class="button" type="button">Cancel</button>
+    <button id="confirm-accept" class="button button--danger" type="button">Confirm</button>
+  </div>
+</dialog>
+<dialog id="duplicate-dialog" class="confirm-dialog" aria-labelledby="duplicate-message">
+  <p id="duplicate-message"></p>
+  <label class="field"><span>New slug</span><input id="duplicate-slug" type="text" autocomplete="off" spellcheck="false"></label>
+  <div class="dialog-actions">
+    <button id="duplicate-cancel" class="button" type="button">Cancel</button>
+    <button id="duplicate-accept" class="button" type="button">Duplicate</button>
+  </div>
+</dialog>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<script src="/assets/md.js"></script>
+<script src="/assets/studio.js"></script>
+</body>
+</html>

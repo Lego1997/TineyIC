@@ -927,6 +927,41 @@ def run_replay_command(
     return 0
 
 
+def run_studio_command(
+    *,
+    port: int = 0,
+    no_open: bool = False,
+    err: TextIO | None = None,
+    browser_opener=None,
+) -> int:
+    """Serve the persistent persona studio until interrupted."""
+    err = err if err is not None else sys.stderr
+    with contextlib.redirect_stdout(err):
+        from .web.studio import StudioServer
+
+    studio = StudioServer(
+        port=port,
+        browser_opener=browser_opener,
+        open_browser=not no_open,
+        stderr=err,
+    )
+    try:
+        try:
+            studio.start()
+        except OSError as exc:
+            _report_web_bind_error(err, port, exc)
+            return 3
+        _progress(err, f"studio at {studio.base_url}, Ctrl-C to exit")
+        try:
+            while not studio.wait(0.5):
+                pass
+        except KeyboardInterrupt:
+            pass
+    finally:
+        studio.shutdown(timeout=1.0)
+    return 0
+
+
 def _report_web_bind_error(err: TextIO, port: int, exc: OSError) -> None:
     """Render a bind failure as a concise setup error, without a traceback."""
     requested = str(port) if port else "auto"

@@ -23,7 +23,16 @@ PERSONA_CONFIG_FILES = {
     "peter_lynch.agent.json",
     "warren_buffett.agent.json",
 }
-WEB_ASSET_FILES = {"app.js", "index.html", "style.css"}
+WEB_ASSET_FILES = {
+    "app.js",
+    "index.html",
+    "style.css",
+    "base.css",
+    "md.js",
+    "studio.html",
+    "studio.js",
+    "studio.css",
+}
 PRIVATE_CLASSIFIER = "Private :: Do Not Upload"
 # Pinned manifest of the vendored subtree. To regenerate after adding a file to
 # VENDORED_DIVERGENCES (the documented procedure), recompute the aggregate over

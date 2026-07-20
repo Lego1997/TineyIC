@@ -17,6 +17,9 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_VERSION = json.loads(
+    (ROOT / "package.json").read_text(encoding="utf-8")
+)["version"]
 FORBIDDEN_PARTS = {
     ".git",
     ".tinyic",
@@ -408,7 +411,7 @@ def test_global_install_runs_real_cli_offline_without_mutating_package(
         timeout=240,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout == "tinyic 2.2.0\n"
+    assert result.stdout == f"tinyic {PACKAGE_VERSION}\n"
     assert _tree_digest(package_root) == before
     assert not (package_root / ".venv").exists()
 
@@ -459,7 +462,7 @@ def test_concurrent_real_first_launches_share_one_complete_runtime(
 
     for returncode, stdout, stderr in results:
         assert returncode == 0, stderr
-        assert stdout == "tinyic 2.2.0\n"
+        assert stdout == f"tinyic {PACKAGE_VERSION}\n"
     releases = list((cache / "tinyic" / "npm").iterdir())
     assert len(releases) == 1
     release = releases[0]

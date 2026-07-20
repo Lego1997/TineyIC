@@ -342,6 +342,92 @@ def _valid_iso_date(value: Any) -> bool:
     return True
 
 
+def _sources_issues(sources: Any, issues: list[str]) -> list[Any]:
+    """Validate ``tinyic.sources`` entries; return the coerced list for quoting."""
+    if not _is_sequence(sources):
+        issues.append("tinyic.sources must be an array")
+        return []
+    for index, source in enumerate(sources):
+        path = f"tinyic.sources[{index}]"
+        if not isinstance(source, Mapping):
+            issues.append(f"{path} must be an object")
+            continue
+        _reject_unknown(source, path, SOURCE_KEYS, issues)
+        _nonempty_string(source.get("title"), f"{path}.title", issues)
+        if not _valid_public_url(source.get("url")):
+            issues.append(f"{path}.url must be an http(s) URL without credentials")
+        source_type = source.get("type")
+        if not isinstance(source_type, str) or source_type not in {
+            "primary",
+            "secondary",
+        }:
+            issues.append(f"{path}.type must be primary or secondary")
+        if not _valid_iso_date(source.get("accessed")):
+            issues.append(f"{path}.accessed must be YYYY-MM-DD")
+    return sources
+
+
+def _legacy_sources_issues(sources: Mapping[str, Any], issues: list[str]) -> list[Any]:
+    """Validate the pre-schema built-in shape: ``{"primary": [...], "secondary": [...]}``.
+
+    The built-in six store ``tinyic.sources`` as a mapping of plain citation
+    strings; the relaxed contract must keep their copies editable. Returns the
+    flattened citation list so quote indexes can still be range-checked.
+    """
+    _reject_unknown(sources, "tinyic.sources", {"primary", "secondary"}, issues)
+    flattened: list[Any] = []
+    for key in ("primary", "secondary"):
+        if key not in sources:
+            continue
+        value = sources[key]
+        if not _is_sequence(value):
+            issues.append(f"tinyic.sources.{key} must be an array")
+            continue
+        for index, entry in enumerate(value):
+            _nonempty_string(entry, f"tinyic.sources.{key}[{index}]", issues)
+        flattened.extend(value)
+    return flattened
+
+
+def _quotes_issues(quotes: Any, sources: list[Any], issues: list[str]) -> None:
+    """Validate ``tinyic.famous_quotes`` against the coerced sources list."""
+    if not _is_sequence(quotes):
+        issues.append("tinyic.famous_quotes must be an array")
+        return
+    for index, quote in enumerate(quotes):
+        path = f"tinyic.famous_quotes[{index}]"
+        if not isinstance(quote, Mapping):
+            issues.append(f"{path} must be an object")
+            continue
+        _reject_unknown(quote, path, QUOTE_KEYS, issues)
+        _nonempty_string(quote.get("text"), f"{path}.text", issues)
+        source = quote.get("source")
+        if not isinstance(source, int) or isinstance(source, bool) or not 1 <= source <= len(sources):
+            issues.append(f"{path}.source must be a 1-based index into tinyic.sources")
+
+
+def _generation_issues(generation: Any, issues: list[str]) -> None:
+    """Validate the factory ``tinyic.generation`` provenance block."""
+    if not isinstance(generation, Mapping):
+        issues.append("tinyic.generation must be an object for generated personas")
+        generation = {}
+    _reject_unknown(generation, "tinyic.generation", GENERATION_KEYS, issues)
+    if generation.get("generated_by") != "tinyic persona research":
+        issues.append("tinyic.generation.generated_by is invalid")
+    _nonempty_string(generation.get("model_ref"), "tinyic.generation.model_ref", issues)
+    if not _valid_iso_date(generation.get("date")):
+        issues.append("tinyic.generation.date must be YYYY-MM-DD")
+    search_calls = generation.get("search_calls")
+    if not isinstance(search_calls, int) or isinstance(search_calls, bool) or search_calls < 0:
+        issues.append("tinyic.generation.search_calls must be a non-negative integer")
+    quality = generation.get("quality")
+    if not isinstance(quality, str) or quality not in {"normal", "thin"}:
+        issues.append("tinyic.generation.quality must be normal or thin")
+    _nonempty_string(
+        generation.get("disclaimer"), "tinyic.generation.disclaimer", issues
+    )
+
+
 def validate_agent_spec(specification: Mapping[str, Any]) -> Mapping[str, Any]:
     """Validate Appendix A and generated TinyTroupe persona content.
 
@@ -436,65 +522,76 @@ def validate_agent_spec(specification: Mapping[str, Any]) -> Mapping[str, Any]:
     _strings(tinyic.get("signal_rules"), "tinyic.signal_rules", issues, maximum=8)
     _strings(tinyic.get("red_flags"), "tinyic.red_flags", issues, maximum=8)
 
-    sources = tinyic.get("sources")
-    if not _is_sequence(sources):
-        issues.append("tinyic.sources must be an array")
-        sources = []
-    for index, source in enumerate(sources):
-        path = f"tinyic.sources[{index}]"
-        if not isinstance(source, Mapping):
-            issues.append(f"{path} must be an object")
-            continue
-        _reject_unknown(source, path, SOURCE_KEYS, issues)
-        _nonempty_string(source.get("title"), f"{path}.title", issues)
-        if not _valid_public_url(source.get("url")):
-            issues.append(f"{path}.url must be an http(s) URL without credentials")
-        source_type = source.get("type")
-        if not isinstance(source_type, str) or source_type not in {
-            "primary",
-            "secondary",
-        }:
-            issues.append(f"{path}.type must be primary or secondary")
-        if not _valid_iso_date(source.get("accessed")):
-            issues.append(f"{path}.accessed must be YYYY-MM-DD")
-
-    quotes = tinyic.get("famous_quotes")
-    if not _is_sequence(quotes):
-        issues.append("tinyic.famous_quotes must be an array")
-        quotes = []
-    for index, quote in enumerate(quotes):
-        path = f"tinyic.famous_quotes[{index}]"
-        if not isinstance(quote, Mapping):
-            issues.append(f"{path} must be an object")
-            continue
-        _reject_unknown(quote, path, QUOTE_KEYS, issues)
-        _nonempty_string(quote.get("text"), f"{path}.text", issues)
-        source = quote.get("source")
-        if not isinstance(source, int) or isinstance(source, bool) or not 1 <= source <= len(sources):
-            issues.append(f"{path}.source must be a 1-based index into tinyic.sources")
+    sources = _sources_issues(tinyic.get("sources"), issues)
+    _quotes_issues(tinyic.get("famous_quotes"), sources, issues)
 
     if occupation.get("description") != epithet:
         issues.append("persona.occupation.description must equal tinyic.epithet")
 
-    generation = tinyic.get("generation")
-    if not isinstance(generation, Mapping):
-        issues.append("tinyic.generation must be an object for generated personas")
-        generation = {}
-    _reject_unknown(generation, "tinyic.generation", GENERATION_KEYS, issues)
-    if generation.get("generated_by") != "tinyic persona research":
-        issues.append("tinyic.generation.generated_by is invalid")
-    _nonempty_string(generation.get("model_ref"), "tinyic.generation.model_ref", issues)
-    if not _valid_iso_date(generation.get("date")):
-        issues.append("tinyic.generation.date must be YYYY-MM-DD")
-    search_calls = generation.get("search_calls")
-    if not isinstance(search_calls, int) or isinstance(search_calls, bool) or search_calls < 0:
-        issues.append("tinyic.generation.search_calls must be a non-negative integer")
-    quality = generation.get("quality")
-    if not isinstance(quality, str) or quality not in {"normal", "thin"}:
-        issues.append("tinyic.generation.quality must be normal or thin")
-    _nonempty_string(
-        generation.get("disclaimer"), "tinyic.generation.disclaimer", issues
-    )
+    _generation_issues(tinyic.get("generation"), issues)
+
+    if issues:
+        raise SchemaValidationError(issues)
+    return specification
+
+
+def validate_user_agent_spec(specification: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Validate a hand-maintained persona file (the relaxed registry contract).
+
+    Factory-generated artifacts satisfy :func:`validate_agent_spec`.  Hand
+    files — including copies of the built-in six, which predate the generated
+    schema — are held to the shape the registry and orchestrator actually
+    consume, plus the ``tinyic`` block's per-field constraints where those
+    fields are present.  Unknown keys are tolerated: legacy fields ride along.
+    """
+    if not isinstance(specification, Mapping):
+        raise SchemaValidationError(("root must be an object",))
+    issues: list[str] = []
+    if specification.get("type") != "TinyPerson":
+        issues.append("type must equal 'TinyPerson'")
+    persona = specification.get("persona")
+    if not isinstance(persona, Mapping):
+        issues.append("persona must be an object")
+    else:
+        _nonempty_string(persona.get("name"), "persona.name", issues)
+
+    tinyic = specification.get("tinyic")
+    if tinyic is None:
+        tinyic = {}
+    if not isinstance(tinyic, Mapping):
+        issues.append("tinyic must be an object when present")
+        tinyic = {}
+
+    schema_version = tinyic.get("schema_version")
+    if schema_version is not None and schema_version != 1:
+        issues.append("tinyic.schema_version must equal 1")
+    if "epithet" in tinyic:
+        _nonempty_string(tinyic.get("epithet"), "tinyic.epithet", issues, maximum=80)
+    if "philosophy_hook" in tinyic:
+        _nonempty_string(
+            tinyic.get("philosophy_hook"), "tinyic.philosophy_hook", issues, maximum=240
+        )
+    temperament = tinyic.get("temperament")
+    if temperament is not None and temperament not in VALID_TEMPERAMENTS:
+        issues.append(
+            "tinyic.temperament must be conciliatory, balanced, or contrarian"
+        )
+    for key in ("decision_checklist", "signal_rules", "red_flags"):
+        if key in tinyic:
+            _strings(tinyic.get(key), f"tinyic.{key}", issues)
+    sources = tinyic.get("sources")
+    if isinstance(sources, Mapping):
+        # Copies of the built-in six carry the legacy mapping shape.
+        sources = _legacy_sources_issues(sources, issues)
+    elif sources is not None:
+        sources = _sources_issues(sources, issues)
+    else:
+        sources = []
+    if "famous_quotes" in tinyic:
+        _quotes_issues(tinyic.get("famous_quotes"), sources, issues)
+    if "generation" in tinyic:
+        # A hand file that carries provenance honors the strict block.
+        _generation_issues(tinyic.get("generation"), issues)
 
     if issues:
         raise SchemaValidationError(issues)
@@ -506,4 +603,5 @@ __all__ = [
     "SchemaValidationError",
     "VALID_TEMPERAMENTS",
     "validate_agent_spec",
+    "validate_user_agent_spec",
 ]

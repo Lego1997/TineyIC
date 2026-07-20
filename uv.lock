@@ -5253,7 +5253,7 @@ wheels = [
 
 [[package]]
 name = "tinyic"
-version = "2.2.0"
+version = "2.3.0"
 source = { editable = "src/tinyic" }
 dependencies = [
     { name = "claude-agent-sdk" },

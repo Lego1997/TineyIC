@@ -18,6 +18,8 @@ ASSET_DIR = Path(__file__).parents[1] / "src" / "tinyic" / "web" / "assets"
 HTML_PATH = ASSET_DIR / "index.html"
 JS_PATH = ASSET_DIR / "app.js"
 CSS_PATH = ASSET_DIR / "style.css"
+BASE_CSS_PATH = ASSET_DIR / "base.css"
+MD_JS_PATH = ASSET_DIR / "md.js"
 
 SCHEMA_V1_EVENT_TYPES = {
     "debate_started",
@@ -68,6 +70,16 @@ def javascript() -> str:
 @pytest.fixture(scope="module")
 def css() -> str:
     return CSS_PATH.read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def base_css() -> str:
+    return BASE_CSS_PATH.read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def md_js() -> str:
+    return MD_JS_PATH.read_text(encoding="utf-8")
 
 
 class _MarkupInventory(HTMLParser):
@@ -207,21 +219,21 @@ def test_unexpected_live_stream_close_reconciles_worker_failure(
 
 
 def test_markdown_is_escape_first_and_never_assigns_model_html(
-    javascript: str,
+    md_js: str,
 ) -> None:
-    markdown_function = javascript[
-        javascript.index("function renderMarkdown") : javascript.index(
+    markdown_function = md_js[
+        md_js.index("function renderMarkdown") : md_js.index(
             "function setMarkdown"
         )
     ]
     assert "escapeHtml(" in markdown_function
     assert markdown_function.index("escapeHtml(") < markdown_function.index(".split(")
-    assert "<strong>" in javascript
-    assert "<em>" in javascript
-    assert "<pre><code>" in javascript
-    assert "<blockquote>" in javascript
-    assert 'const listTag = ordered ? "ol" : "ul"' in javascript
-    assert "createContextualFragment(renderMarkdown(markdown))" in javascript
+    assert "<strong>" in md_js
+    assert "<em>" in md_js
+    assert "<pre><code>" in md_js
+    assert "<blockquote>" in md_js
+    assert 'const listTag = ordered ? "ol" : "ul"' in md_js
+    assert "createContextualFragment(renderMarkdown(markdown))" in md_js
     for forbidden_sink in (
         ".innerHTML",
         ".outerHTML",
@@ -229,15 +241,59 @@ def test_markdown_is_escape_first_and_never_assigns_model_html(
         "document.write",
         "eval(",
     ):
-        assert forbidden_sink not in javascript
+        assert forbidden_sink not in md_js
 
 
-def test_markdown_links_are_http_only_and_hardened(javascript: str) -> None:
-    assert 'parsed.protocol !== "http:"' in javascript
-    assert 'parsed.protocol !== "https:"' in javascript
-    assert 'rel="noopener noreferrer"' in javascript
-    assert 'target="_blank"' in javascript
-    assert "javascript:" not in javascript.lower()
+def test_markdown_links_are_http_only_and_hardened(md_js: str) -> None:
+    assert 'parsed.protocol !== "http:"' in md_js
+    assert 'parsed.protocol !== "https:"' in md_js
+    assert 'rel="noopener noreferrer"' in md_js
+    assert 'target="_blank"' in md_js
+    assert "javascript:" not in md_js.lower()
+
+
+def test_pages_load_shared_layers_first(html: str) -> None:
+    assert html.index("/assets/base.css") < html.index("/assets/style.css")
+    assert html.index("/assets/md.js") < html.index("/assets/app.js")
+
+
+def test_no_selector_duplication_between_base_and_page_css(
+    base_css: str, css: str
+) -> None:
+    def selectors(text: str) -> set[str]:
+        return {
+            line.split("{")[0].strip()
+            for line in text.splitlines()
+            if "{" in line and not line.strip().startswith(("@", "/*"))
+        }
+
+    # The only sanctioned overlaps are cascade overrides by design: style.css
+    # re-declares :root (--composer-height), body (composer padding), .toast
+    # (bottom offset above the fixed composer), and .skip-link (hidden in the
+    # debate page's print rules) on top of base.css.
+    assert (selectors(base_css) & selectors(css)) <= {
+        ":root",
+        "body",
+        ".toast",
+        ".skip-link",
+    }
+
+
+def test_shared_layers_keep_asset_discipline(base_css: str, md_js: str) -> None:
+    for text in (base_css, md_js):
+        assert "http://" not in text and "https://" not in text
+        assert "@import" not in text and "url(" not in text
+    for banned in (
+        "innerHTML",
+        "insertAdjacentHTML",
+        "eval(",
+        ".replaceAll(",
+        "Object.hasOwn(",
+        "structuredClone(",
+    ):
+        assert banned not in md_js
+    assert "window.TinyICMarkdown" in md_js
+    assert "TinyICMarkdown.setInto(" in JS_PATH.read_text(encoding="utf-8")
 
 
 def test_controls_use_json_post_protocol(javascript: str) -> None:
@@ -269,24 +325,31 @@ def test_page_states_and_jump_to_live_are_implemented(
     assert "window.scrollTo" in javascript
 
 
-def test_persona_palette_is_hand_synced_for_both_color_schemes(css: str) -> None:
-    assert "hand-synced from src/tinyic/persona_style.py" in css
+def test_persona_palette_is_hand_synced_for_both_color_schemes(base_css: str) -> None:
+    assert "hand-synced from src/tinyic/persona_style.py" in base_css
     light_colors = {"#01579b", "#7b1fa2", "#00695c", "#bf360c", "#c62828", "#33691e"}
     dark_colors = {"#4fc3f7", "#ba68c8", "#4db6ac", "#ffb74d", "#e57373", "#aed581"}
     for color in light_colors | dark_colors:
-        assert color in css
-    assert "@media (prefers-color-scheme: dark)" in css
-    assert 'Charter, Georgia, "Times New Roman", serif' in css
+        assert color in base_css
+    assert "@media (prefers-color-scheme: dark)" in base_css
+    assert 'Charter, Georgia, "Times New Roman", serif' in base_css
 
 
-def test_layout_collapses_rail_and_respects_accessibility_preferences(css: str) -> None:
+def test_layout_collapses_rail_and_respects_accessibility_preferences(
+    css: str, base_css: str
+) -> None:
     assert "@media (max-width: 56.25rem)" in css
     assert ".right-rail" in css
     assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in css
-    assert "@media (prefers-reduced-motion: reduce)" in css
+    assert "@media (prefers-reduced-motion: reduce)" in base_css
 
 
 def test_client_stays_within_es2020(javascript: str) -> None:
     assert ".replaceAll(" not in javascript
     assert "Object.hasOwn(" not in javascript
     assert "structuredClone(" not in javascript
+
+
+def test_print_stylesheet_is_additive_and_present(css: str):
+    assert "@media print" in css
+    assert "display: none" in css  # composer/FAB hidden when printing

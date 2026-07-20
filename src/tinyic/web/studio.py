@@ -1,0 +1,778 @@
+"""Persistent localhost persona studio: library, editor, research, committee.
+
+The studio reuses the debate viewer's capability-security stack
+(:mod:`tinyic.web.security`) but owns a separate, studio-local JSON API. It
+never touches the debate event log and adds no debate event types; research
+progress is a studio-local SSE channel. All state-changing routes require
+``application/json`` bodies up to 256 KB (dossiers exceed the debate viewer's
+64 KB cap).
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+import threading
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib import resources
+from pathlib import Path, PurePosixPath
+from typing import Any, TextIO, cast
+from urllib.parse import parse_qs, quote, unquote, urlsplit
+
+from .research import ResearchJobs, ResearchSeams
+from .security import (
+    CACHE_CONTROL,
+    CSP_POLICY,
+    AuthStatus,
+    SecurityPolicy,
+    generate_capability_token,
+    is_json_content_type,
+)
+
+__all__ = ["MAX_BODY_BYTES", "StudioServer"]
+
+MAX_BODY_BYTES = 262_144
+_MIME_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+}
+SLUG_RE = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
+
+
+class _StudioHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, address, handler, owner) -> None:
+        self.owner = owner
+        super().__init__(address, handler)
+
+
+class _StudioHandler(BaseHTTPRequestHandler):
+    """One authenticated studio request; all state belongs to ``StudioServer``."""
+
+    protocol_version = "HTTP/1.1"
+    server_version = "TinyIC"
+    sys_version = ""
+
+    @property
+    def studio(self) -> "StudioServer":
+        return cast(_StudioHTTPServer, self.server).owner
+
+    def log_message(self, _format: str, *args: object) -> None:
+        # The first request target carries the capability token: never log it.
+        return
+
+    def end_headers(self) -> None:
+        self.send_header("Cache-Control", CACHE_CONTROL)
+        self.send_header("Content-Security-Policy", CSP_POLICY)
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        super().end_headers()
+
+    # -- method dispatch ------------------------------------------------- #
+
+    def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
+        if not self._request_security_ok():
+            return
+        parsed = urlsplit(self.path)
+        path = unquote(parsed.path)
+        if path == "/" and self._token_handoff(parsed.query):
+            return
+        if not self._authenticated():
+            return
+        if path == "/":
+            self._serve_asset("studio.html")
+        elif path.startswith("/assets/"):
+            self._serve_asset_path(path.removeprefix("/assets/"))
+        elif path == "/api/personas":
+            self._get_personas()
+        elif path.startswith("/api/personas/"):
+            self._get_persona(path.removeprefix("/api/personas/"))
+        elif path == "/api/committee":
+            self._get_committee()
+        elif path == "/api/research":
+            self._get_research_status()
+        elif path.startswith("/api/research/") and path.endswith("/events"):
+            self._serve_job_events(
+                path.removeprefix("/api/research/").removesuffix("/events")
+            )
+        else:
+            self._problem(HTTPStatus.NOT_FOUND, "not_found")
+
+    def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
+        body = self._mutation_start()
+        if body is None:
+            return
+        parsed = urlsplit(self.path)
+        path = unquote(parsed.path)
+        if path == "/api/research/estimate":
+            self._post_research_estimate(body)
+            return
+        if path == "/api/research":
+            self._post_research(body)
+            return
+        if path.startswith("/api/personas/") and path.endswith("/duplicate"):
+            slug = path.removeprefix("/api/personas/").removesuffix("/duplicate")
+            self._post_duplicate(slug, body)
+            return
+        self._problem(HTTPStatus.NOT_FOUND, "not_found")
+
+    def do_PUT(self) -> None:  # noqa: N802 - stdlib handler API
+        body = self._mutation_start()
+        if body is None:
+            return
+        parsed = urlsplit(self.path)
+        path = unquote(parsed.path)
+        if path.startswith("/api/personas/"):
+            self._put_persona(path.removeprefix("/api/personas/"), body)
+            return
+        if path == "/api/committee":
+            self._put_committee(body)
+            return
+        self._problem(HTTPStatus.NOT_FOUND, "not_found")
+
+    def do_DELETE(self) -> None:  # noqa: N802 - stdlib handler API
+        if not self._request_security_ok():
+            return
+        if not self._authenticated():
+            return
+        parsed = urlsplit(self.path)
+        path = unquote(parsed.path)
+        if path.startswith("/api/personas/"):
+            self._delete_persona(path.removeprefix("/api/personas/"))
+            return
+        self._problem(HTTPStatus.NOT_FOUND, "not_found")
+
+    def do_OPTIONS(self) -> None:  # noqa: N802 - stdlib handler API
+        if not self._request_security_ok():
+            return
+        self._problem(HTTPStatus.METHOD_NOT_ALLOWED, "method_not_allowed")
+
+    def _mutation_start(self) -> dict[str, Any] | None:
+        """Shared security + JSON gate for POST/PUT; returns the parsed object."""
+        if not self._request_security_ok():
+            return None
+        if not self._authenticated():
+            return None
+        content_types = self.headers.get_all("Content-Type") or []
+        if len(content_types) != 1 or not is_json_content_type(content_types[0]):
+            self._problem(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "json_required")
+            return None
+        return self._read_json_body()
+
+    # -- security (mirrors tinyic.web.server) ---------------------------- #
+
+    def _request_security_ok(self) -> bool:
+        hosts = self.headers.get_all("Host") or []
+        if len(hosts) != 1 or not self.studio.security.valid_host(hosts[0]):
+            self._problem(HTTPStatus.FORBIDDEN, "invalid_host")
+            return False
+        origins = self.headers.get_all("Origin") or []
+        if len(origins) > 1 or (
+            origins and not self.studio.security.valid_origin(origins[0])
+        ):
+            self._problem(HTTPStatus.FORBIDDEN, "invalid_origin")
+            return False
+        return True
+
+    def _token_handoff(self, query: str) -> bool:
+        parameters = parse_qs(query, keep_blank_values=True)
+        if "token" not in parameters:
+            return False
+        supplied = parameters["token"]
+        if len(supplied) != 1 or not self.studio.security.matches_token(supplied[0]):
+            self._problem(HTTPStatus.FORBIDDEN, "invalid_token")
+            return True
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", "/")
+        self.send_header(
+            "Set-Cookie",
+            f"{self.studio.security.cookie_name}={self.studio.token}; "
+            "HttpOnly; SameSite=Strict; Path=/",
+        )
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return True
+
+    def _authenticated(self) -> bool:
+        cookie_headers = self.headers.get_all("Cookie") or []
+        auth_headers = self.headers.get_all("Authorization") or []
+        if len(auth_headers) > 1:
+            status = AuthStatus.INVALID
+        else:
+            status = self.studio.security.authenticate(
+                cookie_header="; ".join(cookie_headers) if cookie_headers else None,
+                authorization=auth_headers[0] if auth_headers else None,
+            )
+        if status is AuthStatus.OK:
+            return True
+        code = (
+            HTTPStatus.UNAUTHORIZED
+            if status is AuthStatus.MISSING
+            else HTTPStatus.FORBIDDEN
+        )
+        headers = {"WWW-Authenticate": 'Bearer realm="tinyic"'} if code == 401 else None
+        self._problem(code, "authentication_required", headers=headers)
+        return False
+
+    # -- assets & body ---------------------------------------------------- #
+
+    def _user_persona_path(self, slug: str):
+        """Resolve *slug* to a writable user artifact path or report the error."""
+        if not SLUG_RE.fullmatch(slug):
+            self._problem(HTTPStatus.NOT_FOUND, "unknown_persona")
+            return None
+        from tinyic.personas import registry as registry_module
+
+        if slug in registry_module.BUILTIN_PERSONAS:
+            self._problem(HTTPStatus.FORBIDDEN, "builtin_persona_protected")
+            return None
+        path = registry_module.registry_snapshot(warn=False).get(slug)
+        if path is None:
+            self._problem(HTTPStatus.NOT_FOUND, "unknown_persona")
+            return None
+        return path
+
+    def _put_persona(self, slug: str, body: dict) -> None:
+        path = self._user_persona_path(slug)
+        if path is None:
+            return
+        agent = body.get("agent")
+        dossier = body.get("dossier")
+        if dossier is not None and not isinstance(dossier, str):
+            self._problem(HTTPStatus.BAD_REQUEST, "invalid_research_request")
+            return
+        from collections.abc import Mapping as _Mapping
+
+        from tinyic.personas.factory.pipeline import write_artifact_pair
+        from tinyic.personas.factory.schema import (
+            SchemaValidationError,
+            validate_agent_spec,
+            validate_user_agent_spec,
+        )
+
+        generated = (
+            isinstance(agent, _Mapping)
+            and isinstance(agent.get("tinyic"), _Mapping)
+            and "generation" in agent["tinyic"]
+        )
+        try:
+            if generated:
+                validate_agent_spec(agent)
+            else:
+                validate_user_agent_spec(agent)
+        except SchemaValidationError as exc:
+            issues = [str(issue) for issue in getattr(exc, "issues", ())] or [str(exc)]
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "validation_failed", "issues": issues},
+            )
+            return
+        agent_bytes = (
+            json.dumps(agent, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        dossier_path = path.with_name(f"{slug}.dossier.md")
+        if dossier is not None:
+            dossier_bytes = dossier.encode("utf-8")
+        elif dossier_path.is_file():
+            dossier_bytes = dossier_path.read_bytes()
+        else:
+            dossier_bytes = b""
+        try:
+            write_artifact_pair(path, agent_bytes, dossier_path, dossier_bytes, force=True)
+        except OSError as exc:
+            self._problem(HTTPStatus.INTERNAL_SERVER_ERROR, "persona_write_error")
+            self.studio.diagnostic(f"studio: persona save failed: {exc}")
+            return
+        self._send_json(HTTPStatus.OK, {"slug": slug, "saved": True})
+
+    def _post_duplicate(self, slug: str, body: dict) -> None:
+        # Built-ins are valid duplication SOURCES (the documented way to tune
+        # one); only the target slug keeps the built-in/collision protection.
+        if not SLUG_RE.fullmatch(slug):
+            self._problem(HTTPStatus.NOT_FOUND, "unknown_persona")
+            return
+        from tinyic.personas import registry as registry_module
+
+        source = registry_module.registry_snapshot(warn=False).get(slug)
+        if source is None:
+            self._problem(HTTPStatus.NOT_FOUND, "unknown_persona")
+            return
+        from tinyic.personas.factory.pipeline import (
+            PROTECTED_BUILTIN_SLUGS,
+            PersonaCollisionError,
+            slugify,
+            write_artifact_pair,
+        )
+        from tinyic.personas.registry import personas_dir
+
+        try:
+            new_slug = slugify(str(body.get("new_slug") or ""))
+        except Exception:
+            self._problem(HTTPStatus.BAD_REQUEST, "invalid_persona_slug")
+            return
+        if new_slug in PROTECTED_BUILTIN_SLUGS:
+            self._problem(HTTPStatus.CONFLICT, "builtin_persona_collision")
+            return
+        agent_path = personas_dir() / f"{new_slug}.agent.json"
+        dossier_path = personas_dir() / f"{new_slug}.dossier.md"
+        source_dossier = source.with_name(f"{slug}.dossier.md")
+        try:
+            write_artifact_pair(
+                agent_path,
+                source.read_bytes(),
+                dossier_path,
+                source_dossier.read_bytes() if source_dossier.is_file() else b"",
+                force=False,
+            )
+        except PersonaCollisionError:
+            self._problem(HTTPStatus.CONFLICT, "persona_exists")
+            return
+        except OSError as exc:
+            self._problem(HTTPStatus.INTERNAL_SERVER_ERROR, "persona_write_error")
+            self.studio.diagnostic(f"studio: persona duplicate failed: {exc}")
+            return
+        self._send_json(HTTPStatus.CREATED, {"slug": new_slug})
+
+    def _delete_persona(self, slug: str) -> None:
+        path = self._user_persona_path(slug)
+        if path is None:
+            return
+        try:
+            path.unlink(missing_ok=True)
+            path.with_name(f"{slug}.dossier.md").unlink(missing_ok=True)
+        except OSError as exc:
+            self._problem(HTTPStatus.INTERNAL_SERVER_ERROR, "persona_delete_error")
+            self.studio.diagnostic(f"studio: persona delete failed: {exc}")
+            return
+        payload: dict[str, Any] = {"deleted": slug}
+        payload.update(self._heal_committee_after_delete(slug))
+        self._send_json(HTTPStatus.OK, payload)
+
+    def _heal_committee_after_delete(self, slug: str) -> dict[str, Any]:
+        """Drop *slug* from the overlay committee so debates keep resolving."""
+        from tinyic.models.presets import load_config, set_user_committee
+
+        try:
+            configured = load_config().get("committee")
+            if not configured or slug not in configured:
+                return {}
+            remaining = [name for name in configured if name != slug]
+            if len(remaining) >= 2:
+                set_user_committee(remaining)
+                return {"committee": remaining, "committee_updated": True}
+            set_user_committee(None)
+            return {"committee_cleared": True}
+        except Exception as exc:
+            self.studio.diagnostic(
+                f"studio: committee cleanup after delete failed: {exc}"
+            )
+            return {"committee_error": "overlay_unwritable"}
+
+    def _get_committee(self) -> None:
+        from tinyic.models.presets import load_config
+
+        try:
+            configured = load_config().get("committee")
+        except Exception as exc:
+            self._problem(HTTPStatus.INTERNAL_SERVER_ERROR, "invalid_committee_overlay")
+            self.studio.diagnostic(f"studio: committee overlay unreadable: {exc}")
+            return
+        if configured:
+            self._send_json(HTTPStatus.OK, {"committee": list(configured), "source": "overlay"})
+            return
+        from tinyic.headless import DEFAULT_PERSONAS
+
+        self._send_json(
+            HTTPStatus.OK, {"committee": list(DEFAULT_PERSONAS), "source": "default"}
+        )
+
+    def _put_committee(self, body: dict) -> None:
+        from tinyic.models.presets import (
+            PresetError,
+            parse_committee,
+            set_user_committee,
+        )
+        from tinyic.personas import registry as registry_module
+
+        value = body.get("committee")
+        if value is not None:
+            try:
+                names = parse_committee(value)
+            except PresetError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "invalid_committee", "message": str(exc)},
+                )
+                return
+            known = registry_module.registry_snapshot(warn=False)
+            unknown = [name for name in names if name not in known]
+            if unknown:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "unknown_persona", "unknown": unknown},
+                )
+                return
+        else:
+            names = None
+        try:
+            set_user_committee(names)
+        except PresetError as exc:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "invalid_committee", "message": str(exc)},
+            )
+            return
+        self._get_committee()
+
+    def _get_personas(self) -> None:
+        from tinyic.personas import registry as registry_module
+        from tinyic.personas.summary import registry_summaries
+
+        try:
+            summaries = registry_summaries(registry_module)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            self._problem(HTTPStatus.INTERNAL_SERVER_ERROR, "persona_read_error")
+            self.studio.diagnostic(f"studio: persona list failed: {exc}")
+            return
+        self._send_json(
+            HTTPStatus.OK, {"schema_version": 1, "personas": summaries}
+        )
+
+    def _post_research_estimate(self, body: dict) -> None:
+        from tinyic.web import research as studio_research
+
+        seams = self.studio.research_seams or studio_research.ResearchSeams()
+        try:
+            payload, _backend = studio_research.preflight(body, seams, keep_backend=False)
+        except studio_research.ResearchPreflightError as exc:
+            self._send_json(
+                exc.status, {"error": exc.reason, "message": exc.message, **exc.extra}
+            )
+            return
+        self._send_json(HTTPStatus.OK, payload)
+
+    def _post_research(self, body: dict) -> None:
+        from tinyic.web import research as studio_research
+
+        if body.get("confirmed") is not True:
+            self._problem(HTTPStatus.BAD_REQUEST, "confirmation_required")
+            return
+        try:
+            job_id = self.studio.jobs.start(body)
+        except studio_research.ResearchPreflightError as exc:
+            self._send_json(
+                exc.status, {"error": exc.reason, "message": exc.message, **exc.extra}
+            )
+            return
+        self._send_json(HTTPStatus.ACCEPTED, {"job_id": job_id})
+
+    def _get_research_status(self) -> None:
+        """Report the active job so a reloaded page can re-attach to it."""
+        active = self.studio.jobs.active_job()
+        if active is None:
+            self._send_json(HTTPStatus.OK, {"job_id": None, "done": True})
+            return
+        self._send_json(
+            HTTPStatus.OK, {"job_id": active.job_id, "done": active.done}
+        )
+
+    def _serve_job_events(self, job_id: str) -> None:
+        job = self.studio.jobs.get(job_id)
+        if job is None:
+            self._problem(HTTPStatus.NOT_FOUND, "not_found")
+            return
+        cursor = 0
+        last_event_id = self.headers.get("Last-Event-ID")
+        if last_event_id and last_event_id.isdigit():
+            # Frames carry ``id: seq``; a reconnecting EventSource resumes
+            # after the last frame it saw instead of replaying from zero.
+            cursor = int(last_event_id)
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Connection", "close")
+        self.close_connection = True
+        wait_slice = min(0.5, self.studio.heartbeat_interval)
+        idle = 0.0
+        try:
+            self.end_headers()
+            self.wfile.write(b"retry: 1500\n\n")
+            self.wfile.flush()
+            while True:
+                with job.condition:
+                    if (
+                        cursor >= len(job.events)
+                        and not job.done
+                        and not self.studio.closing
+                    ):
+                        job.condition.wait(timeout=wait_slice)
+                    pending = job.events[cursor:]
+                    finished = job.done
+                if pending:
+                    for envelope in pending:
+                        frame = (
+                            f"id: {envelope['seq']}\n"
+                            f"data: {json.dumps(envelope, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                        )
+                        self.wfile.write(frame.encode("utf-8"))
+                    cursor += len(pending)
+                    self.wfile.flush()
+                    idle = 0.0
+                elif finished or self.studio.closing:
+                    break
+                else:
+                    idle += wait_slice
+                    if idle >= self.studio.heartbeat_interval:
+                        self.wfile.write(b": ping\n\n")
+                        self.wfile.flush()
+                        idle = 0.0
+                if finished and cursor >= len(job.events):
+                    break
+        except OSError:
+            return
+
+    def _get_persona(self, slug: str) -> None:
+        if not SLUG_RE.fullmatch(slug):
+            self._problem(HTTPStatus.NOT_FOUND, "unknown_persona")
+            return
+        from tinyic.personas import registry as registry_module
+
+        snapshot = registry_module.registry_snapshot(warn=False)
+        path = snapshot.get(slug)
+        if path is None:
+            self._problem(HTTPStatus.NOT_FOUND, "unknown_persona")
+            return
+        try:
+            agent = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            self._problem(HTTPStatus.INTERNAL_SERVER_ERROR, "persona_read_error")
+            return
+        dossier_path = path.with_name(f"{slug}.dossier.md")
+        dossier: str | None = None
+        try:
+            if dossier_path.is_file():
+                dossier = dossier_path.read_text(encoding="utf-8")
+        except OSError:
+            dossier = None
+        origin = "built_in" if slug in registry_module.BUILTIN_PERSONAS else "user"
+        self._send_json(
+            HTTPStatus.OK,
+            {"slug": slug, "origin": origin, "agent": agent, "dossier": dossier},
+        )
+
+    def _serve_asset_path(self, name: str) -> None:
+        normalized = PurePosixPath(name)
+        parts = normalized.parts
+        if (
+            not name
+            or name.startswith("/")
+            or any(part in {"", ".", ".."} for part in parts)
+            or "\\" in name
+            or any(ord(character) < 32 for character in name)
+        ):
+            self._problem(HTTPStatus.NOT_FOUND, "not_found")
+            return
+        self._serve_asset("/".join(parts))
+
+    def _serve_asset(self, name: str) -> None:
+        loaded = self.studio.load_asset(name)
+        if loaded is None:
+            self._problem(HTTPStatus.NOT_FOUND, "not_found")
+            return
+        content, content_type = loaded
+        self._send_bytes(HTTPStatus.OK, content, content_type=content_type)
+
+    def _read_json_body(self) -> dict[str, Any] | None:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length <= 0 or length > MAX_BODY_BYTES:
+            self._problem(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body_too_large")
+            return None
+        raw = self.rfile.read(length)
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._problem(HTTPStatus.BAD_REQUEST, "invalid_json")
+            return None
+        if not isinstance(value, dict):
+            self._problem(HTTPStatus.BAD_REQUEST, "invalid_json")
+            return None
+        return value
+
+    # -- response helpers (mirrors tinyic.web.server) --------------------- #
+
+    def _problem(self, status, reason, *, headers=None) -> None:
+        self._send_json(int(status), {"error": reason}, headers=headers)
+
+    def _send_json(self, status, payload, *, headers=None) -> None:
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self._send_bytes(
+            status, encoded,
+            content_type="application/json; charset=utf-8", headers=headers,
+        )
+
+    def _send_bytes(self, status, content, *, content_type=None, headers=None) -> None:
+        self.send_response(int(status))
+        if content_type is not None:
+            self.send_header("Content-Type", content_type)
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
+        body = b"" if int(status) == HTTPStatus.NO_CONTENT else content
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+            self.wfile.flush()
+
+
+class StudioServer:
+    """A background ``ThreadingHTTPServer`` for the persona studio."""
+
+    def __init__(
+        self,
+        *,
+        host: str = "127.0.0.1",
+        port: int = 0,
+        token: str | None = None,
+        browser_opener=None,
+        open_browser: bool = True,
+        asset_loader=None,
+        stderr: TextIO | None = None,
+        jobs=None,
+        research_seams=None,
+        heartbeat_interval: float = 15.0,
+    ) -> None:
+        if host != "127.0.0.1":
+            raise ValueError("TinyIC studio must bind exactly to 127.0.0.1")
+        if not isinstance(port, int) or isinstance(port, bool) or not 0 <= port <= 65535:
+            raise ValueError("port must be an integer between 0 and 65535")
+        self.host = host
+        self.requested_port = port
+        self._token = token or generate_capability_token()
+        self._browser_opener = browser_opener
+        self._open_browser = bool(open_browser)
+        self._asset_loader = asset_loader
+        self._stderr = stderr if stderr is not None else sys.stderr
+        self.research_seams = research_seams if research_seams is not None else ResearchSeams()
+        self.jobs = jobs if jobs is not None else ResearchJobs(seams=self.research_seams)
+        self.heartbeat_interval = max(0.001, float(heartbeat_interval))
+        self._httpd: _StudioHTTPServer | None = None
+        self._thread: threading.Thread | None = None
+        self._security: SecurityPolicy | None = None
+        self._closing = threading.Event()
+        self._stopped = threading.Event()
+        self._lifecycle_lock = threading.RLock()
+
+    def start(self) -> "StudioServer":
+        """Bind, start the background server, print/open the capability URL."""
+        with self._lifecycle_lock:
+            if self._closing.is_set():
+                raise RuntimeError("studio server has already been shut down")
+            if self._httpd is not None:
+                return self
+            self._httpd = _StudioHTTPServer(
+                (self.host, self.requested_port), _StudioHandler, self
+            )
+            self._security = SecurityPolicy(port=self.port, token=self._token)
+            self._thread = threading.Thread(
+                target=self._serve, name="tinyic-studio-server", daemon=True
+            )
+            self._thread.start()
+        self.diagnostic(f"TinyIC studio: {self.launch_url}")
+        if self._open_browser:
+            opener = self._browser_opener
+            if opener is None:
+                from tinyic.browser import open_browser
+
+                opener = open_browser
+            try:
+                opener(self.launch_url)
+            except Exception:
+                pass  # The URL remains on STDERR; browser failure is never fatal.
+        return self
+
+    def _serve(self) -> None:
+        assert self._httpd is not None
+        try:
+            self._httpd.serve_forever(poll_interval=0.05)
+        finally:
+            self._stopped.set()
+
+    def shutdown(self, *, timeout: float = 1.0) -> None:
+        """Stop accepting requests and give active handlers a short drain."""
+        self._closing.set()
+        # Wake SSE waiters so their loops observe ``closing`` and exit.
+        self.jobs.notify_all_waiters()
+        httpd, thread = self._httpd, self._thread
+        if httpd is not None:
+            httpd.shutdown()
+        if thread is not None:
+            thread.join(timeout=max(0.0, timeout))
+        if httpd is not None:
+            httpd.server_close()
+        self._stopped.set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """Wait for server shutdown; return whether it stopped in time."""
+        return self._stopped.wait(timeout)
+
+    @property
+    def closing(self) -> bool:
+        return self._closing.is_set()
+
+    @property
+    def port(self) -> int:
+        if self._httpd is None:
+            raise RuntimeError("studio server is not started")
+        return int(self._httpd.server_address[1])
+
+    @property
+    def token(self) -> str:
+        return self._token
+
+    @property
+    def security(self) -> SecurityPolicy:
+        if self._security is None:
+            raise RuntimeError("studio server is not started")
+        return self._security
+
+    @property
+    def base_url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    @property
+    def launch_url(self) -> str:
+        return f"{self.base_url}/?token={quote(self.token, safe='')}"
+
+    def load_asset(self, name: str) -> tuple[bytes, str] | None:
+        loader = self._asset_loader
+        try:
+            loaded = loader(name) if loader is not None else self._load_packaged_asset(name)
+        except (FileNotFoundError, IsADirectoryError, OSError):
+            return None
+        if loaded is None:
+            return None
+        if isinstance(loaded, tuple):
+            content, content_type = loaded
+        else:
+            content = loaded
+            content_type = _MIME_TYPES.get(Path(name).suffix.lower(), "application/octet-stream")
+        return bytes(content), content_type
+
+    @staticmethod
+    def _load_packaged_asset(name: str) -> bytes | None:
+        target = resources.files("tinyic.web").joinpath("assets", *name.split("/"))
+        return target.read_bytes() if target.is_file() else None
+
+    def diagnostic(self, message: str) -> None:
+        try:
+            self._stderr.write(message.rstrip() + "\n")
+            self._stderr.flush()
+        except Exception:  # pragma: no cover - diagnostics are best effort
+            pass
