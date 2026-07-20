@@ -1105,6 +1105,12 @@ section {
     display: block;
   }
 
+  .right-rail {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+
   article,
   section {
     break-inside: avoid-page;

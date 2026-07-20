@@ -531,6 +531,7 @@ def _html_footer(document: "Mapping[str, object]") -> str:
 # No external font, image, or ``url()`` — the page is one file.
 _CSS = """
 :root{
+  color-scheme:light dark;
   --paper:#f7f3ea; --paper-raised:#fffdf8; --paper-muted:#eee8dc;
   --ink:#14120f; --ink-soft:#4f4a42; --ink-faint:#716a60;
   --rule:#d8d0c1; --accent:#234f68;

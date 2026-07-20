@@ -367,6 +367,28 @@ def _sources_issues(sources: Any, issues: list[str]) -> list[Any]:
     return sources
 
 
+def _legacy_sources_issues(sources: Mapping[str, Any], issues: list[str]) -> list[Any]:
+    """Validate the pre-schema built-in shape: ``{"primary": [...], "secondary": [...]}``.
+
+    The built-in six store ``tinyic.sources`` as a mapping of plain citation
+    strings; the relaxed contract must keep their copies editable. Returns the
+    flattened citation list so quote indexes can still be range-checked.
+    """
+    _reject_unknown(sources, "tinyic.sources", {"primary", "secondary"}, issues)
+    flattened: list[Any] = []
+    for key in ("primary", "secondary"):
+        if key not in sources:
+            continue
+        value = sources[key]
+        if not _is_sequence(value):
+            issues.append(f"tinyic.sources.{key} must be an array")
+            continue
+        for index, entry in enumerate(value):
+            _nonempty_string(entry, f"tinyic.sources.{key}[{index}]", issues)
+        flattened.extend(value)
+    return flattened
+
+
 def _quotes_issues(quotes: Any, sources: list[Any], issues: list[str]) -> None:
     """Validate ``tinyic.famous_quotes`` against the coerced sources list."""
     if not _is_sequence(quotes):
@@ -558,7 +580,10 @@ def validate_user_agent_spec(specification: Mapping[str, Any]) -> Mapping[str, A
         if key in tinyic:
             _strings(tinyic.get(key), f"tinyic.{key}", issues)
     sources = tinyic.get("sources")
-    if sources is not None:
+    if isinstance(sources, Mapping):
+        # Copies of the built-in six carry the legacy mapping shape.
+        sources = _legacy_sources_issues(sources, issues)
+    elif sources is not None:
         sources = _sources_issues(sources, issues)
     else:
         sources = []

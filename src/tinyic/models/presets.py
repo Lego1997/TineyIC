@@ -65,6 +65,7 @@ Two files feed ``load_config``:
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -532,6 +533,10 @@ def _toml_scalar(value: Any) -> str:
         return repr(value)
     if isinstance(value, str):
         return json.dumps(value)
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+        # tomllib parses bare TOML dates/times into these; round-trip them so
+        # a hand-edited overlay survives committee/model writes.
+        return value.isoformat()
     if isinstance(value, list):
         return "[" + ", ".join(_toml_scalar(item) for item in value) + "]"
     raise PresetError(

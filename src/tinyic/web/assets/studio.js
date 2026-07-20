@@ -40,7 +40,12 @@
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch (_err) { data = null; }
     if (!response.ok) {
-      const error = new Error((data && data.error) || "http_" + response.status);
+      // Prefer the server's human-readable message; keep the reason code on
+      // error.code so callers can still branch on it.
+      const error = new Error(
+        (data && (data.message || data.error)) || "http_" + response.status,
+      );
+      error.code = (data && data.error) || null;
       error.status = response.status;
       error.data = data || {};
       throw error;
@@ -50,11 +55,16 @@
 
   let toastTimer = null;
   function toast(message) {
+    // The live region stays in the accessibility tree (visibility via class,
+    // not [hidden]) so screen readers announce the content change.
     const node = $("#toast");
+    node.classList.add("toast--visible");
     node.textContent = message;
-    node.hidden = false;
     if (toastTimer) clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { node.hidden = true; }, 4000);
+    toastTimer = setTimeout(() => {
+      node.classList.remove("toast--visible");
+      node.textContent = "";
+    }, 4000);
   }
 
   function confirmDialog(message) {
@@ -75,10 +85,19 @@
       const input = $("#duplicate-slug");
       $("#duplicate-message").textContent = "Duplicate " + slug + " as\u2026";
       input.value = slug + "_v2";
-      const settle = (value) => () => { dialog.close(); resolve(value); };
-      $("#duplicate-accept").onclick = settle(() => input.value.trim());
-      $("#duplicate-cancel").onclick = settle(null);
-      dialog.oncancel = settle(null);
+      const accept = () => {
+        const value = input.value.trim();
+        if (!value) { input.focus(); return; }
+        dialog.close();
+        resolve(value);
+      };
+      const cancel = () => { dialog.close(); resolve(null); };
+      $("#duplicate-accept").onclick = accept;
+      $("#duplicate-cancel").onclick = cancel;
+      input.onkeydown = (event) => {
+        if (event.key === "Enter") { event.preventDefault(); accept(); }
+      };
+      dialog.oncancel = () => { resolve(null); };
       dialog.showModal();
       input.focus();
       input.select();
@@ -118,12 +137,37 @@
 
   // -- router --------------------------------------------------------------
 
-  const VIEWS = { library: renderLibrary, research: renderResearch, editor: renderEditor, committee: renderCommittee };
+  // Keys must match the "#/<key>" prefixes used across studio.js/studio.html
+  // and the body[data-view] selectors in studio.css (contract-tested).
+  const VIEWS = { library: renderLibrary, research: renderResearch, edit: renderEditor, committee: renderCommittee };
+
+  let restoringHash = false;
 
   function route() {
-    const hash = window.location.hash || "#/library";
+    if (restoringHash) { restoringHash = false; return; }
+    const rawHash = window.location.hash;
+    // In-page anchors (e.g. the skip link's #studio-main) are not routes:
+    // let the browser perform the jump without resetting the view.
+    if (rawHash && !rawHash.startsWith("#/")) return;
+    const hash = rawHash || "#/library";
     const parts = hash.replace(/^#\//, "").split("/");
     const view = VIEWS[parts[0]] ? parts[0] : "library";
+    if (
+      document.body.dataset.view === "edit"
+      && editorState.dirty
+      && (view !== "edit" || parts[1] !== editorState.slug)
+    ) {
+      // Put the editor hash back (without re-rendering) and ask first.
+      restoringHash = true;
+      window.location.hash = "#/edit/" + editorState.slug;
+      confirmDialog("Discard unsaved changes to " + editorState.slug + "?").then((yes) => {
+        if (yes) {
+          editorState.dirty = false;
+          window.location.hash = hash;
+        }
+      });
+      return;
+    }
     document.body.dataset.view = view;
     for (const link of document.querySelectorAll(".studio-nav a")) {
       if (link.dataset.nav === view) link.setAttribute("aria-current", "page");
@@ -195,12 +239,18 @@
     }
   }
 
+  function deleteToast(result) {
+    if (result.committee_updated) return "Deleted " + result.deleted + " (also removed from your default committee)";
+    if (result.committee_cleared) return "Deleted " + result.deleted + " (default committee reset to the built-in six)";
+    return "Deleted " + result.deleted;
+  }
+
   async function onDelete(slug, name) {
     const yes = await confirmDialog("Delete " + name + " (" + slug + ")? Both artifact files are removed.");
     if (!yes) return;
     try {
-      await api("DELETE", "/api/personas/" + slug);
-      toast("Deleted " + slug);
+      const result = await api("DELETE", "/api/personas/" + slug);
+      toast(deleteToast(result));
       renderLibrary();
     } catch (error) {
       toast("Delete failed: " + error.message);
@@ -220,11 +270,14 @@
   }
 
   function researchErrorMessage(error) {
-    if (error.message === "no_search_capable_lane") {
+    if (error.code === "no_search_capable_lane") {
       return "No verified API-key search lane. Run 'tinyic onboard' to add an OpenAI, Grok, Google, or Kimi credential.";
     }
-    if (error.message === "persona_exists") {
+    if (error.code === "persona_exists") {
       return "That slug already exists — tick \u201cReplace the existing persona\u201d or choose another slug.";
+    }
+    if (error.code === "research_job_active") {
+      return "A research job is already running — wait for it to finish before starting another.";
     }
     return error.message;
   }
@@ -247,19 +300,27 @@
     node.hidden = !message;
   }
 
+  let estimatedSpec = null;
+
   async function onEstimate(event) {
     event.preventDefault();
     showResearchError("");
     $("#research-estimate-card").hidden = true;
     $("#research-progress").hidden = true;
     $("#research-result").hidden = true;
+    const spec = researchSpec();
+    const button = $("#research-estimate");
+    button.disabled = true;
     let estimate;
     try {
-      estimate = await api("POST", "/api/research/estimate", researchSpec());
+      estimate = await api("POST", "/api/research/estimate", spec);
     } catch (error) {
       showResearchError(researchErrorMessage(error));
       return;
+    } finally {
+      button.disabled = false;
     }
+    estimatedSpec = spec;
     $("#research-estimate-details").replaceChildren(
       detailRow("Slug", estimate.slug),
       detailRow("Lane", estimate.model_ref + " (" + estimate.provider + ")"),
@@ -276,9 +337,12 @@
   }
 
   async function onConfirmResearch() {
+    if (!estimatedSpec) return;
     $("#research-confirm").disabled = true;
     try {
-      const spec = researchSpec();
+      // Confirm submits the SPEC THE ESTIMATE PRICED, not a re-read of the
+      // form — editing a field hides the card and requires a new estimate.
+      const spec = Object.assign({}, estimatedSpec);
       spec.confirmed = true;
       const started = await api("POST", "/api/research", spec);
       $("#research-estimate-card").hidden = true;
@@ -320,6 +384,9 @@
     };
     source.onerror = () => {
       if (!jobSource) return;
+      // Transient drops auto-reconnect (the server resumes from
+      // Last-Event-ID); only a permanently closed source is fatal.
+      if (source.readyState !== EventSource.CLOSED) return;
       jobSource.close();
       jobSource = null;
       showResearchError("Lost the progress stream; check the library for the result.");
@@ -345,7 +412,25 @@
   }
 
   function renderResearch() {
-    $("#research-form").onsubmit = onEstimate;
+    const form = $("#research-form");
+    form.onsubmit = onEstimate;
+    form.oninput = () => {
+      // The estimate no longer matches the form; require a fresh one.
+      estimatedSpec = null;
+      $("#research-estimate-card").hidden = true;
+    };
+    if (!jobSource) attachActiveResearch();
+  }
+
+  async function attachActiveResearch() {
+    // After a reload, re-attach to a still-running job instead of going blind.
+    let status;
+    try {
+      status = await api("GET", "/api/research");
+    } catch (_error) {
+      return;
+    }
+    if (status.job_id && !status.done) followResearch(status.job_id);
   }
 
   // -- editor ---------------------------------------------------------------
@@ -390,7 +475,12 @@
     { key: "accessed", placeholder: "YYYY-MM-DD" },
   ];
 
-  const editorState = { slug: null, origin: null, agent: null, dossierDirty: false, mode: "structured" };
+  const editorState = { slug: null, origin: null, agent: null, dossierDirty: false, dirty: false, mode: "structured" };
+
+  function isGeneratedAgent(agent) {
+    const generation = getPath(agent, ["tinyic", "generation"]);
+    return generation !== undefined && generation !== null;
+  }
 
   function getPath(obj, path) {
     return path.reduce((node, key) => (node == null ? node : node[key]), obj);
@@ -474,7 +564,16 @@
 
   function fieldControl(field) {
     const value = getPath(editorState.agent, field.path);
-    const commit = (next) => setPath(editorState.agent, field.path, next);
+    const epithetPath = field.path.join(".") === "tinyic.epithet";
+    const commit = (next) => {
+      setPath(editorState.agent, field.path, next);
+      if (epithetPath && isGeneratedAgent(editorState.agent)) {
+        // The strict (generated) contract pins occupation.description to the
+        // epithet; keep them in lockstep so a save cannot fail on the pair.
+        setPath(editorState.agent, ["persona", "occupation", "description"], next);
+      }
+      editorState.dirty = true;
+    };
     if (field.kind === "select") {
       const select = el("select");
       for (const optionValue of field.options) {
@@ -508,10 +607,14 @@
   function buildStructured() {
     const host = $("#editor-structured");
     host.replaceChildren();
+    const generated = isGeneratedAgent(editorState.agent);
     for (const section of SECTIONS) {
       const box = el("section", "editor-section");
       box.append(el("h2", null, section.title));
       for (const field of section.fields) {
+        // Generated personas mirror the epithet into occupation.description;
+        // hide the mirror so the invariant cannot be broken by hand.
+        if (generated && field.path.join(".") === "persona.occupation.description") continue;
         const label = el("label", "field");
         label.append(el("span", null, field.label), fieldControl(field));
         box.append(label);
@@ -539,6 +642,23 @@
   }
 
   function setEditorMode(mode) {
+    if (editorState.mode === "raw" && mode !== "raw" && editorState.origin !== "built_in") {
+      // Leaving the raw tab adopts its edits (or blocks on a parse error) so
+      // they are never silently discarded.
+      const rawText = $("#editor-raw-text").value;
+      if (rawText !== JSON.stringify(editorState.agent, null, 2)) {
+        try {
+          editorState.agent = JSON.parse(rawText);
+          editorState.dirty = true;
+        } catch (_err) {
+          const issues = $("#editor-issues");
+          issues.textContent = "Raw JSON does not parse — fix it (or reopen the persona) before leaving this tab.";
+          issues.hidden = false;
+          return;
+        }
+      }
+    }
+    $("#editor-issues").hidden = true;
     editorState.mode = mode;
     for (const name of ["structured", "dossier", "raw"]) {
       $("#editor-" + name).hidden = name !== mode;
@@ -569,6 +689,7 @@
     editorState.origin = payload.origin;
     editorState.agent = payload.agent;
     editorState.dossierDirty = false;
+    editorState.dirty = false;
     const displayName = getPath(payload.agent, ["persona", "name"]) || slug;
     $("#editor-name").textContent = displayName;
     $("#editor-meta").textContent = slug + " · " + (payload.origin === "built_in" ? "built-in" : "custom");
@@ -594,7 +715,11 @@
     $("#tab-raw").onclick = () => setEditorMode("raw");
     $("#editor-dossier-text").oninput = () => {
       editorState.dossierDirty = true;
+      editorState.dirty = true;
       TinyICMarkdown.setInto($("#editor-dossier-preview"), $("#editor-dossier-text").value);
+    };
+    $("#editor-raw-text").oninput = () => {
+      editorState.dirty = true;
     };
   }
 
@@ -617,6 +742,7 @@
       await api("PUT", "/api/personas/" + editorState.slug, body);
       editorState.agent = agent;
       editorState.dossierDirty = false;
+      editorState.dirty = false;
       toast("Saved " + editorState.slug);
     } catch (error) {
       const detail = error.data && error.data.issues ? error.data.issues.join("; ") : error.message;
@@ -629,8 +755,9 @@
     const yes = await confirmDialog("Delete " + editorState.slug + "? Both artifact files are removed.");
     if (!yes) return;
     try {
-      await api("DELETE", "/api/personas/" + editorState.slug);
-      toast("Deleted " + editorState.slug);
+      const result = await api("DELETE", "/api/personas/" + editorState.slug);
+      editorState.dirty = false;
+      toast(deleteToast(result));
       window.location.hash = "#/library";
     } catch (error) {
       toast("Delete failed: " + error.message);
@@ -663,11 +790,12 @@
     }
   }
 
-  function committeeRow(persona, actions) {
+  function committeeRow(persona, actions, missing) {
     const row = el("li", "committee-row");
     row.append(monogramNode(persona.name));
     row.append(el("span", "committee-row__name", persona.name));
     row.append(el("span", "committee-row__slug", persona.slug));
+    if (missing) row.append(el("span", "chip chip--warn", "Missing"));
     for (const action of actions) row.append(action);
     return row;
   }
@@ -687,8 +815,9 @@
           committeeState.selected.splice(index, 1);
           buildCommitteeLists();
         }),
-      ]));
+      ], !bySlug.has(slug)));
     });
+    let available = 0;
     for (const persona of committeeState.personas) {
       if (committeeState.selected.includes(persona.slug)) continue;
       const add = el("button", "mini-button", "+");
@@ -698,7 +827,16 @@
         buildCommitteeLists();
       });
       availableHost.append(committeeRow(persona, [add]));
+      available += 1;
     }
+    if (available === 0) {
+      availableHost.append(el("li", "empty-note", "Every persona is on the committee."));
+    }
+    const count = committeeState.selected.length;
+    const save = $("#committee-save");
+    save.disabled = count < 2 || count > 6;
+    $("#committee-count").textContent =
+      count + " selected" + (save.disabled ? " \u2014 a committee needs 2 to 6 members" : "");
   }
 
   function moveCommittee(index, delta) {
@@ -728,10 +866,23 @@
   async function onCommitteeReset() {
     const yes = await confirmDialog("Reset the default committee to the built-in six?");
     if (!yes) return;
-    await api("PUT", "/api/committee", { committee: null });
-    toast("Reset to the built-in six");
-    renderCommittee();
+    const errorBox = $("#committee-error");
+    errorBox.hidden = true;
+    try {
+      await api("PUT", "/api/committee", { committee: null });
+      toast("Reset to the built-in six");
+      renderCommittee();
+    } catch (error) {
+      errorBox.textContent = "Reset failed: " + error.message;
+      errorBox.hidden = false;
+    }
   }
+
+  window.addEventListener("beforeunload", (event) => {
+    if (document.body.dataset.view === "edit" && editorState.dirty) {
+      event.preventDefault();
+    }
+  });
 
   window.addEventListener("hashchange", route);
   route();

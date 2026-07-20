@@ -21,7 +21,7 @@
     <a href="#/committee" data-nav="committee">Committee</a>
   </nav>
 </header>
-<main id="studio-main">
+<main id="studio-main" tabindex="-1">
   <section id="view-library" class="studio-view" aria-label="Persona library">
     <div class="view-head">
       <h1>Persona library</h1>
@@ -30,7 +30,7 @@
     <ul id="library-grid" class="persona-grid"></ul>
     <p id="library-empty" class="empty-note" hidden>No personas found.</p>
   </section>
-  <section id="view-research" class="studio-view" aria-label="Research a new persona" hidden>
+  <section id="view-research" class="studio-view" aria-label="Research a new persona">
     <div class="view-head">
       <h1>Research a new persona</h1>
       <p class="view-sub">Cited deep research over your own search-capable provider lane. Nothing is spent until you confirm the estimate.</p>
@@ -56,7 +56,7 @@
     <div id="research-result" hidden></div>
     <p id="research-error" class="error-note" hidden></p>
   </section>
-  <section id="view-editor" class="studio-view" aria-label="Persona editor" hidden>
+  <section id="view-editor" class="studio-view" aria-label="Persona editor">
     <div class="editor-head">
       <span id="editor-monogram" class="monogram"></span>
       <div>
@@ -65,17 +65,17 @@
       </div>
     </div>
     <p id="editor-readonly" class="chip chip--warn" hidden>Built-in persona — read-only. Duplicate to edit.</p>
-    <div class="editor-tabs" role="tablist">
-      <button id="tab-structured" class="editor-tab" type="button">Structured</button>
-      <button id="tab-dossier" class="editor-tab" type="button">Dossier</button>
-      <button id="tab-raw" class="editor-tab" type="button">Raw JSON</button>
+    <div class="editor-tabs" role="tablist" aria-label="Editor modes">
+      <button id="tab-structured" class="editor-tab" type="button" role="tab" aria-controls="editor-structured">Structured</button>
+      <button id="tab-dossier" class="editor-tab" type="button" role="tab" aria-controls="editor-dossier">Dossier</button>
+      <button id="tab-raw" class="editor-tab" type="button" role="tab" aria-controls="editor-raw">Raw JSON</button>
     </div>
-    <div id="editor-structured"></div>
-    <div id="editor-dossier" hidden>
+    <div id="editor-structured" role="tabpanel" aria-labelledby="tab-structured"></div>
+    <div id="editor-dossier" role="tabpanel" aria-labelledby="tab-dossier" hidden>
       <textarea id="editor-dossier-text" rows="16" spellcheck="false"></textarea>
       <div id="editor-dossier-preview" class="markdown markdown-preview"></div>
     </div>
-    <div id="editor-raw" hidden>
+    <div id="editor-raw" role="tabpanel" aria-labelledby="tab-raw" hidden>
       <textarea id="editor-raw-text" rows="22" spellcheck="false"></textarea>
     </div>
     <p id="editor-issues" class="error-note" hidden></p>
@@ -86,12 +86,13 @@
       <a class="button" href="#/library">Back</a>
     </div>
   </section>
-  <section id="view-committee" class="studio-view" aria-label="Default committee" hidden>
+  <section id="view-committee" class="studio-view" aria-label="Default committee">
     <div class="view-head">
       <h1>Default committee</h1>
       <p class="view-sub">Two to six members, in speaking order. <code>--personas</code> still overrides per debate.</p>
     </div>
     <p id="committee-source" class="chip"></p>
+    <p id="committee-count" class="view-sub" aria-live="polite"></p>
     <div class="committee-columns">
       <div>
         <h2>On the committee</h2>
@@ -109,14 +110,14 @@
     </div>
   </section>
 </main>
-<dialog id="confirm-dialog" class="confirm-dialog">
+<dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-message">
   <p id="confirm-message"></p>
   <div class="dialog-actions">
     <button id="confirm-cancel" class="button" type="button">Cancel</button>
     <button id="confirm-accept" class="button button--danger" type="button">Confirm</button>
   </div>
 </dialog>
-<dialog id="duplicate-dialog" class="confirm-dialog">
+<dialog id="duplicate-dialog" class="confirm-dialog" aria-labelledby="duplicate-message">
   <p id="duplicate-message"></p>
   <label class="field"><span>New slug</span><input id="duplicate-slug" type="text" autocomplete="off" spellcheck="false"></label>
   <div class="dialog-actions">
@@ -124,7 +125,7 @@
     <button id="duplicate-accept" class="button" type="button">Duplicate</button>
   </div>
 </dialog>
-<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 <script src="/assets/md.js"></script>
 <script src="/assets/studio.js"></script>
 </body>

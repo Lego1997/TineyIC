@@ -8,7 +8,10 @@
   "use strict";
 
   function escapeHtml(value) {
+    // NUL is stripped so the inline-token sentinel below can never occur in
+    // escaped source text (no printable placeholder is collision-proof).
     return String(value ?? "")
+      .replace(/\u0000/g, "")
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
@@ -40,7 +43,7 @@
   function renderInline(escapedText) {
     const tokens = [];
     const reserve = (html) => {
-      const token = `TINYICTOKEN${tokens.length}END`;
+      const token = `\u0000${tokens.length}\u0000`;
       tokens.push(html);
       return token;
     };
@@ -61,7 +64,7 @@
     });
 
     rendered = formatEmphasis(rendered);
-    return rendered.replace(/TINYICTOKEN(\d+)END/g, (_match, index) => {
+    return rendered.replace(/\u0000(\d+)\u0000/g, (_match, index) => {
       return tokens[Number(index)] ?? "";
     });
   }

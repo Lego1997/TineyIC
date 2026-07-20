@@ -122,3 +122,38 @@ def test_committee_markup_and_api_paths():
     for element_id in COMMITTEE_IDS:
         assert f'id="{element_id}"' in HTML, element_id
     assert '"/api/committee"' in JS
+
+
+def test_view_sections_never_carry_hidden():
+    # View switching is CSS-only (body[data-view] in studio.css). A hidden
+    # attribute on a section would win via base.css [hidden]{!important} and
+    # blank the view — the v2.3.1 regression class.
+    for match in re.finditer(r'<section[^>]*class="studio-view[^>]*>', HTML):
+        assert "hidden" not in match.group(0), match.group(0)
+
+
+def test_hash_routes_match_views_registry_and_css():
+    # Every "#/<name>" navigation target must be a registered router view AND
+    # have a body[data-view] display rule; a mismatch strands the view.
+    views = re.search(r"const VIEWS = \{([^}]*)\}", JS)
+    assert views is not None
+    view_keys = set(re.findall(r"(\w+):", views.group(1)))
+    hash_targets = set(re.findall(r"#/([a-z]+)", HTML + JS))
+    assert hash_targets == view_keys, (hash_targets, view_keys)
+    for key in view_keys:
+        assert f'body[data-view="{key}"]' in CSS, key
+
+
+def test_every_queried_element_id_exists():
+    for element_id in sorted(set(re.findall(r'\$\("#([a-z-]+)"\)', JS))):
+        assert f'id="{element_id}"' in HTML, element_id
+
+
+def test_every_js_api_path_is_served():
+    server = (
+        Path(__file__).parents[1] / "src" / "tinyic" / "web" / "studio.py"
+    ).read_text(encoding="utf-8")
+    paths = set(re.findall(r'"(/api/[a-z/]+)"', JS))
+    assert paths, "expected studio.js to reference /api paths"
+    for path in sorted(paths):
+        assert f'"{path}"' in server, path

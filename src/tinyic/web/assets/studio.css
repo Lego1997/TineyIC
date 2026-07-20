@@ -49,9 +49,11 @@
   padding: 1.75rem var(--page-gutter) 4rem;
 }
 
+/* View switching is CSS-only: the router sets body[data-view]; sections must
+   not carry the hidden attribute (base.css [hidden] would defeat these). */
 body[data-view="library"] #view-library,
 body[data-view="research"] #view-research,
-body[data-view="editor"] #view-editor,
+body[data-view="edit"] #view-editor,
 body[data-view="committee"] #view-committee { display: block; }
 .studio-view { display: none; }
 
@@ -63,7 +65,7 @@ body[data-view="committee"] #view-committee { display: block; }
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(21rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(21rem, 100%), 1fr));
   gap: 1rem;
 }
 
@@ -99,6 +101,9 @@ body[data-view="committee"] #view-committee { display: block; }
 }
 
 .chip {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
   font-size: 0.72rem;
   font-variant: small-caps;
   letter-spacing: 0.08em;
@@ -217,3 +222,12 @@ body[data-view="committee"] #view-committee { display: block; }
 .committee-row__name { flex: 1; }
 .committee-row__slug { color: var(--ink-faint); font-size: 0.8rem; font-family: var(--mono); }
 @media (max-width: 56rem) { .committee-columns { grid-template-columns: 1fr; } }
+
+/* Toast visibility is class-driven so the aria-live region stays in the
+   accessibility tree while idle (announcements need a content change). */
+#toast {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+}
+#toast.toast--visible { opacity: 1; }

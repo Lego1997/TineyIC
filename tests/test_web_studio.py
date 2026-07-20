@@ -626,3 +626,187 @@ def test_unknown_job_events_404(studios, user_persona):
         _request(server, "GET", "/api/research/deadbeef/events", headers=_auth(server))
     )
     assert status == 404 and payload["error"] == "not_found"
+
+
+# -- v2.3.1 regression coverage ------------------------------------------- #
+
+
+def test_duplicate_builtin_persona_and_edit_copy(studios, user_persona):
+    # The documented flagship flow: built-ins are read-only, duplicate to tune.
+    server = studios()
+    status, payload = _json(
+        _post_json(
+            server, "/api/personas/warren_buffett/duplicate", {"new_slug": "my_buffett"}
+        )
+    )
+    assert status == 201 and payload == {"slug": "my_buffett"}
+    agent_path = user_persona / "my_buffett.agent.json"
+    assert agent_path.is_file()
+    copy = json.loads(agent_path.read_text(encoding="utf-8"))
+
+    from tinyic.personas.factory.schema import validate_user_agent_spec
+
+    validate_user_agent_spec(copy)  # legacy dict sources must stay editable
+    status, payload = _json(
+        _post_json(server, "/api/personas/my_buffett", {"agent": copy}, method="PUT")
+    )
+    assert status == 200 and payload["saved"] is True
+
+
+def test_duplicate_target_still_protects_builtins(studios, user_persona):
+    server = studios()
+    status, payload = _json(
+        _post_json(
+            server, "/api/personas/warren_buffett/duplicate", {"new_slug": "li_lu"}
+        )
+    )
+    assert status == 409 and payload["error"] == "builtin_persona_collision"
+
+
+def test_delete_heals_overlay_committee(studios, user_persona, overlay):
+    server = studios()
+    status, _payload = _json(
+        _post_json(
+            server,
+            "/api/committee",
+            {"committee": ["warren_buffett", "charlie_munger", "test_investor"]},
+            method="PUT",
+        )
+    )
+    assert status == 200
+    status, payload = _json(
+        _request(server, "DELETE", "/api/personas/test_investor", headers=_auth(server))
+    )
+    assert status == 200
+    assert payload["deleted"] == "test_investor"
+    assert payload["committee_updated"] is True
+    assert payload["committee"] == ["warren_buffett", "charlie_munger"]
+    status, payload = _json(
+        _request(server, "GET", "/api/committee", headers=_auth(server))
+    )
+    assert payload == {
+        "committee": ["warren_buffett", "charlie_munger"], "source": "overlay",
+    }
+
+
+def test_delete_clears_undersized_committee(studios, user_persona, overlay):
+    server = studios()
+    _post_json(
+        server,
+        "/api/committee",
+        {"committee": ["warren_buffett", "test_investor"]},
+        method="PUT",
+    )
+    status, payload = _json(
+        _request(server, "DELETE", "/api/personas/test_investor", headers=_auth(server))
+    )
+    assert status == 200 and payload["committee_cleared"] is True
+    status, payload = _json(
+        _request(server, "GET", "/api/committee", headers=_auth(server))
+    )
+    assert payload["source"] == "default"
+
+
+def test_research_status_endpoint(studios, user_persona):
+    import threading
+
+    server = studios(research_seams=_job_seams())
+    status, payload = _json(
+        _request(server, "GET", "/api/research", headers=_auth(server))
+    )
+    assert status == 200 and payload == {"job_id": None, "done": True}
+    _FakeFactory.gate = threading.Event()
+    _FakeFactory.raises = None
+    try:
+        status, started = _json(
+            _post_json(
+                server, "/api/research",
+                {"investor_name": "New Investor", "confirmed": True},
+            )
+        )
+        assert status == 202
+        status, payload = _json(
+            _request(server, "GET", "/api/research", headers=_auth(server))
+        )
+        assert status == 200
+        assert payload["job_id"] == started["job_id"] and payload["done"] is False
+    finally:
+        _FakeFactory.gate.set()
+        _FakeFactory.gate = None
+
+
+def test_sse_resume_honors_last_event_id(studios, user_persona):
+    _FakeFactory.gate = None
+    _FakeFactory.raises = None
+    server = studios(research_seams=_job_seams())
+    _status, started = _json(
+        _post_json(
+            server, "/api/research",
+            {"investor_name": "New Investor", "confirmed": True},
+        )
+    )
+    target = f"/api/research/{started['job_id']}/events"
+    _status, _headers, full = _request(server, "GET", target, headers=_auth(server))
+    assert [frame["seq"] for frame in _sse_frames(full)] == [1, 2, 3, 4, 5]
+    _status, _headers, resumed = _request(
+        server, "GET", target, headers={**_auth(server), "Last-Event-ID": "3"}
+    )
+    assert [frame["seq"] for frame in _sse_frames(resumed)] == [4, 5]
+
+
+def test_terminal_event_survives_buffer_cap(studios, user_persona, monkeypatch):
+    from tinyic.web import research as research_module
+
+    monkeypatch.setattr(research_module, "_JOB_BUFFER_LIMIT", 1)
+    _FakeFactory.gate = None
+    _FakeFactory.raises = None
+    server = studios(research_seams=_job_seams())
+    _status, started = _json(
+        _post_json(
+            server, "/api/research",
+            {"investor_name": "New Investor", "confirmed": True},
+        )
+    )
+    _status, _headers, body = _request(
+        server, "GET", f"/api/research/{started['job_id']}/events", headers=_auth(server)
+    )
+    frames = _sse_frames(body)
+    assert frames[0]["type"] == "job_started"
+    assert frames[-1]["type"] == "job_completed"  # exempt from the cap
+
+
+def test_packaged_assets_served_without_loader():
+    import re
+    from pathlib import Path as _P
+
+    server = StudioServer(token="t", open_browser=False, stderr=io.StringIO()).start()
+    try:
+        status, _headers, body = _request(server, "GET", "/", headers=_auth(server))
+        assert status == 200 and b"studio.js" in body
+        references = sorted(set(re.findall(rb'(?:href|src)="(/assets/[^"]+)"', body)))
+        assert references, "studio.html should reference packaged assets"
+        for reference in references:
+            target = reference.decode("ascii")
+            status, headers, asset = _request(
+                server, "GET", target, headers=_auth(server)
+            )
+            assert status == 200 and asset, target
+            expected = "text/css" if target.endswith(".css") else "text/javascript"
+            assert headers.get("Content-Type", "").startswith(expected), target
+    finally:
+        server.shutdown()
+    assert server.wait(1.0)
+
+
+def test_builtin_six_pass_relaxed_contract():
+    from pathlib import Path as _P
+
+    from tinyic.personas.factory.schema import validate_user_agent_spec
+    from tinyic.personas.registry import BUILTIN_PERSONAS
+
+    config_dir = _P(__file__).parents[1] / "src" / "tinyic" / "personas" / "configs"
+    for slug in BUILTIN_PERSONAS:
+        specification = json.loads(
+            (config_dir / f"{slug}.agent.json").read_text(encoding="utf-8")
+        )
+        validate_user_agent_spec(specification)

@@ -22,6 +22,11 @@ from tinyic.personas.factory import estimate as shared_estimate
 
 __all__ = ["ResearchJobs", "ResearchPreflightError", "ResearchSeams", "preflight"]
 
+# redirect_stdout/redirect_stderr swap process-global streams and are not
+# concurrency-safe; studio request threads serialize their quiet first-import
+# blocks through this lock so interleaved scopes can never corrupt sys.stdout.
+_IMPORT_LOCK = threading.Lock()
+
 
 @dataclass(frozen=True)
 class ResearchSeams:
@@ -121,6 +126,7 @@ def preflight(
     try:
         # Provider stack imports stay lazy and quiet, exactly like the CLI.
         with (
+            _IMPORT_LOCK,
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(io.StringIO()),
         ):
@@ -223,24 +229,47 @@ class ResearchJobs:
         self._lock = threading.Lock()
         self._jobs: dict[str, _Job] = {}
         self._active_id: str | None = None
+        self._starting = False
 
     def get(self, job_id: str) -> _Job | None:
         with self._lock:
             return self._jobs.get(job_id)
 
+    def active_job(self) -> _Job | None:
+        """The most recently started job, if any (done or not)."""
+        with self._lock:
+            return self._jobs.get(self._active_id) if self._active_id else None
+
+    def notify_all_waiters(self) -> None:
+        """Wake every SSE waiter (used by server shutdown)."""
+        with self._lock:
+            jobs = list(self._jobs.values())
+        for job in jobs:
+            with job.condition:
+                job.condition.notify_all()
+
     def start(self, spec: Mapping[str, Any]) -> str:
         """Preflight, then run the factory on a worker thread. Returns job_id."""
+        # ``_starting`` reserves the single-job slot across the slow preflight
+        # so two concurrent confirms cannot both start paid runs.
         with self._lock:
             active = self._jobs.get(self._active_id) if self._active_id else None
-            if active is not None and not active.done:
+            if self._starting or (active is not None and not active.done):
                 raise ResearchPreflightError(
                     409, "research_job_active", "a research job is already running"
                 )
-        payload, backend = preflight(spec, self._seams, keep_backend=True)
+            self._starting = True
+        try:
+            payload, backend = preflight(spec, self._seams, keep_backend=True)
+        except BaseException:
+            with self._lock:
+                self._starting = False
+            raise
         job = _Job(secrets.token_hex(4))
         with self._lock:
             self._jobs[job.job_id] = job
             self._active_id = job.job_id
+            self._starting = False
         self._emit(job, "job_started", payload)
         worker = threading.Thread(
             target=self._run,
@@ -258,6 +287,7 @@ class ResearchJobs:
             factory_class = self._seams.factory_class
             if factory_class is None:
                 with (
+                    _IMPORT_LOCK,
                     contextlib.redirect_stdout(io.StringIO()),
                     contextlib.redirect_stderr(io.StringIO()),
                 ):
@@ -326,9 +356,12 @@ class ResearchJobs:
             "type": event_type,
             "payload": payload,
         }
+        # Terminal events are exempt from the cap: the stream must always end
+        # with an outcome the client can render, even for pathological runs.
+        terminal = event_type in ("job_completed", "job_error")
         with job.condition:
             envelope["seq"] = len(job.events) + 1
-            if len(job.events) < _JOB_BUFFER_LIMIT:
+            if terminal or len(job.events) < _JOB_BUFFER_LIMIT:
                 job.events.append(envelope)
             job.condition.notify_all()
 

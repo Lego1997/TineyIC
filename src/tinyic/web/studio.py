@@ -94,6 +94,8 @@ class _StudioHandler(BaseHTTPRequestHandler):
             self._get_persona(path.removeprefix("/api/personas/"))
         elif path == "/api/committee":
             self._get_committee()
+        elif path == "/api/research":
+            self._get_research_status()
         elif path.startswith("/api/research/") and path.endswith("/events"):
             self._serve_job_events(
                 path.removeprefix("/api/research/").removesuffix("/events")
@@ -289,8 +291,16 @@ class _StudioHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, {"slug": slug, "saved": True})
 
     def _post_duplicate(self, slug: str, body: dict) -> None:
-        source = self._user_persona_path(slug)
+        # Built-ins are valid duplication SOURCES (the documented way to tune
+        # one); only the target slug keeps the built-in/collision protection.
+        if not SLUG_RE.fullmatch(slug):
+            self._problem(HTTPStatus.NOT_FOUND, "unknown_persona")
+            return
+        from tinyic.personas import registry as registry_module
+
+        source = registry_module.registry_snapshot(warn=False).get(slug)
         if source is None:
+            self._problem(HTTPStatus.NOT_FOUND, "unknown_persona")
             return
         from tinyic.personas.factory.pipeline import (
             PROTECTED_BUILTIN_SLUGS,
@@ -332,9 +342,36 @@ class _StudioHandler(BaseHTTPRequestHandler):
         path = self._user_persona_path(slug)
         if path is None:
             return
-        path.unlink(missing_ok=True)
-        path.with_name(f"{slug}.dossier.md").unlink(missing_ok=True)
-        self._send_json(HTTPStatus.OK, {"deleted": slug})
+        try:
+            path.unlink(missing_ok=True)
+            path.with_name(f"{slug}.dossier.md").unlink(missing_ok=True)
+        except OSError as exc:
+            self._problem(HTTPStatus.INTERNAL_SERVER_ERROR, "persona_delete_error")
+            self.studio.diagnostic(f"studio: persona delete failed: {exc}")
+            return
+        payload: dict[str, Any] = {"deleted": slug}
+        payload.update(self._heal_committee_after_delete(slug))
+        self._send_json(HTTPStatus.OK, payload)
+
+    def _heal_committee_after_delete(self, slug: str) -> dict[str, Any]:
+        """Drop *slug* from the overlay committee so debates keep resolving."""
+        from tinyic.models.presets import load_config, set_user_committee
+
+        try:
+            configured = load_config().get("committee")
+            if not configured or slug not in configured:
+                return {}
+            remaining = [name for name in configured if name != slug]
+            if len(remaining) >= 2:
+                set_user_committee(remaining)
+                return {"committee": remaining, "committee_updated": True}
+            set_user_committee(None)
+            return {"committee_cleared": True}
+        except Exception as exc:
+            self.studio.diagnostic(
+                f"studio: committee cleanup after delete failed: {exc}"
+            )
+            return {"committee_error": "overlay_unwritable"}
 
     def _get_committee(self) -> None:
         from tinyic.models.presets import load_config
@@ -434,22 +471,45 @@ class _StudioHandler(BaseHTTPRequestHandler):
             return
         self._send_json(HTTPStatus.ACCEPTED, {"job_id": job_id})
 
+    def _get_research_status(self) -> None:
+        """Report the active job so a reloaded page can re-attach to it."""
+        active = self.studio.jobs.active_job()
+        if active is None:
+            self._send_json(HTTPStatus.OK, {"job_id": None, "done": True})
+            return
+        self._send_json(
+            HTTPStatus.OK, {"job_id": active.job_id, "done": active.done}
+        )
+
     def _serve_job_events(self, job_id: str) -> None:
         job = self.studio.jobs.get(job_id)
         if job is None:
             self._problem(HTTPStatus.NOT_FOUND, "not_found")
             return
+        cursor = 0
+        last_event_id = self.headers.get("Last-Event-ID")
+        if last_event_id and last_event_id.isdigit():
+            # Frames carry ``id: seq``; a reconnecting EventSource resumes
+            # after the last frame it saw instead of replaying from zero.
+            cursor = int(last_event_id)
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.end_headers()
+        self.send_header("Connection", "close")
+        self.close_connection = True
+        wait_slice = min(0.5, self.studio.heartbeat_interval)
+        idle = 0.0
         try:
+            self.end_headers()
             self.wfile.write(b"retry: 1500\n\n")
             self.wfile.flush()
-            cursor = 0
             while True:
                 with job.condition:
-                    if cursor >= len(job.events) and not job.done:
-                        job.condition.wait(timeout=self.studio.heartbeat_interval)
+                    if (
+                        cursor >= len(job.events)
+                        and not job.done
+                        and not self.studio.closing
+                    ):
+                        job.condition.wait(timeout=wait_slice)
                     pending = job.events[cursor:]
                     finished = job.done
                 if pending:
@@ -461,16 +521,19 @@ class _StudioHandler(BaseHTTPRequestHandler):
                         self.wfile.write(frame.encode("utf-8"))
                     cursor += len(pending)
                     self.wfile.flush()
-                elif finished:
+                    idle = 0.0
+                elif finished or self.studio.closing:
                     break
                 else:
-                    self.wfile.write(b": ping\n\n")
-                    self.wfile.flush()
+                    idle += wait_slice
+                    if idle >= self.studio.heartbeat_interval:
+                        self.wfile.write(b": ping\n\n")
+                        self.wfile.flush()
+                        idle = 0.0
                 if finished and cursor >= len(job.events):
                     break
-        except (BrokenPipeError, ConnectionResetError):
+        except OSError:
             return
-        self.close_connection = True
 
     def _get_persona(self, slug: str) -> None:
         if not SLUG_RE.fullmatch(slug):
@@ -644,20 +707,29 @@ class StudioServer:
     def shutdown(self, *, timeout: float = 1.0) -> None:
         """Stop accepting requests and give active handlers a short drain."""
         self._closing.set()
+        # Wake SSE waiters so their loops observe ``closing`` and exit.
+        self.jobs.notify_all_waiters()
         httpd, thread = self._httpd, self._thread
         if httpd is not None:
             httpd.shutdown()
-            httpd.server_close()
         if thread is not None:
             thread.join(timeout=max(0.0, timeout))
+        if httpd is not None:
+            httpd.server_close()
+        self._stopped.set()
 
     def wait(self, timeout: float | None = None) -> bool:
         """Wait for server shutdown; return whether it stopped in time."""
         return self._stopped.wait(timeout)
 
     @property
+    def closing(self) -> bool:
+        return self._closing.is_set()
+
+    @property
     def port(self) -> int:
-        assert self._httpd is not None
+        if self._httpd is None:
+            raise RuntimeError("studio server is not started")
         return int(self._httpd.server_address[1])
 
     @property
@@ -666,7 +738,8 @@ class StudioServer:
 
     @property
     def security(self) -> SecurityPolicy:
-        assert self._security is not None
+        if self._security is None:
+            raise RuntimeError("studio server is not started")
         return self._security
 
     @property
