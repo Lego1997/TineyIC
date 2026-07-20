@@ -17,3 +17,10 @@ openai_api_cache.json
 tinytroupe.*.log
 .claude/
 .planning/
+
+# Local production scaffolding — never committed (agent plans, kickoff prompts, smoke artifacts)
+AGENTS.local.md
+plan.md
+artifacts/
+docs/superpowers/
+docs/CODEX_KICKOFF*.md

@@ -5,7 +5,7 @@
 | **Status** | Approved for implementation |
 | **Date** | 2026-07-12 |
 | **Author** | Claude (product/spec), with Pan (owner decisions via interview) |
-| **Implementer** | GPT-5.6 / Codex — see [CODEX_KICKOFF.md](CODEX_KICKOFF.md) |
+| **Implementer** | GPT-5.6 / Codex |
 | **Evidence base** | [Code review (33 findings)](code-review-2026-07-12.md) · [Notebook/town-hall research brief](research/2026-07-12-notebook-town-hall-brief.md) · [Model-agnostic/auth/MoA research brief](research/2026-07-12-model-agnostic-brief.md) (+ [raw claims](research/2026-07-12-model-agnostic-claims.md)) |
 
 ---
