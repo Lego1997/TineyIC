@@ -6,9 +6,9 @@ configure—to debate a public company in a secured local Town Hall.
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![Node.js 22.14+](https://img.shields.io/badge/node-%3E%3D22.14-339933.svg)](https://nodejs.org/)
-[![TinyIC 2.2](https://img.shields.io/badge/TinyIC-2.2-6f42c1.svg)](src/tinyic/pyproject.toml)
+[![TinyIC 2.3](https://img.shields.io/badge/TinyIC-2.3-6f42c1.svg)](src/tinyic/pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Interfaces: web · JSONL · replay](https://img.shields.io/badge/interfaces-web%20·%20JSONL%20·%20replay-8a63d2.svg)](AGENTS.md)
+[![Interfaces: web · studio · JSONL · replay](https://img.shields.io/badge/interfaces-web%20·%20studio%20·%20JSONL%20·%20replay-8a63d2.svg)](AGENTS.md)
 
 Enter a ticker or company name. The committee works through opening theses,
 cross-examination, rebuttals, and final votes while you watch, steer, pause, or
@@ -262,6 +262,37 @@ committee = ["warren_buffett", "howard_marks_researched", "li_lu"]
 
 Resolution order is `--personas` → user-overlay `committee` → the built-in
 six. Unknown, duplicate, or out-of-range committees fail validation.
+
+## Manage personas in the browser studio
+
+`tinyic studio` serves the persona toolkit as a persistent local web app:
+
+```bash
+tinyic studio            # secured localhost persona hub, opens in your browser
+tinyic studio --no-open  # print the capability URL instead
+```
+
+The studio has four views:
+
+- **Library** — every built-in and researched persona with origin, source
+  count, and quality tags. Built-ins are read-only; duplicate one to tune
+  your own copy.
+- **Research** — the same cited research pipeline as `persona research`,
+  driven from the browser: estimate first, confirm explicitly, then follow
+  live per-stage progress. Nothing is spent before you confirm, and a
+  reloaded page re-attaches to a running job.
+- **Editor** — structured fields, the cited dossier with a rendered preview,
+  and raw JSON. Every save is schema-validated and installed with the same
+  guarded atomic replacement as the CLI; unsaved changes are guarded before
+  navigation.
+- **Committee** — pick and order the default committee visually; saving
+  writes the same overlay `committee` key shown above, and deleting a
+  persona that sits on the saved committee cleans the overlay up.
+
+The studio reuses the Town Hall's security model — loopback-only binding, a
+fresh capability URL and protected cookie, Host and Origin validation,
+JSON-only writes, and escape-first rendering — and makes no model calls
+outside confirmed persona research.
 
 ## Models and credentials
 
