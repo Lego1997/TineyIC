@@ -19,6 +19,9 @@ import test from "node:test";
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const launcher = path.join(root, "bin", "tinyic.mjs");
 const fakeUvFixture = path.join(root, "tests", "npm", "fixtures", "fake-uv.mjs");
+const packageVersion = JSON.parse(
+  await readFile(path.join(root, "package.json"), "utf8"),
+).version;
 
 async function makeTemporaryDirectory(t, label) {
   const directory = await mkdtemp(path.join(tmpdir(), `tinyic-${label}-`));
@@ -178,7 +181,9 @@ test("serializes one runtime bootstrap for concurrent first launches", async (t)
   const [cachedProject] = projects;
   assert.match(
     await readFile(path.join(cachedProject, ".tinyic-npm-project"), "utf8"),
-    /^2\.2\.0-[a-f0-9]{16}-[a-f0-9]{16}\n$/,
+    new RegExp(
+      `^${packageVersion.replace(/\./g, "\\.")}-[a-f0-9]{16}-[a-f0-9]{16}\\n$`,
+    ),
   );
   const cacheNamespace = path.dirname(path.dirname(cachedProject));
   assert.deepEqual(
